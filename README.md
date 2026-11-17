@@ -1,6 +1,6 @@
 # fsr4-vk
 
-An independent Vulkan implementation of FSR 4.1.1 FP8 and INT8 for Windows
+An independent Vulkan implementation of FSR 4.1.2 FP8 and INT8 for Windows
 and Linux, using AMD's model weights and shaders translated to SPIR-V.
 
 This project is not affiliated with or endorsed by AMD.
@@ -15,8 +15,8 @@ This project is not affiliated with or endorsed by AMD.
 ## Prepare assets
 
 Get `Samples/Upscalers/FidelityFX_FSR/dx12/x64/Release/amd_fidelityfx_upscaler_dx12.dll` from
-[AMD's FidelityFX SDK 2.3.0](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/tag/v2.3.0).
-The tools require 4.1.1.2740 and verify the DLL hash automatically.
+[AMD's FidelityFX SDK 2.4.0](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/tag/v2.4.0).
+The tools require 4.1.2.4555 and verify the DLL hash automatically.
 
 ```sh
 git submodule update --init --recursive

@@ -168,7 +168,7 @@ def model_files(manifest):
 def is_int8_nonexact_alias(key):
     if key.startswith("int8/optimized/"):
         return key.split("/")[2] != "exact"
-    return key.startswith("int8/shaders/4.1.1/patched/common/lossy/")
+    return key.startswith("int8/shaders/4.1.2/patched/common/lossy/")
 
 
 def is_int8_vector_only_alias(key):

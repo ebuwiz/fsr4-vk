@@ -694,7 +694,7 @@ void QualityContext::writeStaticDescriptors(Frame& frame) {
         frame, descriptor_set::model_writes, scratch_buffer.buffer, scratch_buffer.size);
     fillStorageBufferDescriptors(
         frame, descriptor_set::model_reads, scratch_buffer.buffer, scratch_buffer.size);
-    // Endpoint t18 reads the selected preset weight bank.
+    // Endpoint t21 reads the selected preset weight bank.
     writeWeightDescriptors(frame, weight_buffer);
 }
 

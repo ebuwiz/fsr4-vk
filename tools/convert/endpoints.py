@@ -3,27 +3,36 @@
 # Copyright (C) 2026 fsr4-vk contributors.
 # See LICENSE in the project root.
 
-"""Convert the SDK 4.1.1 prepass and postpass variants.
+"""Convert the 4.1.2 prepass and postpass color endpoint variants.
 
-Read DLL tables directly and validate each converted shader.
+Each converted shader is validated, and the endpoint tree it consumes has to
+come from the pinned 4.1.2 image (tools/extract/extract.py).
 """
 
+import sys
 from pathlib import Path
 import argparse
 import concurrent.futures
 import hashlib
-import importlib.util
+import json
 import subprocess
 
-SDK_HASH = "d0dcccc74a43c44ba435b7a369b456e0970d8a4464e4bd683119b374f2c9fb46"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "extract"))
+from sdk import ASSET_VERSION, SDK_HASH, SDK_VERSION
 
 
-def endpoint_alias(family, tier, color, flags, preset, pass_index, debug=False):
-    """Map SDK permutations to prepass and postpass asset names."""
+def endpoint_alias(family, tier, color, flags, preset, pass_index, debug=False,
+                   split_postpass=False):
+    """Map SDK permutations to prepass and postpass asset names.
+
+    The postpass name carries a preset directory whenever the SDK dispatch binds
+    different postpass containers for the Ultra Performance branch than for the
+    other presets. The extracted FP8 matrix model uses shared postpasses.
+    """
     family = family.removeprefix("sdk-")
     if family not in ("fp8", "int8") or pass_index not in (0, 26):
         raise ValueError("Unknown endpoint family/pass")
-    root = Path(family) / "shaders/4.1.1/color-endpoints" / str(tier)
+    root = Path(family) / f"shaders/{ASSET_VERSION}/color-endpoints" / str(tier)
     exposure = "auto" if flags & 4 else "external"
     if pass_index == 0:
         motion = (
@@ -34,9 +43,25 @@ def endpoint_alias(family, tier, color, flags, preset, pass_index, debug=False):
         jitter = "jitter.spv" if flags & 8 else "no-jitter.spv"
         return (root / "prepass" / color / motion / exposure / jitter).as_posix()
     root = root / "postpass" / color
-    if family == "int8":
+    if family == "int8" or split_postpass:
         root /= "ultraperf" if preset == 5 else "standard"
     return (root / (exposure + ("-debug.spv" if debug else ".spv"))).as_posix()
+
+
+def split_postpass(extracted, files):
+    """(family, tier) pairs whose postpass branches bind different containers."""
+    branches = {}
+    for path in files:
+        family, tier, color, flags, preset, filename = path.relative_to(extracted).parts
+        if not filename.startswith("pass-26"):
+            continue
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        state = branches.setdefault((family, tier), {})
+        state.setdefault((color, flags, filename), set()).add(digest)
+    return {pair for pair, state in branches.items()
+            if any(len(digests) > 1 for digests in state.values())}
+
+
 
 
 def main():
@@ -52,6 +77,7 @@ def main():
         help="dxil-spirv executable (defaults to the bundled submodule)",
     )
     parser.add_argument("--spirv-val", help="SPIR-V validator (auto-detected by default)")
+    parser.add_argument("--family", choices=("fp8", "int8"), help="convert one model family")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument(
         "--debug-postpass", action="store_const", const=True, default=None,
@@ -72,18 +98,17 @@ def main():
     except ValueError as error:
         parser.error(str(error))
     args.output.mkdir(parents=True)
-    spec = importlib.util.spec_from_file_location(
-        "endpoint_sdk", Path(__file__).resolve().parents[1] / "extract/sdk.py"
-    )
-    sdk = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(sdk)
     extracted = args.sdk
     if not extracted.is_dir():
-        extracted = args.output / "extracted"
-        sdk.extract_endpoints(sdk.SDK(args.sdk), extracted, args.debug_postpass)
-    files = sorted(extracted.rglob("*.dxbc"))
+        parser.error(
+            f"{SDK_VERSION} color endpoint variants have to be extracted first: "
+            "pass the directory written by tools/extract/extract.py, not the DLL"
+        )
+    files = sorted((extracted / ("sdk-" + args.family)).rglob("*.dxbc")
+                   if args.family else extracted.rglob("*.dxbc"))
     if not files:
         parser.error("No extracted endpoint shaders")
+    split = split_postpass(extracted, files)
     aliases, unique = {}, {}
     for path in files:
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -97,7 +122,9 @@ def main():
             5 if preset == "ultraperf" else 1,
             int(Path(filename).stem.split("-")[1]),
             args.debug_postpass is True or filename.endswith("-debug.dxbc"),
+            (family, tier) in split,
         )
+
         if key in aliases and aliases[key] != digest:
             raise ValueError("Endpoint settings cannot be collapsed: " + key)
         aliases[key] = digest
@@ -109,7 +136,7 @@ def main():
         digest, path = item
         output = converted / (digest + ".spv")
         flags = (
-            ["--full-wmma", "1", "1"]
+            ["--full-wmma", "1", "0"]
             if "sdk-fp8" in path.parts
             else ["--enable-shader-i8-dot", "--assume-ssbo-32bit-wrapping"]
         )
@@ -136,6 +163,16 @@ def main():
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         list(pool.map(convert, unique.items()))
+
+    # The converted files are named by their source DXBC digest, so the catalog
+    # can only be validated by name when this sidecar records what each name is.
+    (args.output / "manifest.json").write_text(json.dumps({
+        "schema": 1,
+        "sdk_version": SDK_VERSION,
+        "asset_version": ASSET_VERSION,
+        "converted": len(unique),
+        "aliases": aliases,
+    }, indent=2) + "\n")
 
 
 if __name__ == "__main__":

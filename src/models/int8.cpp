@@ -18,10 +18,6 @@ ShaderVariants::ShaderVariants(const std::filesystem::path& int8_root, bool enab
         return;
     }
 
-    const char* exact = std::getenv("FSR4_VK_INT8_EXACT");
-    if (!exact || std::strcmp(exact, "0") != 0) {
-        profile = "exact";
-    }
 }
 
 std::filesystem::path ShaderVariants::candidate(const std::filesystem::path& original) const {
@@ -41,7 +37,7 @@ std::filesystem::path ShaderVariants::candidate(const std::filesystem::path& ori
 bool hasAssets(const fs::path& root) {
     return fsr4assets::exists(root / "int8" / "1080" / "native" / "pass-00.spv") &&
            fsr4assets::exists(root / "int8" / "auto-exposure.spv") &&
-           fsr4assets::exists(root / "int8/models/4.1.1/weights_standard.bin");
+           fsr4assets::exists(root / "int8/models/4.1.2/weights_standard.bin");
 }
 
 fs::path modelRoot(const fs::path& asset_root) {
@@ -66,24 +62,24 @@ fsr4_411::QualityContextPtr createContext(const fsr4_411::ContextCreateInfo& inf
         .auto_exposure = info.auto_exposure,
         .motion_jitter_cancellation = info.motion_vector_jitter_cancellation,
     };
-    const auto endpoint_root = info.asset_root / "int8/shaders/4.1.1/color-endpoints" /
+    const auto endpoint_root = info.asset_root / "int8/shaders/4.1.2/color-endpoints" /
                                resolutionBucket(info.max_output_width, info.max_output_height);
     const auto standard = selectColorEndpointShaders(
         endpoint_root, ColorSpace::Linear, color_endpoints, PostpassFamily::Standard);
     const auto ultra = selectColorEndpointShaders(
         endpoint_root, ColorSpace::Linear, color_endpoints, PostpassFamily::UltraPerformance);
 
-    const fs::path weights = root / "models/4.1.1/weights_standard.bin";
-    const fs::path ultraperformance_weights = root / "models/4.1.1/weights_ultraperf.bin";
+    const fs::path weights = root / "models/4.1.2/weights_standard.bin";
+    const fs::path ultraperformance_weights = root / "models/4.1.2/weights_ultraperf.bin";
 
     for (const auto& path : {standard.prepass, standard.postpass, ultra.postpass}) {
         if (!fsr4assets::exists(path)) {
-            throw std::runtime_error("missing FSR 4.1.1 INT8 endpoint shader: " + path.string());
+            throw std::runtime_error("missing FSR 4.1.2 INT8 endpoint shader: " + path.string());
         }
     }
 
     if (!fsr4assets::exists(weights) || !fsr4assets::exists(ultraperformance_weights)) {
-        throw std::runtime_error("missing FSR 4.1.1 INT8 weights: " + weights.string());
+        throw std::runtime_error("missing FSR 4.1.2 INT8 weights: " + weights.string());
     }
 
     fsr4runtime::setDiagnosticRoot(info.diagnostic_root);
@@ -125,7 +121,7 @@ fsr4_411::QualityContextPtr createContext(const fsr4_411::ContextCreateInfo& inf
         root / "auto-exposure.spv",
         info.get_device_proc_addr,
         fsr4runtime::ModelRuntimeOptions{
-            .rcas_shader_root = info.asset_root / "common/shaders/4.1.1/rcas",
+            .rcas_shader_root = info.asset_root / "common/shaders/4.1.2/rcas",
             .color_shader_root = endpoint_root,
             .use_wmma = false,
             .use_int8_dispatch = true,

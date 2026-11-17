@@ -61,15 +61,14 @@ inline const std::array<ProviderVersion, 2> kProviderVersions{{
 }};
 
 inline constexpr std::uint64_t kAutoVersionId =
-    (0xF5A5CA1Dull << 32) | ((4ull << 22) | (1ull << 12) | 1ull);
-inline constexpr const char* kAutoVersionName = "4.1.1 Vulkan Auto";
+    (0xF5A5CA1Dull << 32) | ((4ull << 22) | (1ull << 12) | 2ull);
+inline constexpr const char* kAutoVersionName = "4.1.2 Vulkan INT8 (experimental)";
 
 struct AdvertisedVersion {
     std::uint64_t id;
     const char* name;
 };
 
-// Keep the original list indices and IDs stable for existing loader settings.
 inline const std::array<AdvertisedVersion, 3> kAdvertisedVersions{{
     {kAutoVersionId, kAutoVersionName},
     {fsr4int8::kVersionId, fsr4int8::kVersionName},

@@ -1,0 +1,566 @@
+{
+  "schema": 1,
+  "sdk_version": "4.1.2.4555",
+  "source_sha256": "aad4fccccb29084a655f9a4f9f613bd22c8c03fb4a0f8840148cc6543b4ccace",
+  "note": "Semantic labels are pinned to the sha256 of the DXBC container found inside the 4.1.2 image. Every byte comes from the 4.1.2 DLL; this file only carries the human-readable meaning of a blob, and the extractor refuses to run when a pin does not match what the image contains.",
+  "record_stride": 304,
+  "rcas": {
+    "entry": "fsr_rcas_pass",
+    "modes": {
+      "linear": {
+        "dxbc_sha256": "5b56612b47c4e851c7f4835633a43076582b9b2292e8929d772886635f14917e",
+        "size": 9284,
+        "array": 55,
+        "slot": 4
+      },
+      "linear-auto": {
+        "dxbc_sha256": "b34ab51cecbdcbb3f8df6d9aaaea9f8ef5993e9dd356ee7aee82edfb9550e972",
+        "size": 9260,
+        "array": 55,
+        "slot": 0
+      },
+      "nonlinear": {
+        "dxbc_sha256": "598f4535bc5c9d37be39cb4fde133c1ad72db7da40f50511748da4b33c2af329",
+        "size": 8180,
+        "array": 55,
+        "slot": 2
+      },
+      "pq": {
+        "dxbc_sha256": "4d0d96d707fee6e802449c4e708762f871046f63e16047643833cf8287d27878",
+        "size": 9864,
+        "array": 55,
+        "slot": 3
+      },
+      "srgb": {
+        "dxbc_sha256": "be58619b9a9cfdc4616cf2c11a68997775d6012387460de6787c775a6e45e8a9",
+        "size": 9216,
+        "array": 55,
+        "slot": 1
+      }
+    }
+  },
+  "auto_exposure": {
+    "entry": "brw_auto_exposure_texture",
+    "dxbc_sha256": "02628d0fc30c772aa5eb381156bcdd87cdc3434cb79451ed19adef77c54b4b2b",
+    "size": 14952
+  },
+  "weights": {
+    "bank_size": 131072,
+    "rule": "the standard fp8 model payload is copied five times in .rdata at bank spacing with a small alignment drift, and the separate Ultra Performance payload sits in the same block; both are found by hashing those bank-spacing candidates and matching the digests, never by an address",
+    "standard_sha256": "ce1bd5f19d4fc14f857c5fc810def7f45d5a935a62aa2ca5b5a59829a1d6c868",
+    "ultraperf_sha256": "101d91f69e3f6121c2a6eb477ee5cbf6e7bf25f26b65c0a4dcd1ac04e57fe2e8"
+  },
+  "model": {
+    "1080": {
+      "pass0_post": {
+        "record_rva": 57267648,
+        "dxbc_rva": 37063104,
+        "size": 3704,
+        "dxbc_sha256": "b1300775d921f3702d003530cb7ac51045ba5bf76fb765f877bd312a178aacbc"
+      },
+      "pass1": {
+        "record_rva": 57288976,
+        "dxbc_rva": 38197680,
+        "size": 37772,
+        "dxbc_sha256": "2c967a135d470b06667b8277a899379cd4dc5e5d96a34f022d7cbd174ff5cf7e"
+      },
+      "pass10": {
+        "record_rva": 57236416,
+        "dxbc_rva": 34061824,
+        "size": 67056,
+        "dxbc_sha256": "eba060f9a3b8849867defb1524973b6c6349d50c4c6e7aafc1ca26cd9765fa4a"
+      },
+      "pass10_post": {
+        "record_rva": 57309184,
+        "dxbc_rva": 39335088,
+        "size": 3756,
+        "dxbc_sha256": "396f6fb0f24c991ea78cf5bf45cb35cbc606b46cfca8f291223296d1c4b056fd"
+      },
+      "pass11": {
+        "record_rva": 57273024,
+        "dxbc_rva": 29247312,
+        "size": 70356,
+        "dxbc_sha256": "f7751856e2220a292ed50d07defdcb99b2609c6c6d0868da6ded7e9f64d04e93"
+      },
+      "pass11_post": {
+        "record_rva": 57194576,
+        "dxbc_rva": 35966912,
+        "size": 3720,
+        "dxbc_sha256": "fae19b63e3300afe9baa67ac2464082d8287c86d49c93699a6d650636caa044a"
+      },
+      "pass12": {
+        "record_rva": 57248912,
+        "dxbc_rva": 24584576,
+        "size": 37684,
+        "dxbc_sha256": "acbbe13e50f3a8dc76c1d62a6cf153b37199a554e1ad86d9eaaf8949cfecaf99"
+      },
+      "pass12_post": {
+        "record_rva": 57305936,
+        "dxbc_rva": 33235792,
+        "size": 3708,
+        "dxbc_sha256": "9cf2a2d62302ad4f6663b709ab230a11ef7c317d037451a14de791931ade2c37"
+      },
+      "pass1_post": {
+        "record_rva": 57312416,
+        "dxbc_rva": 38970240,
+        "size": 3716,
+        "dxbc_sha256": "388f61b01022d6faa6612072c5d147606d0538351de5cb75e1f36daf0d2f4385"
+      },
+      "pass2": {
+        "record_rva": 57318704,
+        "dxbc_rva": 39597328,
+        "size": 37880,
+        "dxbc_sha256": "0fb5f77c4055e5941bc1458737d094e2b5f43a8205845cc56dfc52ea6eda9d44"
+      },
+      "pass2_post": {
+        "record_rva": 57241744,
+        "dxbc_rva": 36257616,
+        "size": 3708,
+        "dxbc_sha256": "25ef8b73d9b81356fe9bc08bcfcd66a1f0b216d8fed14a8f280e46ecb93f5f19"
+      },
+      "pass3": {
+        "record_rva": 57170944,
+        "dxbc_rva": 26855984,
+        "size": 27236,
+        "dxbc_sha256": "483b5f2ef2b204413fd2b34aef4b8f02b705f6b8ae672e7b13428ad2c3d2467e"
+      },
+      "pass3_post": {
+        "record_rva": 57190880,
+        "dxbc_rva": 32239072,
+        "size": 3752,
+        "dxbc_sha256": "bf98dd4c112b0e0e0e53534b6cfcc38c81fee15284fccdb49ab7d2e0f0e35a18"
+      },
+      "pass4": {
+        "record_rva": 57251520,
+        "dxbc_rva": 37214624,
+        "size": 67080,
+        "dxbc_sha256": "a9c7c76003009060886e51c23b0146543d0ccd4341327110484b3760e59ae1ea"
+      },
+      "pass4_post": {
+        "record_rva": 57275424,
+        "dxbc_rva": 31114112,
+        "size": 3752,
+        "dxbc_sha256": "c738475617fa33ba72f56777bebeb3903e0cf4c06586ca43f40ae33d38bcf01b"
+      },
+      "pass5": {
+        "record_rva": 57233344,
+        "dxbc_rva": 29727232,
+        "size": 67144,
+        "dxbc_sha256": "65a6a021da7be0b14e29eb364dbbbfd564026e4cfc7aa77ccb66241e5f5c13eb"
+      },
+      "pass5_post": {
+        "record_rva": 57250432,
+        "dxbc_rva": 40573328,
+        "size": 3752,
+        "dxbc_sha256": "5082c7d86a2c6c29cb23156374e935fd2138e80265bef8044268c5b4fa9b7553"
+      },
+      "pass6": {
+        "record_rva": 57186720,
+        "dxbc_rva": 34929536,
+        "size": 94308,
+        "dxbc_sha256": "303ab8c566e9cd13a5f610d3b3be93a39abf45f5d06635f252f46f2f0aab2033"
+      },
+      "pass6_post": {
+        "record_rva": 57208864,
+        "dxbc_rva": 32699888,
+        "size": 3812,
+        "dxbc_sha256": "0d67bced764d0b9848cbcfdce5b976d4048384e5cc6bdc280b850e7fad399a24"
+      },
+      "pass7": {
+        "record_rva": 57196224,
+        "dxbc_rva": 32174352,
+        "size": 19476,
+        "dxbc_sha256": "704d10c98104556233d814a86995e9d65a20cf605605aa6894ba65cd06d8b3d5"
+      },
+      "pass7_post": {
+        "record_rva": 57279184,
+        "dxbc_rva": 39247280,
+        "size": 3812,
+        "dxbc_sha256": "0755aa06e5192cc94352a174626cc4ca875c9ddd23cc46cccfb79c11ff3a7b31"
+      },
+      "pass8": {
+        "record_rva": 57185104,
+        "dxbc_rva": 25837632,
+        "size": 19472,
+        "dxbc_sha256": "c4a1f3e840ecbc0467ca6e994c31e5bc39f302b4219c73600cbef7756ea51f5d"
+      },
+      "pass8_post": {
+        "record_rva": 57194896,
+        "dxbc_rva": 26960912,
+        "size": 3808,
+        "dxbc_sha256": "8af1cb7f18b648ee3845c7278b350e64552c011560dbbb9ba4f2a63484ee1e7b"
+      },
+      "pass9": {
+        "record_rva": 57313088,
+        "dxbc_rva": 30858272,
+        "size": 22784,
+        "dxbc_sha256": "321d5b2f3b1146bdcbb2ba809067c6ed0b8818cbfc0561b54446d1bff60d3031"
+      },
+      "pass9_post": {
+        "record_rva": 57208480,
+        "dxbc_rva": 40148208,
+        "size": 3756,
+        "dxbc_sha256": "b64120ed27402e3b0d6b8297d6abff784c5c3bf4ee4629a8c5bfc71657524afc"
+      },
+      "postpass": {
+        "record_rva": 57201120,
+        "dxbc_rva": 34700256,
+        "size": 45976,
+        "dxbc_sha256": "8bc33ccc76fe2fbb9fbf395cf5bf96776420b7d5563c0eb4c49eb9b9a538c2b4"
+      },
+      "prepass": {
+        "record_rva": 57285920,
+        "dxbc_rva": 28521264,
+        "size": 42428,
+        "dxbc_sha256": "05029e1d2cd2bd0223bdc0fc3e868881b2014bbf39dec4deafc771c9a9aa3351"
+      }
+    },
+    "2160": {
+      "pass0_post": {
+        "record_rva": 57242048,
+        "dxbc_rva": 39819568,
+        "size": 3704,
+        "dxbc_sha256": "804e6600286430ea3cfcbe0e35e348ae9854f1c05b16ecb4f3a0d32ce82bccbf"
+      },
+      "pass1": {
+        "record_rva": 57275104,
+        "dxbc_rva": 32609664,
+        "size": 37772,
+        "dxbc_sha256": "6a1c148a62d51b669afd105a8dbdc1d09fe642bbbc556b0b504eac84814be148"
+      },
+      "pass10": {
+        "record_rva": 57244592,
+        "dxbc_rva": 34543136,
+        "size": 67056,
+        "dxbc_sha256": "a9739ce86897363999265c8eea2e3cdb9bbacb267d21ba70ed2105d19ab88535"
+      },
+      "pass10_post": {
+        "record_rva": 57246112,
+        "dxbc_rva": 25943776,
+        "size": 3760,
+        "dxbc_sha256": "b4f94eb9446072fd8c66d5a194ff157ae9c5eef55353ffba1003c3bbe272b5e6"
+      },
+      "pass11": {
+        "record_rva": 57312000,
+        "dxbc_rva": 30943072,
+        "size": 70356,
+        "dxbc_sha256": "636fbe361ae302c56d5d1b567caf8aff7edc2870cba45c6ea0f54ca1fc9822f7"
+      },
+      "pass11_post": {
+        "record_rva": 57189216,
+        "dxbc_rva": 30585856,
+        "size": 3720,
+        "dxbc_sha256": "b2ea12151ccc5533705d31ab45908322088688fb04dcd512559ca2fc72a2b9f9"
+      },
+      "pass12": {
+        "record_rva": 57311360,
+        "dxbc_rva": 30631120,
+        "size": 37684,
+        "dxbc_sha256": "cb8dfb71f2039976a4c773726e576b2b897e772930067afe2efa667667203c37"
+      },
+      "pass12_post": {
+        "record_rva": 57182576,
+        "dxbc_rva": 29677312,
+        "size": 3708,
+        "dxbc_sha256": "defc224d871a470ed381e6c957aa0beee3d6210e0a5b7a3dc702e90789f77088"
+      },
+      "pass1_post": {
+        "record_rva": 57218816,
+        "dxbc_rva": 33049376,
+        "size": 3716,
+        "dxbc_sha256": "395851abb4af2d208ddba08234123d934be1fba608d243577cb6be582492a5d0"
+      },
+      "pass2": {
+        "record_rva": 57248528,
+        "dxbc_rva": 40008224,
+        "size": 37880,
+        "dxbc_sha256": "0dd660cabedc2e40d6fd541d021756f68e34e2f3bdd8ef4547a13b880d77f55d"
+      },
+      "pass2_post": {
+        "record_rva": 57306656,
+        "dxbc_rva": 32341104,
+        "size": 3708,
+        "dxbc_sha256": "35c2404436810d7939d99520f7d59ff0fa9cdffbbb150afa919280ff90aa5ce5"
+      },
+      "pass3": {
+        "record_rva": 57299616,
+        "dxbc_rva": 26001600,
+        "size": 27236,
+        "dxbc_sha256": "10f9e8fe79ff3002d37922d9c64f45286ee7a516f7c00091a2d55e9cc9d67d8f"
+      },
+      "pass3_post": {
+        "record_rva": 57269344,
+        "dxbc_rva": 35872160,
+        "size": 3756,
+        "dxbc_sha256": "2731fa79587de2a70c899280fe658296a872252d73fba27acb80340a049cfc9f"
+      },
+      "pass4": {
+        "record_rva": 57273600,
+        "dxbc_rva": 35395248,
+        "size": 67080,
+        "dxbc_sha256": "6b4bb75c684e491d0d3efbfbeb0da1c4297c8e929572736e55f1409d68f6066e"
+      },
+      "pass4_post": {
+        "record_rva": 57188672,
+        "dxbc_rva": 29681056,
+        "size": 3756,
+        "dxbc_sha256": "a0e9d192a6e3162d071ed373281e528b6bd2f2fbcf72e3cefb8a2d8ba2a8e14c"
+      },
+      "pass5": {
+        "record_rva": 57168304,
+        "dxbc_rva": 27298368,
+        "size": 67144,
+        "dxbc_sha256": "5a1e0c0a1c27f31fc6456e2a778e2644bf43df80473bbb28ac85b5072d6c72c0"
+      },
+      "pass5_post": {
+        "record_rva": 57171424,
+        "dxbc_rva": 24580816,
+        "size": 3756,
+        "dxbc_sha256": "796b00c37faa27bd6eea7b7d7605a8495269fb76e45819b3cab3310f98197573"
+      },
+      "pass6": {
+        "record_rva": 57184000,
+        "dxbc_rva": 31321312,
+        "size": 94312,
+        "dxbc_sha256": "8e896a474c1fd88a0a2482df7ea23ff850c2877c64e0594046d87bc27921b91d"
+      },
+      "pass6_post": {
+        "record_rva": 57218432,
+        "dxbc_rva": 30800048,
+        "size": 3812,
+        "dxbc_sha256": "578439358eec7cce6e691ec886fcbd016b01532c5dfd47ec259a0d4ca757e79c"
+      },
+      "pass7": {
+        "record_rva": 57279504,
+        "dxbc_rva": 26790272,
+        "size": 19476,
+        "dxbc_sha256": "09f582f411fdc76c65d1fb10478848fb96a40a35e4b9542d085a870ce5d9ee8c"
+      },
+      "pass7_post": {
+        "record_rva": 57307024,
+        "dxbc_rva": 39239584,
+        "size": 3812,
+        "dxbc_sha256": "c463e921960e37b78cb9256935005c640f76ccc516ccbff1565066ea34cd4950"
+      },
+      "pass8": {
+        "record_rva": 57258096,
+        "dxbc_rva": 28799056,
+        "size": 19472,
+        "dxbc_sha256": "a39d11d015c38c7aa05a561b24409d0c79d57bdb5009a3e138532b75a8f8221f"
+      },
+      "pass8_post": {
+        "record_rva": 57319328,
+        "dxbc_rva": 34256448,
+        "size": 3812,
+        "dxbc_sha256": "c6a236342dce2371746599a9bbbf56e885afa4f08a090c3df66ac9d94573215e"
+      },
+      "pass9": {
+        "record_rva": 57249232,
+        "dxbc_rva": 37770272,
+        "size": 22788,
+        "dxbc_sha256": "0ab6c0042d1166bc28ab84996fe33113e29d4a17025148c21465c2b69021079f"
+      },
+      "pass9_post": {
+        "record_rva": 57249920,
+        "dxbc_rva": 34886624,
+        "size": 3756,
+        "dxbc_sha256": "642c49e84af1e5a83455203be192f2cd92fa06599407585d303414a9bac48c6e"
+      },
+      "postpass": {
+        "record_rva": 57256720,
+        "dxbc_rva": 40577088,
+        "size": 45976,
+        "dxbc_sha256": "a9f90506b43220065bc362e32ad913c88355eec075ebfd3e3ff656f5b9cf934a"
+      },
+      "prepass": {
+        "record_rva": 57264288,
+        "dxbc_rva": 33476176,
+        "size": 42428,
+        "dxbc_sha256": "fee35122fe834cb56c054cce85a33d8a1e25238101d0735794675ce68999bab4"
+      }
+    },
+    "4320": {
+      "pass0_post": {
+        "record_rva": 57182976,
+        "dxbc_rva": 37861568,
+        "size": 3704,
+        "dxbc_sha256": "246e41833b2523a2ab3d83015d10b7082e70db1d12abe3a3b023a2b8b3bfbe9f"
+      },
+      "pass1": {
+        "record_rva": 57240368,
+        "dxbc_rva": 28340336,
+        "size": 37772,
+        "dxbc_sha256": "68930c5c3dc7cda79a4447facf1f3ea6a1ce0d3572144be6c4b717a768f09a6a"
+      },
+      "pass10": {
+        "record_rva": 57308496,
+        "dxbc_rva": 40323904,
+        "size": 67064,
+        "dxbc_sha256": "c2abd72b165a36346cddf368515556b0df9b717365ec82d0e5e1627803848c67"
+      },
+      "pass10_post": {
+        "record_rva": 57201536,
+        "dxbc_rva": 28224992,
+        "size": 3760,
+        "dxbc_sha256": "b04e60fc00fa668bfb56e535211a960622404d05244844afff0753a511b34b5a"
+      },
+      "pass11": {
+        "record_rva": 57276160,
+        "dxbc_rva": 33769040,
+        "size": 70360,
+        "dxbc_sha256": "a6f91f53f128e03ddef345d610cb0e5419b501e9b8e0138750f3f58fa54db7ff"
+      },
+      "pass11_post": {
+        "record_rva": 57313392,
+        "dxbc_rva": 25061024,
+        "size": 3720,
+        "dxbc_sha256": "17fe0249f2c0ce3cbaef38c29851b5142f116842a3f20c0e1852f13a248e776f"
+      },
+      "pass12": {
+        "record_rva": 57257648,
+        "dxbc_rva": 34260656,
+        "size": 37688,
+        "dxbc_sha256": "1414ea49a93b13d7f1db994515267f372eedf958d2e6907cfea4531ce45e5675"
+      },
+      "pass12_post": {
+        "record_rva": 57247168,
+        "dxbc_rva": 33133616,
+        "size": 3708,
+        "dxbc_sha256": "0e8121209d7e557c7b880a7dd6c814fadf129b6ee879bfce6b276b9b61302a63"
+      },
+      "pass1_post": {
+        "record_rva": 57193632,
+        "dxbc_rva": 38966368,
+        "size": 3716,
+        "dxbc_sha256": "98bdba1d3181bb1e5f28136c704a0f40ff03a94919fb71179975690fa7b25212"
+      },
+      "pass2": {
+        "record_rva": 57251136,
+        "dxbc_rva": 33053104,
+        "size": 37880,
+        "dxbc_sha256": "6e5b570f6902607ce6429321cb5c9b017aaac629ce1bba5b6d5bc57ac6b685f9"
+      },
+      "pass2_post": {
+        "record_rva": 57320032,
+        "dxbc_rva": 24668352,
+        "size": 3708,
+        "dxbc_sha256": "52064368a90dde94b8bdd89b9a657692e1e383af589f2cebca1e908765caa8c1"
+      },
+      "pass3": {
+        "record_rva": 57191184,
+        "dxbc_rva": 26929504,
+        "size": 27236,
+        "dxbc_sha256": "ca0063519adbee88d0973b0778a1c6925ff66cf22219672fcf5a3280e98c9928"
+      },
+      "pass3_post": {
+        "record_rva": 57168640,
+        "dxbc_rva": 36718096,
+        "size": 3756,
+        "dxbc_sha256": "8f4f5908793efb47403d60e3ea3abc1478454ec336d944d9a9c056f5c0703991"
+      },
+      "pass4": {
+        "record_rva": 57306240,
+        "dxbc_rva": 24241184,
+        "size": 67088,
+        "dxbc_sha256": "6c3ec3dbac4bb32df52e6e83d9729fc994b02e6bd0bc9a0ddd33115d0f64132a"
+      },
+      "pass4_post": {
+        "record_rva": 57190240,
+        "dxbc_rva": 35816384,
+        "size": 3756,
+        "dxbc_sha256": "d1a55e34c3c4e44ca8d2df1619eba7e16ff1dedc6aece6fdfff8406176cfc0d0"
+      },
+      "pass5": {
+        "record_rva": 57268992,
+        "dxbc_rva": 40159920,
+        "size": 67152,
+        "dxbc_sha256": "d9a0dabda39b1bf217a59b54e57b47d83442afd7b701c414949773ea905a9e82"
+      },
+      "pass5_post": {
+        "record_rva": 57311680,
+        "dxbc_rva": 28650096,
+        "size": 3756,
+        "dxbc_sha256": "b390152a2e759a52b105db1e8be817833a2cb96b043f07cf3c3c6b595b915dc9"
+      },
+      "pass6": {
+        "record_rva": 57239456,
+        "dxbc_rva": 32246784,
+        "size": 94316,
+        "dxbc_sha256": "662367a18e1e37dc0b386db049222d2886bd1e23e9df7bab20bf6eddcd092805"
+      },
+      "pass6_post": {
+        "record_rva": 57245216,
+        "dxbc_rva": 33231968,
+        "size": 3816,
+        "dxbc_sha256": "0df1aac9c59e37ac1ebdf861c36f5c7f2034e18eeaf1bc91fea2bf670dc234e0"
+      },
+      "pass7": {
+        "record_rva": 57310752,
+        "dxbc_rva": 28153408,
+        "size": 19480,
+        "dxbc_sha256": "8e4404eece569bd71fef2f8a3e06bd4ae092e1153f7d2446a17075a77de6545c"
+      },
+      "pass7_post": {
+        "record_rva": 57278864,
+        "dxbc_rva": 24308320,
+        "size": 3816,
+        "dxbc_sha256": "0b2e72a92899f7c678f4b3daeb379f1f054480df07825e8e88ac30629884dca3"
+      },
+      "pass8": {
+        "record_rva": 57308816,
+        "dxbc_rva": 29964544,
+        "size": 19476,
+        "dxbc_sha256": "fcb92c9f77ac53da2fca26c8a7dd081e8f469c3f81dd3b3906f83268bb7b675a"
+      },
+      "pass8_post": {
+        "record_rva": 57251824,
+        "dxbc_rva": 27188512,
+        "size": 3812,
+        "dxbc_sha256": "057e09cd58d3b4fa9ced079f3b64cac7d06af85fc7e7056b5dbab17e9772e441"
+      },
+      "pass9": {
+        "record_rva": 57242608,
+        "dxbc_rva": 32980768,
+        "size": 22792,
+        "dxbc_sha256": "a99a65a6904b144964f77df0f1df273f256eb91522af4ad9b88731258b440b70"
+      },
+      "pass9_post": {
+        "record_rva": 57250768,
+        "dxbc_rva": 30939104,
+        "size": 3756,
+        "dxbc_sha256": "5437d96e42f4131798f68a45ac0f5278b29331dde635650b42359c76cc92890a"
+      },
+      "postpass": {
+        "record_rva": 57233040,
+        "dxbc_rva": 26168224,
+        "size": 45976,
+        "dxbc_sha256": "5e99c25b1ef33073764e66f9dfdf20961e7fb8045f866b895f40d468e597ea9c"
+      },
+      "prepass": {
+        "record_rva": 57224928,
+        "dxbc_rva": 38330992,
+        "size": 42428,
+        "dxbc_sha256": "a26e9d4159d51463b7c22b681052d43c695c06d73d7c9b2a2fac7d91f5192bf8"
+      }
+    }
+  },
+  "model_rule": "the shipping fp8 model variant is what the pass switch in .text selects for endpoint key 0 of the standard preset branch; tools/extract/modelmap.py decodes it from the image and fp8.py re-checks every entry against it",
+  "dispatchers": {
+    "int8": {
+      "jump_table": 624168,
+      "cases": 27,
+      "program_version": "66000500"
+    },
+    "fp8": {
+      "jump_table": 1051816,
+      "cases": 27,
+      "program_version": "64000500"
+    }
+  },
+  "dispatcher_rule": "the indexed switch matching the RCAS and auto-exposure DXIL format is a reference dispatcher, labelled fp8 historically; the other indexed switch is int8. The actual fp8 matrix dispatcher is extracted separately.",
+  "int8_weights": {
+    "standard_sha256": "a54e552ff69a3f7199861417f7ae461d1f67f636ab532c6ec9d8ea5d2963735a",
+    "ultraperf_sha256": "3c42fc6eabfa9b5b1e489df0e9b2f58e3f9fa22048c584f6839bb27d32a0640e",
+    "rule": "the payload of the reference catalog's int8 model rows, carried byte for byte by this image: five identical 128 KiB copies for the presets that share one model and one separate copy for Ultra Performance, found by the same bank-spacing copy pattern the fp8 weights use and never by an address"
+  }
+}

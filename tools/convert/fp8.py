@@ -68,9 +68,9 @@ def main():
                 "--ssbo-srv",
                 "--full-wmma",
                 "1",
-                "1",
+                "0",
             )
-            run(args.spirv_val, target)
+            run(args.spirv_val, "--target-env", "vulkan1.3", target)
         if (args.input / "initializers.bin").is_file():
             shutil.copy2(
                 args.input / "initializers.bin", destination / "initializers.bin"
@@ -84,7 +84,7 @@ def main():
     convert_exposure(
         args.input / "auto-exposure.dxbc", args.output / "auto-exposure.spv", library
     )
-    run(args.spirv_val, args.output / "auto-exposure.spv")
+    run(args.spirv_val, "--target-env", "vulkan1.3", args.output / "auto-exposure.spv")
 
 
 if __name__ == "__main__":

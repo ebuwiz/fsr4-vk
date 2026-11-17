@@ -455,7 +455,28 @@ bool physicalDeviceSupportsFp8Matrices(VkPhysicalDevice physical_device) {
 
 bool physicalDeviceSupportsFp8(VkPhysicalDevice physical_device) {
     if (!physicalDeviceHasExtension(physical_device, VK_EXT_SHADER_FLOAT8_EXTENSION_NAME) ||
-        !physicalDeviceHasExtension(physical_device, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME)) {
+        !physicalDeviceHasExtension(physical_device, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME) ||
+        !physicalDeviceHasExtension(physical_device, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME)) {
+        return false;
+    }
+
+    VkPhysicalDeviceSubgroupSizeControlProperties subgroup{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES};
+    VkPhysicalDeviceSubgroupProperties subgroup_operations{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+    VkPhysicalDeviceFloatControlsProperties float_controls{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES};
+    VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    properties.pNext = &subgroup;
+    subgroup.pNext = &subgroup_operations;
+    subgroup_operations.pNext = &float_controls;
+    vkGetPhysicalDeviceProperties2(physical_device, &properties);
+    if (properties.properties.apiVersion < VK_API_VERSION_1_3 ||
+        subgroup.minSubgroupSize > 32 || subgroup.maxSubgroupSize < 32 ||
+        !(subgroup.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) ||
+        !(subgroup_operations.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) ||
+        !(subgroup_operations.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT) ||
+        !float_controls.shaderDenormPreserveFloat16) {
         return false;
     }
 
@@ -465,15 +486,39 @@ bool physicalDeviceSupportsFp8(VkPhysicalDevice physical_device) {
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
     VkPhysicalDeviceShaderFloat16Int8Features float16{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES};
+    VkPhysicalDevice8BitStorageFeatures storage8{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES};
+    VkPhysicalDeviceVulkanMemoryModelFeatures memory_model{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES};
+    VkPhysicalDeviceSubgroupSizeControlFeatures subgroup_features{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES};
+    VkPhysicalDeviceBufferDeviceAddressFeatures buffer_address{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
+    VkPhysicalDeviceDescriptorIndexingFeatures descriptor_indexing{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES};
+    VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
 
     features.pNext = &cooperative;
     cooperative.pNext = &float8;
     float8.pNext = &float16;
+    float16.pNext = &storage8;
+    storage8.pNext = &memory_model;
+    memory_model.pNext = &subgroup_features;
+    subgroup_features.pNext = &buffer_address;
+    buffer_address.pNext = &descriptor_indexing;
+    descriptor_indexing.pNext = &descriptor_buffer;
     vkGetPhysicalDeviceFeatures2(physical_device, &features);
 
     return cooperative.cooperativeMatrix && float8.shaderFloat8 &&
-           float8.shaderFloat8CooperativeMatrix && float16.shaderFloat16 &&
+           float8.shaderFloat8CooperativeMatrix && float16.shaderFloat16 && float16.shaderInt8 &&
+           storage8.storageBuffer8BitAccess && memory_model.vulkanMemoryModel &&
+           subgroup_features.subgroupSizeControl && subgroup_features.computeFullSubgroups &&
+           buffer_address.bufferDeviceAddress && descriptor_indexing.runtimeDescriptorArray &&
+           descriptor_buffer.descriptorBuffer && features.features.shaderInt16 &&
+           features.features.shaderStorageImageReadWithoutFormat &&
+           features.features.shaderStorageImageWriteWithoutFormat &&
            physicalDeviceSupportsFp8Matrices(physical_device);
 }
 
@@ -481,13 +526,14 @@ bool physicalDeviceSupportsFp8(VkPhysicalDevice physical_device) {
 
 const ProviderVersion* selectVersion(std::uint64_t id, VkPhysicalDevice physical_device) {
     // An explicit loader version takes precedence over the environment.
-    if (id == kAutoVersionId) {
-        return &kProviderVersions[physicalDeviceSupportsFp8(physical_device) ? 1u : 0u];
-    }
-
-    if (id != 0) {
+    if (id != 0 && id != kAutoVersionId) {
         for (const auto& version : kProviderVersions) {
             if (version.id == id) {
+                if (id == fsr4fp8::kVersionId && !physicalDeviceSupportsFp8(physical_device)) {
+                    diagnosticLine("[fp8] device does not support required FP8 matrices",
+                                   fsr4log::Level::Error);
+                    return nullptr;
+                }
                 return &version;
             }
         }
@@ -501,16 +547,19 @@ const ProviderVersion* selectVersion(std::uint64_t id, VkPhysicalDevice physical
         if (std::strcmp(model, "int8") == 0) {
             return &kProviderVersions[0];
         }
-
         if (std::strcmp(model, "fp8") == 0) {
+            if (!physicalDeviceSupportsFp8(physical_device)) {
+                diagnosticLine("[fp8] device does not support required FP8 matrices",
+                               fsr4log::Level::Error);
+                return nullptr;
+            }
             return &kProviderVersions[1];
         }
 
         return nullptr;
     }
 
-    return physicalDeviceSupportsFp8(physical_device) ? &kProviderVersions[1]
-                                                      : &kProviderVersions[0];
+    return &kProviderVersions[0];
 }
 } // namespace fsr4provider
 

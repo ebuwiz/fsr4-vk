@@ -47,7 +47,7 @@ inline constexpr uint32_t auto_exposure = 512;
 
 namespace model_binding {
 inline constexpr uint32_t layer_count = 12;
-inline constexpr uint32_t weight_binding_base = 18;
+inline constexpr uint32_t weight_binding_base = 21;
 inline constexpr uint32_t scratch_offset_base = 19;
 inline constexpr uint32_t descriptors_per_layer = 2;
 inline constexpr uint32_t weight_offset_word = 1;

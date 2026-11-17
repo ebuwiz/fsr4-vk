@@ -22,7 +22,8 @@ add_custom_target(format-check
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     COMMENT "Checking C/C++ formatting without changing files"
     VERBATIM)
-set(Vulkan_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/third_party/Vulkan-Headers/include")
+set(Vulkan_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/third_party/Vulkan-Headers/include" CACHE PATH
+    "Vulkan headers directory")
 if(NOT EXISTS "${Vulkan_INCLUDE_DIR}/vulkan/vulkan.h")
     message(FATAL_ERROR "Vulkan-Headers is missing. Run git submodule update --init --recursive.")
 endif()
@@ -78,6 +79,14 @@ if(FSR4_SPIRV_VAL)
     list(APPEND overlay_tool_dependencies "${FSR4_SPIRV_VAL}")
 endif()
 set(overlay_header "${FSR4_GENERATED}/diagnostics/overlay_spv.hpp")
+if(NOT FSR4_GLSLANG_VALIDATOR)
+    list(APPEND overlay_tool_dependencies "${CMAKE_SOURCE_DIR}/third_party/glslang/CMakeLists.txt")
+endif()
+if(NOT FSR4_SPIRV_VAL)
+    list(APPEND overlay_tool_dependencies
+        "${CMAKE_SOURCE_DIR}/third_party/SPIRV-Tools/CMakeLists.txt"
+        "${CMAKE_SOURCE_DIR}/third_party/SPIRV-Headers/CMakeLists.txt")
+endif()
 add_custom_command(OUTPUT "${overlay_header}"
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/overlay/build-shader.py"
         --source "${CMAKE_SOURCE_DIR}/src/diagnostics/overlay.comp"
@@ -86,9 +95,6 @@ add_custom_command(OUTPUT "${overlay_header}"
     DEPENDS "${CMAKE_SOURCE_DIR}/src/diagnostics/overlay.comp"
         "${CMAKE_SOURCE_DIR}/tools/overlay/build-shader.py"
         "${CMAKE_SOURCE_DIR}/tools/convert/toolchain.py"
-        "${CMAKE_SOURCE_DIR}/third_party/glslang/CMakeLists.txt"
-        "${CMAKE_SOURCE_DIR}/third_party/SPIRV-Tools/CMakeLists.txt"
-        "${CMAKE_SOURCE_DIR}/third_party/SPIRV-Headers/CMakeLists.txt"
         ${overlay_tool_dependencies}
     COMMENT "Compiling and validating overlay shaders"
     VERBATIM)

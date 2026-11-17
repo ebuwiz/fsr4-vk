@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "extract"))
-from sdk import SDK_HASH
+from sdk import SDK_HASH, SDK_VERSION
 from toolchain import find_tool
 
 
@@ -23,7 +23,8 @@ def main():
     parser.add_argument("--translator")
     args = parser.parse_args()
     metadata = json.loads((args.input / "manifest.json").read_text())
-    if metadata.get("source_sha256") != SDK_HASH:
+    if (metadata.get("source_sha256") != SDK_HASH
+            or metadata.get("sdk_version") not in (None, SDK_VERSION)):
         parser.error("Unsupported RCAS extraction")
     if args.output.exists():
         parser.error("Use a fresh output directory")

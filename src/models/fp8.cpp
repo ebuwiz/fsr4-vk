@@ -9,38 +9,18 @@
 namespace fsr4fp8 {
 using namespace fsr4runtime;
 
-namespace {
-bool hasModelAssets(const std::filesystem::path& root) {
-    return fsr4assets::exists(root / "fp8") ||
-           fsr4assets::exists(root / "fp8" / "1080" / "prepass.spv") ||
-           fsr4assets::exists(root / "prepass.spv");
-}
-
-std::filesystem::path modelBundlePath(const std::filesystem::path& asset_root,
-                                      uint32_t output_width,
-                                      uint32_t output_height) {
-    const char* bucket = fsr4::resolutionBucket(output_width, output_height);
-    return fsr4assets::exists(asset_root / "fp8") ? asset_root / "fp8" / bucket : asset_root;
-}
-
-bool modelUsesWmma(const std::filesystem::path& bundle) {
-    const char* disabled_value = std::getenv("FSR4_VK_DISABLE_WMMA");
-    const bool disabled = disabled_value && std::strcmp(disabled_value, "0") != 0;
-    return !disabled && fsr4assets::exists(bundle / "prepass_wmma.spv") &&
-           fsr4assets::exists(bundle / "postpass_wmma.spv");
-}
-} // namespace
-
 bool hasAssets(const fs::path& root) {
-    return hasModelAssets(root);
+    return fsr4assets::exists(root / "fp8/1080/pass1.spv") &&
+           fsr4assets::exists(root / "fp8/auto-exposure.spv") &&
+           fsr4assets::exists(root / "fp8/models/4.1.2/weights_standard.bin");
 }
 
 fsr4_411::QualityContextPtr createContext(const fsr4_411::ContextCreateInfo& info) {
-    const auto bundle =
-        modelBundlePath(info.asset_root, info.max_output_width, info.max_output_height);
-    const bool use_wmma = modelUsesWmma(bundle);
+    const auto bundle = info.asset_root / "fp8" /
+                        fsr4::resolutionBucket(info.max_output_width, info.max_output_height);
+    const bool use_wmma = true;
 
-    const auto weights = info.asset_root / "fp8/models/4.1.1/weights_standard.bin";
+    const auto weights = info.asset_root / "fp8/models/4.1.2/weights_standard.bin";
 
     setDiagnosticRoot(info.diagnostic_root);
 
@@ -52,9 +32,9 @@ fsr4_411::QualityContextPtr createContext(const fsr4_411::ContextCreateInfo& inf
         info.asset_root / "fp8" / "auto-exposure.spv",
         info.get_device_proc_addr,
         ModelRuntimeOptions{
-            .rcas_shader_root = info.asset_root / "common/shaders/4.1.1/rcas",
+            .rcas_shader_root = info.asset_root / "common/shaders/4.1.2/rcas",
             .color_shader_root =
-                info.asset_root / "fp8/shaders/4.1.1/color-endpoints" /
+                info.asset_root / "fp8/shaders/4.1.2/color-endpoints" /
                 fsr4::resolutionBucket(info.max_output_width, info.max_output_height),
             .use_wmma = use_wmma,
             .use_int8_dispatch = false,
@@ -62,7 +42,7 @@ fsr4_411::QualityContextPtr createContext(const fsr4_411::ContextCreateInfo& inf
             .execute_padding_passes = use_wmma,
             .direct_display_motion_vectors = use_wmma && info.high_resolution_motion_vectors,
             .ultraperformance_model_data_path =
-                info.asset_root / "fp8/models/4.1.1/weights_ultraperf.bin",
+                info.asset_root / "fp8/models/4.1.2/weights_ultraperf.bin",
             .color_endpoints =
                 {
                     .render_resolution_motion = !info.high_resolution_motion_vectors,

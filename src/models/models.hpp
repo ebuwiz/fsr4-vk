@@ -82,8 +82,8 @@ enum class PassDependency;
 namespace fsr4fp8 {
 namespace fs = std::filesystem;
 
-inline constexpr uint64_t kVersionId = (0xF5A5CA1Eull << 32) | ((4ull << 22) | (1ull << 12) | 1ull);
-inline constexpr const char* kVersionName = "4.1.1 Vulkan FP8";
+inline constexpr uint64_t kVersionId = (0xF5A5CA1Eull << 32) | ((4ull << 22) | (1ull << 12) | 2ull);
+inline constexpr const char* kVersionName = "4.1.2 Vulkan FP8 (experimental)";
 
 bool hasAssets(const fs::path& root);
 fsr4_411::QualityContextPtr createContext(const fsr4_411::ContextCreateInfo& info);
@@ -100,8 +100,8 @@ passDependency(uint32_t pass_index, uint32_t next_pass_index, bool use_wmma);
 namespace fsr4int8 {
 namespace fs = std::filesystem;
 
-inline constexpr uint64_t kVersionId = (0xF5A5CA1Full << 32) | ((4ull << 22) | (1ull << 12) | 1ull);
-inline constexpr const char* kVersionName = "4.1.1 Vulkan INT8";
+inline constexpr uint64_t kVersionId = (0xF5A5CA1Full << 32) | ((4ull << 22) | (1ull << 12) | 2ull);
+inline constexpr const char* kVersionName = "4.1.2 Vulkan INT8 (experimental)";
 
 const char* resolutionBucket(uint32_t output_width, uint32_t output_height);
 

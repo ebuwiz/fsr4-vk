@@ -52,10 +52,12 @@ def validate_extraction(directory):
     sdk = load("workflow_sdk", ROOT / "tools/extract/sdk.py")
     if (not metadata.get("complete") or metadata.get("model") != "all"
             or metadata.get("source_sha256") != sdk.SDK_HASH):
-        raise ValueError("Run extract.py for a complete SDK 4.1.1 extraction first")
-    for family in ("fp8", "int8"):
+        raise ValueError("Run extract.py for a complete SDK 4.1.2 extraction first")
+    fp8_endpoints = (directory / "fp8" / "endpoints" if metadata.get("fp8_matrix_model")
+                     else directory / "endpoints")
+    for family, root in (("fp8", fp8_endpoints), ("int8", directory / "endpoints")):
         for tier in sdk.TIERS:
-            if not (directory / "endpoints" / ("sdk-" + family) / tier).is_dir():
+            if not (root / ("sdk-" + family) / tier).is_dir():
                 raise ValueError("Extraction is missing " + family + " " + tier
                                  + " endpoints; rerun extract.py in a fresh directory")
     actual = {

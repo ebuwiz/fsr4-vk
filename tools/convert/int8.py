@@ -3,7 +3,7 @@
 # Copyright (C) 2026 fsr4-vk contributors.
 # See LICENSE in the project root.
 
-"""Convert extracted FSR 4.1.1 INT8 shaders to SPIR-V, reusing identical shaders."""
+"""Convert extracted FSR 4.1.2 INT8 shaders to SPIR-V, reusing identical shaders."""
 
 import argparse
 import errno
@@ -28,6 +28,15 @@ def digest(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             value.update(block)
     return value.hexdigest()
+
+def sdk_format(input: Path) -> str:
+    """The SDK version an extraction says its shaders came from."""
+    try:
+        version = json.loads((input / "manifest.json").read_text())["sdk_version"]
+    except (OSError, ValueError, KeyError):
+        version = "unknown"
+    return f"FSR {version} INT8"
+
 
 def main() -> None:
     from toolchain import find_tool
@@ -149,7 +158,7 @@ def main() -> None:
     manifest = {
         "schema": 1,
         "source": str(args.input),
-        "format": "FSR 4.1.1 INT8",
+        "format": sdk_format(args.input),
         "translator_flags": [
             "--bindless",
             "--ssbo-uav",

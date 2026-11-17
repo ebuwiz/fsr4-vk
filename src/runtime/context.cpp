@@ -587,7 +587,7 @@ void QualityContext::configureModelPipelines(const fs::path& shader_dir,
 
     model_pipeline_plan = plan;
     color_wave32 = {plan.require_wave32.front(), plan.require_wave32[passes.size() - 1]};
-    log(std::string("[shader-source] source=") + "original version=4.1.1 model=" +
+    log(std::string("[shader-source] source=") + "original version=4.1.2 model=" +
         (model_pass_policy.model_name ? model_pass_policy.model_name
          : use_int8_dispatch          ? "int8"
                                       : "fp8"));

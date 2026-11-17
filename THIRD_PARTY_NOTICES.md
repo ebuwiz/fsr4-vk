@@ -6,19 +6,17 @@ retains its applicable terms, copyright notices and attribution.
 
 ## AMD FidelityFX SDK: shader and model assets
 
-The FSR 4.1.1 shaders, weights and initializers originate from
+The FSR 4.1.2 shaders and weights are extracted from
 `Kits/FidelityFX/signedbin/amd_fidelityfx_upscaler_dx12.dll` in
-[SDK 2.3.0](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/tag/v2.3.0),
-commit `60f4ea81909200d8542eca14dccb2628b763a9a3`. The official release DLL was
-verified against the extractor's required version **4.1.1.2740** and SHA-256:
+[SDK 2.4.0](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/tag/v2.4.0).
+The extractor requires version **4.1.2.4555** and SHA-256:
 
 ```text
-d0dcccc74a43c44ba435b7a369b456e0970d8a4464e4bd683119b374f2c9fb46
+aad4fccccb29084a655f9a4f9f613bd22c8c03fb4a0f8840148cc6543b4ccace
 ```
 
-The [SDK licence at that commit](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/60f4ea81909200d8542eca14dccb2628b763a9a3/Kits/FidelityFX/docs/license.md)
-explicitly includes this DLL in the list of MIT-licensed exceptions. A complete,
-unmodified copy is in [LICENSES/AMD-FidelityFX-SDK-license.md](LICENSES/AMD-FidelityFX-SDK-license.md).
+The [SDK 2.4.0 licence](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/v2.4.0/Kits/FidelityFX/docs/license.md)
+explicitly includes this DLL in the list of MIT-licensed exceptions.
 The applicable MIT copyright and permission notice is also reproduced in
 [LICENSES/AMD-FidelityFX-SDK-MIT.md](LICENSES/AMD-FidelityFX-SDK-MIT.md).
 The SDK's restrictive default is not the licence for this explicitly listed DLL.
@@ -27,8 +25,8 @@ The SDK's restrictive default is not the licence for this explicitly listed DLL.
 
 The headers under `third_party/fidelityfx-api/` were imported from FidelityFX SDK
 commit `01446e6a74888bf349652fcf2cbf5f642d30c2bf`. They retain their inline AMD MIT
-notices. These older header sources are separate from the SDK 2.3.0 DLL used
-for the 4.1.1 shader/model assets; it is not an attribution of those assets to
+notices. These older header sources are separate from the SDK 2.4.0 DLL used
+for the 4.1.2 shader/model assets; it is not an attribution of those assets to
 SDK 2.0.0.
 
 AMD, FidelityFX and FSR are trademarks of Advanced Micro Devices, Inc. This

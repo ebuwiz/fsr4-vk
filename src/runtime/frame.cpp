@@ -840,7 +840,7 @@ void recordModelPasses(const FrameRecordingInfo& recording) {
         !recording.model_policy || !recording.model_policy->dispatch_size ||
         !recording.model_policy->dependency ||
         (recording.model_policy->postpass_updates_exposure && !recording.auto_exposure_texture)) {
-        throw std::invalid_argument("incomplete FSR 4.1.1 frame recording arguments");
+        throw std::invalid_argument("incomplete FSR 4.1.2 frame recording arguments");
     }
 
     // Restore the layouts expected by prepass.

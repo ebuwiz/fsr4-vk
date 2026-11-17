@@ -1,17 +1,15 @@
 # AMD FidelityFX SDK: applicable MIT notice
 
-The SDK 2.3.0 licence at commit
-`60f4ea81909200d8542eca14dccb2628b763a9a3` explicitly lists
+The [SDK 2.4.0 licence](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/v2.4.0/Kits/FidelityFX/docs/license.md) explicitly lists
 `Kits\FidelityFX\signedbin\amd_fidelityfx_upscaler_dx12.dll` as an MIT-licensed
-exception. Our 4.1.1 shader/model material comes from that DLL; the bundled FFX
+exception. Our 4.1.2 shader/model material comes from that DLL; the bundled FFX
 headers also retain inline MIT notices. The AMD notice below is preserved for
-redistribution. The [complete upstream licence and exception list](AMD-FidelityFX-SDK-license.md)
-is supplied alongside it; see [third-party notices](../THIRD_PARTY_NOTICES.md)
+redistribution. See [third-party notices](../THIRD_PARTY_NOTICES.md)
 for the DLL hash, attribution and local adaptations.
 
 ## MIT notice
 
-Copyright © 2025 Advanced Micro Devices, Inc.
+Copyright (C) Advanced Micro Devices, Inc. All rights reserved.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files(the "Software"), to deal

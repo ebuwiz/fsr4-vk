@@ -46,7 +46,7 @@ void QualityContext::prepareRcas(VkCommandBuffer command_buffer,
         const auto path =
             rcas_shader_root / rcasShaderName(color_space, exposure.view != VK_NULL_HANDLE);
         pipeline = createComputePipeline(readSpirv(path), true);
-        log("[rcas] SDK4.1.1 shader=" + path.string() + " tile=4x64 wave=32");
+        log("[rcas] SDK4.1.2 shader=" + path.string() + " tile=4x64 wave=32");
     }
     frame.rcas_pipeline = pipeline;
     frame.rcas_dispatch = {fsr4::divideUp(output.width, cached.output_tile.width),
