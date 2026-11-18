@@ -176,6 +176,44 @@ void checkDeviceClass(const char* spelling, bool expected_pin, bool expected_ans
     }
 }
 
+// One requested version id: what the shared table says it asks for, and - for the
+// ids that leave the choice to the device - which rung the ladder then lands on for a
+// device that refuses INT8. That second half is the whole point: the reference DLL's
+// id used to mean "strict FP8", so on such a device the app got no upscaler at all.
+std::size_t version_failures = 0;
+
+void checkVersionId(const char* case_name,
+                    std::uint64_t requested_id,
+                    const char* expected_choice,
+                    const std::string& expected_ladder,
+                    const char* device_case,
+                    const fsr4vk::GpuCapabilities& device) {
+    const auto requested = fsr4vk::requestedModel(requested_id);
+    const bool answered = requested.has_value();
+    std::string actual_choice = "refused";
+    if (answered) {
+        actual_choice = *requested == fsr4vk::ModelChoice::Auto ? "auto"
+                        : (*requested == fsr4vk::ModelChoice::ForceInt8 ? "int8" : "fp8");
+    }
+    const bool choice_ok = actual_choice == expected_choice;
+
+    // Only a request that leaves the model to the device reaches the ladder; a strict
+    // pin is answered by resolveModel itself, so "none" below is resolveModel's own
+    // refusal of a pin the device cannot run, not a probe artefact.
+    const auto resolved = fsr4vk::resolveModel(device, answered ? *requested : fsr4vk::ModelChoice::Auto);
+    const std::string actual_ladder = resolved.chosen ? fsr4vk::modelName(*resolved.chosen) : "none";
+    const bool ladder_ok = actual_ladder == expected_ladder;
+
+    std::cout << "  synthetic_version_id case=" << case_name << " id=0x" << std::hex
+              << requested_id << std::dec << " asks=" << actual_choice << " expected_asks="
+              << expected_choice << " device=" << device_case << " verdict=" << actual_ladder
+              << " expected=" << expected_ladder << " ok=" << std::boolalpha
+              << (choice_ok && ladder_ok) << '\n';
+    if (!choice_ok || !ladder_ok) {
+        ++version_failures;
+    }
+}
+
 } // namespace
 
 int main() {
@@ -522,9 +560,52 @@ int main() {
         std::cout << "  synthetic_identity failures=" << identity_failures << '\n';
     }
 
+    // Requested FFX API version ids, on a device that refuses INT8's own SPIR-V
+    // capabilities - the shape of a low-entry AMD APU, fabricated because this machine
+    // has none. The vendor id is the reference DLL's own published id (measured: the
+    // only FFX-packed version id in that image, one 8-byte word at .text 0x10b0), and
+    // it must select no model: it is the case where a strict reading cost the app its
+    // upscaler, while a strict INT8 pin on the same device must still refuse loudly.
+    {
+        auto int8_refusing = syntheticHost();
+        int8_refusing.vulkan13.shaderIntegerDotProduct = VK_FALSE;
+
+        checkVersionId("vendor_id_names_no_model", fsr4vk::kVendorVersionId, "auto", "fp8",
+                       "int8_refusing", int8_refusing);
+        checkVersionId("auto_id_names_no_model", fsr4vk::kAutoVersionId, "auto", "fp8",
+                       "int8_refusing", int8_refusing);
+        checkVersionId("no_id_at_all", 0, "auto", "fp8", "int8_refusing", int8_refusing);
+        checkVersionId("strict_int8_pin_refuses", fsr4vk::kInt8VersionId, "int8", "none",
+                       "int8_refusing", int8_refusing);
+        checkVersionId("strict_fp8_pin_runs", fsr4vk::kFp8VersionId, "fp8", "fp8",
+                       "int8_refusing", int8_refusing);
+        checkVersionId("unknown_id_refused", fsr4vk::kVendorVersionId + 1, "refused", "fp8",
+                       "int8_refusing", int8_refusing);
+        checkVersionId("reference_id_of_other_build", 0xF5A5CA1Eull << 32 | (3ull << 22), "refused",
+                       "fp8", "int8_refusing", int8_refusing);
+
+        // The other half of the same mistake: a driver that runs INT8 happily but has
+        // no float8 path at all. Read as a strict FP8 pin, the reference DLL's id made
+        // such a device get no upscaler even though INT8 was available; read as a
+        // device-chosen request it lands on INT8, while an explicit FP8 pin still has
+        // to refuse rather than quietly swap models behind the caller.
+        auto fp8_blocked = syntheticHost();
+        fp8_blocked.shader_float8.shaderFloat8 = VK_FALSE;
+        fp8_blocked.shader_float8.shaderFloat8CooperativeMatrix = VK_FALSE;
+
+        checkVersionId("vendor_id_over_fp8_blocked_device", fsr4vk::kVendorVersionId, "auto",
+                       "int8", "fp8_blocked", fp8_blocked);
+        checkVersionId("strict_int8_pin_runs_there", fsr4vk::kInt8VersionId, "int8", "int8",
+                       "fp8_blocked", fp8_blocked);
+        checkVersionId("strict_fp8_pin_still_refuses", fsr4vk::kFp8VersionId, "fp8", "none",
+                       "fp8_blocked", fp8_blocked);
+
+        std::cout << "  synthetic_version_id failures=" << version_failures << '\n';
+    }
+
     // The devices enumerated here die with the instance, and the cache keys
     // itself on those handles, so it is dropped before the instance goes away.
     fsr4vk::clearCapabilityCache();
     vkDestroyInstance(instance, nullptr);
-    return ladder_failures + identity_failures == 0 ? 0 : 1;
+    return ladder_failures + identity_failures + version_failures == 0 ? 0 : 1;
 }

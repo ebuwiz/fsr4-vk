@@ -5,8 +5,9 @@
 #pragma once
 
 #include "assets/assets.hpp"
-#include "runtime/resources.hpp"
 #include "runtime/color-space.hpp"
+#include "runtime/gpu-capabilities.hpp"
+#include "runtime/resources.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -82,7 +83,12 @@ enum class PassDependency;
 namespace fsr4fp8 {
 namespace fs = std::filesystem;
 
-inline constexpr uint64_t kVersionId = (0xF5A5CA1Eull << 32) | ((4ull << 22) | (1ull << 12) | 2ull);
+// The id, and what asking for it means, live in runtime/gpu-capabilities.hpp next to
+// ModelChoice::ForceFp8 so one table drives both the provider's registry and the model
+// ladder. Note the number is this project's own: 0xF5A5CA1E_01001002 is the reference
+// DLL's single published id and stays model-agnostic, which is why a strict FP8 pin
+// could not keep using it.
+inline constexpr uint64_t kVersionId = fsr4vk::kFp8VersionId;
 inline constexpr const char* kVersionName = "4.1.2 Vulkan FP8 (experimental)";
 
 bool hasAssets(const fs::path& root);
@@ -100,7 +106,7 @@ passDependency(uint32_t pass_index, uint32_t next_pass_index, bool use_wmma);
 namespace fsr4int8 {
 namespace fs = std::filesystem;
 
-inline constexpr uint64_t kVersionId = (0xF5A5CA1Full << 32) | ((4ull << 22) | (1ull << 12) | 2ull);
+inline constexpr uint64_t kVersionId = fsr4vk::kInt8VersionId;
 inline constexpr const char* kVersionName = "4.1.2 Vulkan INT8 (experimental)";
 
 const char* resolutionBucket(uint32_t output_width, uint32_t output_height);

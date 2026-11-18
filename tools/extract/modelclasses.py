@@ -49,6 +49,14 @@ so the constructor sites are enumerable as addresses without touching `.reloc` -
 runs carry an RTTI static-type pointer, consistent with the 0 referenced names, so no
 constructor can be labelled by reading this file; the names give the vocabulary, and only
 `.reloc`-aware disassembly or Windows runtime observation would tie a site to a variant.
+
+What *is* actionable sits one level up, and the census is what makes it visible: the
+reference DLL publishes a single FFX API version id - `0xF5A5CA1E_01001002`, the only FFX-
+packed version word in the whole image - and every provider class named above lives behind
+it. So that id cannot name a model, and this project reads it as a device-chosen request
+through `fsr4vk::requestedModel` rather than as a strict FP8 pin; `--expect-rtti-names`/
+`--expect-provider-variants` here and the probe's version-id gates are what keep the two
+accounts of that id from drifting apart.
 """
 
 import argparse

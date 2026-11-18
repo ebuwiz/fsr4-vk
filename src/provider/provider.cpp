@@ -205,14 +205,24 @@ ffxReturnCode_t createContext(ffxContext* context,
 
     {
         const char* environment_model = std::getenv("FSR4_VK_MODEL");
+        const bool auto_request = fsr4vk::requestedModel(requested_version).value_or(
+                                      fsr4vk::ModelChoice::Auto) == fsr4vk::ModelChoice::Auto;
         const char* source =
-            requested_version != 0
-                ? "loader"
-                : (environment_model && *environment_model ? "environment" : "automatic");
+            requested_version == 0
+                ? "auto"
+                : (auto_request ? (requested_version == fsr4vk::kVendorVersionId
+                                       ? "loader-vendor-id"
+                                       : "loader-auto-id")
+                                : "loader");
+        const char* model_env = environment_model && *environment_model ? environment_model : "";
         std::ostringstream selection;
         selection << "[model] selection source=" << source << " requested_id=0x" << std::hex
                   << requested_version << " selected_id=0x" << version->id << std::dec
-                  << " selected='" << version->name << "' reason=" << selection_reason;
+                  << " selected='" << version->name << "'"
+                  << (model_env && *model_env
+                          ? std::string(" FSR4_VK_MODEL=\"") + model_env + "\""
+                          : "")
+                  << " reason=" << selection_reason;
         diagnostic(*provider, selection.str());
     }
 
@@ -367,18 +377,23 @@ std::uint64_t requestedVersionId(const ffxApiHeader* header) {
 const ProviderVersion* selectVersion(std::uint64_t id,
                                      const fsr4vk::GpuCapabilities& capabilities,
                                      std::string& selection_reason) {
-    // The model choice comes from the loader override, then FSR4_VK_MODEL, then
-    // auto. An override that no provider advertises is rejected outright.
+    // What a requested id *means* is one table, fsr4vk::requestedModel, asserted at
+    // compile time where it is written and gated at run time by tools/cap-probe.cpp.
+    // A strict pin (this provider's own INT8/FP8 ids) is answered strictly and beats
+    // FSR4_VK_MODEL; the reference DLL's id names no model at all, because that image
+    // fronts INT8, Lite and Navi2 providers under one id and picks per device - so it
+    // walks the ladder like an auto request, which is the difference between upscaling
+    // on a weak AMD APU and refusing to start. An id neither table knows is refused.
     auto model = fsr4vk::ModelChoice::Auto;
+    const auto requested = fsr4vk::requestedModel(id);
 
-    if (id != 0 && id != kAutoVersionId) {
-        if (id != fsr4int8::kVersionId && id != fsr4fp8::kVersionId) {
-            selection_reason = "no provider advertises the requested version id";
-            return nullptr;
-        }
+    if (!requested) {
+        selection_reason = "no provider advertises the requested version id";
+        return nullptr;
+    }
 
-        model = id == fsr4int8::kVersionId ? fsr4vk::ModelChoice::ForceInt8
-                                           : fsr4vk::ModelChoice::ForceFp8;
+    if (*requested != fsr4vk::ModelChoice::Auto) {
+        model = *requested;
     } else if (const char* value = std::getenv("FSR4_VK_MODEL"); value && *value) {
         const auto parsed = fsr4vk::parseModelChoice(value);
 

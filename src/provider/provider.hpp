@@ -78,19 +78,29 @@ inline const std::array<ProviderVersion, 2> kProviderVersions{{
     {fsr4fp8::kVersionId, fsr4fp8::kVersionName, fsr4fp8::hasAssets, fsr4fp8::createContext},
 }};
 
-inline constexpr std::uint64_t kAutoVersionId =
-    (0xF5A5CA1Dull << 32) | ((4ull << 22) | (1ull << 12) | 2ull);
-inline constexpr const char* kAutoVersionName = "4.1.2 Vulkan INT8 (experimental)";
+// The auto entry is this provider's own id; the vendor entry below is the reference
+// DLL's id, spelled so a host can see that neither one commits to a model.
+inline constexpr const char* kAutoVersionName = "4.1.2 Vulkan (auto, model chosen per device)";
+
+// The ids themselves live with the model choice each one selects, in
+// runtime/gpu-capabilities.hpp, so this registry and the INT8 -> FP8 ladder cannot
+// drift apart - both read fsr4vk::requestedModel.
+//
+// The vendor entry is advertised on purpose: it is the id the reference DLL publishes,
+// and a host that pins it is asking for "the 4.1.2 FSR4 upscaler", which this provider
+// answers by choosing the model per device rather than by refusing or forcing FP8.
+inline constexpr const char* kVendorVersionName = "4.1.2 Vulkan (reference id, model chosen per device)";
 
 struct AdvertisedVersion {
     std::uint64_t id;
     const char* name;
 };
 
-inline const std::array<AdvertisedVersion, 3> kAdvertisedVersions{{
-    {kAutoVersionId, kAutoVersionName},
-    {fsr4int8::kVersionId, fsr4int8::kVersionName},
-    {fsr4fp8::kVersionId, fsr4fp8::kVersionName},
+inline const std::array<AdvertisedVersion, 4> kAdvertisedVersions{{
+    {fsr4vk::kAutoVersionId, kAutoVersionName},
+    {fsr4vk::kInt8VersionId, fsr4int8::kVersionName},
+    {fsr4vk::kFp8VersionId, fsr4fp8::kVersionName},
+    {fsr4vk::kVendorVersionId, kVendorVersionName},
 }};
 
 

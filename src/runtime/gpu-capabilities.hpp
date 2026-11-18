@@ -59,6 +59,55 @@ enum class MatrixProbeRoute : std::uint8_t { Unprobed, DynamicLookup, HostInstan
 // never swapped for another model behind the caller's back (see resolveModel).
 std::optional<ModelChoice> parseModelChoice(const char* value);
 
+// Version ids, and what a requested one asks for. Every id here packs the same
+// build half - 4.1.2 as (4 << 22) | (1 << 12) | 2 - and differs only in the high
+// half, which is the FFX API's per-module number.
+//
+// One of those ids is not ours, and the difference decides whether an app gets an
+// upscaler at all. Measured on the pinned reference DLL, 0xF5A5CA1E 01001002 is the
+// *only* FFX-packed version id in that image: a single 8-byte word, at .text 0x10b0,
+// with no other prefix in that family anywhere in the file. The same image carries
+// both quantizations' weight banks (6 INT8 + 6 FP8, per modeltables.py) and the
+// INT8, Lite and Navi2 provider classes that modelclasses.py censuses - so that id
+// names "the 4.1.2 FSR4 upscaler", and the reference implementation picks which model
+// to run under it, per device. Treating it as a strict FP8 pin is what refused a weak
+// device outright, on the exact capabilities the INT8 -> FP8 ladder exists for.
+constexpr std::uint64_t kModelBuildId = (4ull << 22) | (1ull << 12) | 2ull;
+constexpr std::uint64_t kVendorVersionId = 0xF5A5CA1Eull << 32 | kModelBuildId;
+constexpr std::uint64_t kAutoVersionId = 0xF5A5CA1Dull << 32 | kModelBuildId;
+constexpr std::uint64_t kInt8VersionId = 0xF5A5CA1Full << 32 | kModelBuildId;
+// Deliberately not 0xF5A5CA1E: that number is the reference DLL's own id and has to
+// stay model-agnostic, so a strict FP8 pin needed a number of its own.
+constexpr std::uint64_t kFp8VersionId = 0xF5A5CA20ull << 32 | kModelBuildId;
+
+// What a requested version id asks for, before any device is consulted; nullopt means
+// this provider refuses the request rather than guessing a model for it, exactly as an
+// unsupported FSR4_VK_MODEL value does. One table, read by the provider's selectVersion
+// and by the probe's gates, so neither can drift from the other.
+constexpr std::optional<ModelChoice> requestedModel(std::uint64_t requested) {
+    if (requested == 0 || requested == kAutoVersionId || requested == kVendorVersionId) {
+        return ModelChoice::Auto;
+    }
+    if (requested == kInt8VersionId) {
+        return ModelChoice::ForceInt8;
+    }
+    if (requested == kFp8VersionId) {
+        return ModelChoice::ForceFp8;
+    }
+    return std::nullopt;
+}
+
+// The regression this table exists for, enforced where it is written: the reference
+// DLL's id must never name a model, while both private pins must stay strict and an
+// unknown id must stay a refusal.
+static_assert(requestedModel(kVendorVersionId).value() == ModelChoice::Auto);
+static_assert(requestedModel(kAutoVersionId).value() == ModelChoice::Auto);
+static_assert(requestedModel(0).value() == ModelChoice::Auto);
+static_assert(requestedModel(kInt8VersionId).value() == ModelChoice::ForceInt8);
+static_assert(requestedModel(kFp8VersionId).value() == ModelChoice::ForceFp8);
+static_assert(!requestedModel(kVendorVersionId + 1).has_value());
+static_assert(kVendorVersionId != kFp8VersionId && kVendorVersionId != kInt8VersionId);
+
 struct GpuCapabilities {
     // Identity ------------------------------------------------------------
     VkPhysicalDeviceProperties properties{};
