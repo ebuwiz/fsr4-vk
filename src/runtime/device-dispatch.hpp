@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <initializer_list>
 #include <stdexcept>
 #include <string>
@@ -15,6 +16,25 @@
 
 namespace fsr4vk {
 
+// How descriptors reach a shader. Every resource the converted shaders touch is
+// a runtime array in one of six sets whose only binding sits at index 0, which
+// conventional descriptor sets express natively: the choice is transport, not
+// vocabulary. DescriptorBuffers keeps today's path, where vkGetDescriptorEXT
+// writes descriptor bytes into a mapped buffer, the frame binds that buffer and
+// offsets one set per stride. DescriptorSets pays for a pool plus 64 frame slots
+// times 6 sets and a descriptor update per frame, and in exchange runs on a host
+// that never heard of VK_EXT_descriptor_buffer. No shader asks for anything the
+// extension adds, so neither transport changes a byte of the shipped assets.
+enum class DescriptorBackend : std::uint8_t {
+    DescriptorBuffers,
+    DescriptorSets,
+};
+
+inline const char* descriptorBackendName(DescriptorBackend backend) {
+    return backend == DescriptorBackend::DescriptorBuffers ? "descriptor-buffer"
+                                                          : "descriptor-set";
+}
+
 // One row per device function group: the promoted spelling and the extension
 // spelling, with a null khr when there is no alternative. The runtime resolves
 // this table in DeviceDispatch::load and the provider's contract check walks
@@ -22,17 +42,21 @@ namespace fsr4vk {
 // functions the provider promised. They used to be three separately worded
 // lists - the capability table, DeviceDispatch's literals and five hand-written
 // lookups in createDescriptorLayouts - and nothing stopped them from drifting.
+// The third field marks rows that only the descriptor-buffer transport calls.
+// A sets backend does not resolve them, so a host without the extension is not
+// refused for functions it was never going to reach.
 struct EntryPointGroup {
     const char* core = nullptr;
     const char* khr = nullptr;
+    bool needs_descriptor_buffers = false;
 };
 
 constexpr EntryPointGroup kRequiredEntryPointGroups[] = {
-    {"vkGetDescriptorEXT", nullptr},
-    {"vkCmdBindDescriptorBuffersEXT", nullptr},
-    {"vkCmdSetDescriptorBufferOffsetsEXT", nullptr},
-    {"vkGetDescriptorSetLayoutSizeEXT", nullptr},
-    {"vkGetDescriptorSetLayoutBindingOffsetEXT", nullptr},
+    {"vkGetDescriptorEXT", nullptr, true},
+    {"vkCmdBindDescriptorBuffersEXT", nullptr, true},
+    {"vkCmdSetDescriptorBufferOffsetsEXT", nullptr, true},
+    {"vkGetDescriptorSetLayoutSizeEXT", nullptr, true},
+    {"vkGetDescriptorSetLayoutBindingOffsetEXT", nullptr, true},
     {"vkCmdPipelineBarrier2", "vkCmdPipelineBarrier2KHR"},
     {"vkCmdWriteTimestamp2", "vkCmdWriteTimestamp2KHR"},
     {"vkGetBufferDeviceAddress", "vkGetBufferDeviceAddressKHR"},
@@ -52,6 +76,16 @@ constexpr const size_t kRowGetDescriptorSetLayoutBindingOffset = 4;
 constexpr const size_t kRowPipelineBarrier2 = 5;
 constexpr const size_t kRowWriteTimestamp2 = 6;
 constexpr const size_t kRowGetBufferDeviceAddress = 7;
+
+// Whether a row is in the contract at all for one transport. Rows 0..4 exist only
+// to move descriptors into a bound buffer and to measure that buffer's layout;
+// the sets path reaches the same array slots through vkCmdBindDescriptorSets,
+// which is core and therefore called directly, exactly as vkCreateDescriptorSet
+// Layout already is by the same code.
+inline bool entryPointApplies(const EntryPointGroup& group, DescriptorBackend backend) {
+    return !group.needs_descriptor_buffers ||
+           backend == DescriptorBackend::DescriptorBuffers;
+}
 
 // How a row reads in a message: every spelling that would have satisfied it.
 inline std::string entryPointLabel(const EntryPointGroup& group) {
@@ -103,11 +137,19 @@ inline PFN_vkVoidFunction resolveEntryPoint(VkDevice device,
 // Rows the device cannot satisfy at all. Whether the API version would have
 // preferred one spelling or the other is irrelevant to a refusal: the row is
 // satisfied if any spelling answers, so the version used here only fixes the
-// order names are tried.
+// order names are tried. Rows tagged for the descriptor-buffer transport drop
+// out of the contract under the sets backend, which is how a host without the
+// extension still gets a yes or a no with named reasons instead of a silent
+// refusal of functions it would never call.
 inline std::vector<std::string> missingEntryPointGroups(
-    VkDevice device, PFN_vkGetDeviceProcAddr get_device_proc_addr) {
+    VkDevice device,
+    PFN_vkGetDeviceProcAddr get_device_proc_addr,
+    DescriptorBackend backend) {
     std::vector<std::string> missing;
     for (const auto& group : kRequiredEntryPointGroups) {
+        if (!entryPointApplies(group, backend)) {
+            continue;
+        }
         if (!resolveEntryPoint(device,
                                get_device_proc_addr,
                                VK_API_VERSION_1_3,
@@ -138,25 +180,36 @@ struct DeviceDispatch {
 
     PFN_vkSetDebugUtilsObjectNameEXT set_debug_utils_object_name = nullptr;
 
+    // Which transport this table was resolved for. describe() counts only the
+    // rows that transport can use, and load() leaves the five descriptor-buffer
+    // members null under a sets backend rather than treating them as missing.
+    DescriptorBackend backend = DescriptorBackend::DescriptorBuffers;
+
     DeviceDispatch() = default;
 
     DeviceDispatch(VkDevice device,
                    PFN_vkGetDeviceProcAddr get_device_proc_addr,
-                   uint32_t api_version = VK_API_VERSION_1_3) {
-        load(device, get_device_proc_addr, api_version);
+                   uint32_t api_version,
+                   DescriptorBackend descriptor_backend) {
+        load(device, get_device_proc_addr, api_version, descriptor_backend);
     }
 
     void load(VkDevice device,
               PFN_vkGetDeviceProcAddr get_device_proc_addr,
-              uint32_t api_version = VK_API_VERSION_1_3) {
+              uint32_t api_version,
+              DescriptorBackend descriptor_backend) {
         static_assert(kRequiredEntryPointGroupCount == 8,
                       "bind every entry point row to a DeviceDispatch member");
 
         std::array<PFN_vkVoidFunction, kRequiredEntryPointGroupCount> functions{};
         std::vector<std::string> missing;
+        backend = descriptor_backend;
 
         for (size_t row = 0; row < kRequiredEntryPointGroupCount; ++row) {
             const auto& group = kRequiredEntryPointGroups[row];
+            if (!entryPointApplies(group, backend)) {
+                continue;
+            }
             functions[row] = resolveEntryPoint(
                 device, get_device_proc_addr, api_version, group, &answered[row]);
             if (functions[row] == nullptr) {
@@ -203,14 +256,21 @@ struct DeviceDispatch {
         }
     }
 
-    // The [entry-points] line: how many rows this device satisfied, and for the
-    // groups that have two spellings which one the loader actually answered.
-    // A driver that implements only the KHR names is worth seeing in a log.
+    // The [entry-points] line: how many rows this transport's contract needs,
+    // how many the device satisfied, and for the groups that have two spellings
+    // which one the loader actually answered. A driver that implements only the
+    // KHR names is worth seeing in a log, and the transport the line describes
+    // is worth naming next to it.
     std::string describe() const {
+        size_t groups = 0;
         size_t resolved = 0;
         size_t promoted = 0;
         size_t promoted_core = 0;
         for (size_t row = 0; row < answered.size(); ++row) {
+            if (!entryPointApplies(kRequiredEntryPointGroups[row], backend)) {
+                continue;
+            }
+            ++groups;
             if (answered[row] != nullptr) {
                 ++resolved;
             }
@@ -225,7 +285,9 @@ struct DeviceDispatch {
             }
         }
 
-        return "groups=" + std::to_string(kRequiredEntryPointGroupCount) +
+        return "backend=" + std::string(descriptorBackendName(backend)) +
+               " groups=" + std::to_string(groups) + "/" +
+               std::to_string(kRequiredEntryPointGroupCount) +
                " resolved=" + std::to_string(resolved) + " promoted=" +
                std::to_string(promoted) + " promoted_core=" +
                std::to_string(promoted_core);

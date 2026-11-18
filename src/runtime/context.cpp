@@ -39,7 +39,14 @@ void QualityContext::release() {
         destroyBuffer(device, frame.constants);
         destroyBuffer(device, frame.model_constants);
         destroyBuffer(device, frame.exposure_upload);
-        destroyBuffer(device, frame.descriptor_buffer);
+        if (frame.descriptor_pool) {
+            // Destroying the pool releases the six sets allocated from it, which
+            // is why the sets transport has no per-set destroy call anywhere; the
+            // buffers transport instead releases a byte buffer per frame slot.
+            vkDestroyDescriptorPool(device, frame.descriptor_pool, nullptr);
+        } else {
+            destroyBuffer(device, frame.descriptor_buffer);
+        }
 
         if (frame.profile_queries) {
             vkDestroyQueryPool(device, frame.profile_queries, nullptr);
@@ -149,7 +156,27 @@ QualityContext::QualityContext(VkPhysicalDevice physical_device_,
       model_bucket_width(fsr4::modelBucket(max_output_width, max_output_height)[0]),
       model_bucket_height(fsr4::modelBucket(max_output_width, max_output_height)[1]) {
     try {
-        dispatch.load(device, get_device_proc_addr_, api_version);
+        // One snapshot answers every device question this context has: the
+        // transport that carries descriptors, the shader packaging the driver
+        // wants, and the model the assets may run. It is taken before the entry
+        // point table is resolved, because that table is now transport-scoped:
+        // the five VK_EXT_descriptor_buffer rows are only in the contract when
+        // the buffers transport won its one distinguishing question.
+        if (auto snapshot = fsr4vk::detectCached(physical_device)) {
+            device_capabilities = *snapshot;
+        }
+        if (auto forced = fsr4vk::descriptorBackendOverride()) {
+            descriptor_backend = *forced;
+        } else {
+            descriptor_backend = fsr4vk::selectDescriptorBackend(device_capabilities);
+        }
+        log("[descriptors] backend=" +
+            std::string(fsr4vk::descriptorBackendName(descriptor_backend)) + " " +
+            std::string(device_capabilities.supportsDescriptorBuffers() ? "buffers=yes"
+                                                                       : "buffers=no") +
+            " sets=" + std::string(device_capabilities.supportsDescriptorSets() ? "yes"
+                                                                                : "no"));
+        dispatch.load(device, get_device_proc_addr_, api_version, descriptor_backend);
         log("[entry-points] " + dispatch.describe());
         this->auto_exposure_shader_path = auto_exposure_shader_path;
         color_shader_root = runtime_options.color_shader_root;
@@ -259,17 +286,24 @@ void QualityContext::allocateModelBuffers(const fs::path& weights_path,
 void QualityContext::allocateFrameResources(const DescriptorGeometry& geometry) {
     const auto descriptor_offset_alignment = geometry.alignment;
     const auto max_layout_size = geometry.max_layout_size;
+    const bool use_descriptor_sets =
+        descriptor_backend == DescriptorBackend::DescriptorSets;
 
-    if (!descriptor_offset_alignment) {
+    // Alignment and capacity are byte arithmetic, so they belong to the buffers
+    // transport alone; a sets backend reports both geometry fields as zero and
+    // needs no byte buffer per frame slot at all.
+    if (!use_descriptor_sets && !descriptor_offset_alignment) {
         throw std::runtime_error("invalid descriptor-buffer alignment");
     }
 
-    descriptor_capacity =
-        ((max_layout_size + descriptor_offset_alignment - 1) / descriptor_offset_alignment) *
-        descriptor_offset_alignment;
-    log("[descriptor] max_layout_bytes=" + std::to_string(max_layout_size) +
-        " alignment_bytes=" + std::to_string(descriptor_offset_alignment) +
-        " capacity_bytes_per_set=" + std::to_string(descriptor_capacity));
+    if (!use_descriptor_sets) {
+        descriptor_capacity =
+            ((max_layout_size + descriptor_offset_alignment - 1) / descriptor_offset_alignment) *
+            descriptor_offset_alignment;
+        log("[descriptor] max_layout_bytes=" + std::to_string(max_layout_size) +
+            " alignment_bytes=" + std::to_string(descriptor_offset_alignment) +
+            " capacity_bytes_per_set=" + std::to_string(descriptor_capacity));
+    }
 
     for (auto& frame : frames) {
         frame.constants = createBuffer(
@@ -293,23 +327,29 @@ void QualityContext::allocateFrameResources(const DescriptorGeometry& geometry) 
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-        frame.descriptor_buffer =
-            createBuffer(device_capabilities.memory,
-                         device,
-                         descriptor_capacity * kNumDescriptorSets,
-                         VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
-                             VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
-                             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                         true);
-        std::memset(frame.descriptor_buffer.mapped,
-                    0,
-                    static_cast<std::size_t>(frame.descriptor_buffer.size));
+        if (use_descriptor_sets) {
+            allocateDescriptorSets(frame);
+        } else {
+            frame.descriptor_buffer =
+                createBuffer(device_capabilities.memory,
+                             device,
+                             descriptor_capacity * kNumDescriptorSets,
+                             VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
+                                 VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
+                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             true);
+            std::memset(frame.descriptor_buffer.mapped,
+                        0,
+                        static_cast<std::size_t>(frame.descriptor_buffer.size));
+        }
 
         frame.constants_address =
             deviceAddress(dispatch.get_buffer_device_address, device, frame.constants.buffer);
-        frame.descriptor_buffer_address = deviceAddress(
-            dispatch.get_buffer_device_address, device, frame.descriptor_buffer.buffer);
+        if (!use_descriptor_sets) {
+            frame.descriptor_buffer_address = deviceAddress(
+                dispatch.get_buffer_device_address, device, frame.descriptor_buffer.buffer);
+        }
 
         if (gpu_profile_enabled) {
             VkQueryPoolCreateInfo query_info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
@@ -320,9 +360,17 @@ void QualityContext::allocateFrameResources(const DescriptorGeometry& geometry) 
         }
     }
 
+    // The descriptor half of this line differs by transport on purpose: the buffers
+    // path spends bytes per frame slot, the sets path spends sets and pool entries,
+    // and a log that claimed one number for both would hide which is which.
     log("[frame] resources allocated slots=" + std::to_string(frames.size()) +
         " constants_bytes_per_slot=" + std::to_string(frames.front().constants.size) +
-        " descriptor_bytes_per_slot=" + std::to_string(frames.front().descriptor_buffer.size) +
+        (use_descriptor_sets ? std::string(" descriptor_sets_per_slot=") +
+                                  std::to_string(frames.front().descriptor_sets.size()) +
+                                  " dynamic_offsets_per_bind=" +
+                                  std::to_string(descriptor_dynamic_offsets.size())
+                              : std::string(" descriptor_bytes_per_slot=") +
+                                    std::to_string(frames.front().descriptor_buffer.size)) +
         " profile_queries_per_slot=" +
         std::to_string(gpu_profile_enabled ? kProfileQueryCount : 0));
 

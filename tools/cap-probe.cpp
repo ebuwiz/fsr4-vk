@@ -169,6 +169,23 @@ int main() {
                                                  VK_FORMAT_R16G16B16A16_SFLOAT)
                   << '\n';
 
+        // Phase 9 evidence: which descriptor transports this host can actually run,
+        // and the three SPIR-V capabilities the shipped modules declare now that
+        // the capability contract checks them. A host that never implemented
+        // VK_EXT_descriptor_buffer should still answer sets=yes, which is the
+        // whole point of the fallback; the gate columns show whether a model
+        // request would be refused for a capability its own shaders use.
+        std::cout << "  descriptor_transports buffers="
+                  << (with_block.supportsDescriptorBuffers() ? "yes" : "no")
+                  << " sets=" << (with_block.supportsDescriptorSets() ? "yes" : "no")
+                  << " dot_product="
+                  << (with_block.vulkan13.shaderIntegerDotProduct ? "yes" : "no")
+                  << " derivative_group_linear="
+                  << (with_block.compute_derivatives.computeDerivativeGroupLinear ? "yes" : "no")
+                  << " float_controls_api="
+                  << (with_block.properties.apiVersion >= VK_API_VERSION_1_2 ? "yes" : "no")
+                  << '\n';
+
         // The provider is handed a device plus its resolver, so play that side
         // too: a device created from this instance drives the same table the
         // provider's check walks and DeviceDispatch binds, which is what the
@@ -194,14 +211,26 @@ int main() {
 
         VkDevice vk_device = VK_NULL_HANDLE;
         if (vkCreateDevice(device, &device_info, nullptr, &vk_device) == VK_SUCCESS) {
-            const auto missing = fsr4vk::missingEntryPoints(vk_device, vkGetDeviceProcAddr);
-            try {
-                const fsr4vk::DeviceDispatch real_dispatch(
-                    vk_device, vkGetDeviceProcAddr, with_block.properties.apiVersion);
-                std::cout << "  entry_points " << real_dispatch.describe()
-                          << " provider_missing=" << missing.size() << '\n';
-            } catch (const std::exception& error) {
-                std::cout << "  entry_points refused: " << error.what() << '\n';
+            // Both transports against the same device: the buffers contract is
+            // all eight rows, the sets contract is the three promoted core pairs,
+            // and a host that never implemented VK_EXT_descriptor_buffer should
+            // answer the second one cleanly instead of refusing five functions
+            // it was never going to call.
+            for (const auto backend : {fsr4vk::DescriptorBackend::DescriptorBuffers,
+                                       fsr4vk::DescriptorBackend::DescriptorSets}) {
+                const auto missing =
+                    fsr4vk::missingEntryPoints(vk_device, vkGetDeviceProcAddr, backend);
+                try {
+                    const fsr4vk::DeviceDispatch real_dispatch(
+                        vk_device,
+                        vkGetDeviceProcAddr,
+                        with_block.properties.apiVersion,
+                        backend);
+                    std::cout << "  entry_points " << real_dispatch.describe()
+                              << " provider_missing=" << missing.size() << '\n';
+                } catch (const std::exception& error) {
+                    std::cout << "  entry_points refused: " << error.what() << '\n';
+                }
             }
             vkDestroyDevice(vk_device, nullptr);
         } else {
@@ -209,39 +238,52 @@ int main() {
         }
     }
 
-    // One table, two consumers. The provider's refusal list and the runtime's
-    // typed binding have to name the same rows, which is the whole point of
-    // moving the list next to the resolver. These stub resolvers imitate the
-    // two situations a loader on this machine may never show: a driver that
+    // One table, two consumers, both transports. The provider's refusal list and
+    // the runtime's typed binding have to name the same rows, which is the whole
+    // point of moving the list next to the resolver. These stub resolvers imitate
+    // the two situations a loader on this machine may never show: a driver that
     // implements only the KHR spellings of the promoted pairs, and a device that
     // is one descriptor row short. Neither reaches a driver at all.
     {
         const auto khr_only = reinterpret_cast<VkDevice>(static_cast<uintptr_t>(1));
-        const fsr4vk::DeviceDispatch khr_dispatch(
-            khr_only, stubDeviceProcAddr, VK_API_VERSION_1_4);
-        std::cout << "  khr_only_loader " << khr_dispatch.describe()
-                  << " provider_missing="
-                  << fsr4vk::missingEntryPoints(khr_only, stubDeviceProcAddr).size()
-                  << '\n';
+        for (const auto backend : {fsr4vk::DescriptorBackend::DescriptorBuffers,
+                                   fsr4vk::DescriptorBackend::DescriptorSets}) {
+            const fsr4vk::DeviceDispatch khr_dispatch(
+                khr_only, stubDeviceProcAddr, VK_API_VERSION_1_4, backend);
+            std::cout << "  khr_only_loader " << khr_dispatch.describe()
+                      << " provider_missing="
+                      << fsr4vk::missingEntryPoints(khr_only, stubDeviceProcAddr, backend).size()
+                      << '\n';
+        }
     }
 
     {
         const auto short_row = reinterpret_cast<VkDevice>(static_cast<uintptr_t>(2));
-        const auto provider_missing =
-            fsr4vk::missingEntryPoints(short_row, stubDeviceProcAddr);
-        std::string dispatch_says;
-        try {
-            const fsr4vk::DeviceDispatch short_dispatch(
-                short_row, stubDeviceProcAddr, VK_API_VERSION_1_4);
-            dispatch_says = "resolved anyway " + short_dispatch.describe();
-        } catch (const std::exception& error) {
-            dispatch_says = error.what();
+        // The stub device is short of one descriptor-buffer row. Under the buffers
+        // contract both consumers must name that same row; under the sets contract
+        // neither may mention it, which is the measurable half of "a host without
+        // the extension is not refused for functions it would never call".
+        for (const auto backend : {fsr4vk::DescriptorBackend::DescriptorBuffers,
+                                   fsr4vk::DescriptorBackend::DescriptorSets}) {
+            const auto provider_missing =
+                fsr4vk::missingEntryPoints(short_row, stubDeviceProcAddr, backend);
+            std::string dispatch_says;
+            try {
+                const fsr4vk::DeviceDispatch short_dispatch(
+                    short_row, stubDeviceProcAddr, VK_API_VERSION_1_4, backend);
+                dispatch_says = "resolved anyway " + short_dispatch.describe();
+            } catch (const std::exception& error) {
+                dispatch_says = error.what();
+            }
+            const bool same_row = provider_missing.size() == 1 &&
+                                  dispatch_says.find(provider_missing[0]) != std::string::npos;
+            const bool row_dropped =
+                backend == fsr4vk::DescriptorBackend::DescriptorSets && provider_missing.empty();
+            std::cout << "  one_row_short "
+                      << fsr4vk::descriptorBackendName(backend) << " provider="
+                      << fsr4vk::joinBlockers(provider_missing) << " dispatch=" << dispatch_says
+                      << " same_row=" << same_row << " row_dropped=" << row_dropped << '\n';
         }
-        const bool same_row = provider_missing.size() == 1 &&
-                              dispatch_says.find(provider_missing[0]) != std::string::npos;
-        std::cout << "  one_row_short provider="
-                  << fsr4vk::joinBlockers(provider_missing) << " dispatch=" << dispatch_says
-                  << " same_row=" << same_row << '\n';
     }
 
     // The devices enumerated here die with the instance, and the cache keys

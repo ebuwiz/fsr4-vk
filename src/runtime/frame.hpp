@@ -211,6 +211,17 @@ struct FrameRecordingInfo {
     PFN_vkCmdSetDescriptorBufferOffsetsEXT set_descriptor_buffer_offsets = nullptr;
     bool descriptor_buffers_bound = false;
 
+    // The fallback transport's half of the same job: this frame slot's six sets,
+    // the command that publishes them, and the dynamic offsets that bind has to
+    // carry for the three buffer-typed bindings. The queued writes are applied by
+    // the caller before this structure is filled, because the recorder is a free
+    // function while the staging storage belongs to the context.
+    std::array<VkDescriptorSet, fsr4_411::kNumDescriptorSets> descriptor_sets{};
+    PFN_vkCmdBindDescriptorSets bind_descriptor_sets = nullptr;
+    const uint32_t* dynamic_offsets = nullptr;
+    uint32_t dynamic_offset_count = 0;
+    bool use_descriptor_sets = false;
+
     bool use_wmma = false;
     const ModelPassPolicy* model_policy = nullptr;
     bool execute_padding_passes = false;

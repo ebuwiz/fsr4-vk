@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
 #include <iomanip>
@@ -177,6 +178,9 @@ GpuCapabilities detect(VkPhysicalDevice physical_device, InstanceResolver resolv
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES};
     VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
+    VkPhysicalDeviceVulkan13Features vulkan13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR compute_derivatives{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR};
     VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
 
     features.pNext = &cooperative;
@@ -188,6 +192,8 @@ GpuCapabilities detect(VkPhysicalDevice physical_device, InstanceResolver resolv
     subgroup_features.pNext = &buffer_address;
     buffer_address.pNext = &descriptor_indexing;
     descriptor_indexing.pNext = &descriptor_buffer;
+    descriptor_buffer.pNext = &vulkan13;
+    vulkan13.pNext = &compute_derivatives;
     vkGetPhysicalDeviceFeatures2(physical_device, &features);
     capabilities.cooperative_matrix = cooperative;
     capabilities.shader_float8 = shader_float8;
@@ -198,6 +204,8 @@ GpuCapabilities detect(VkPhysicalDevice physical_device, InstanceResolver resolv
     capabilities.buffer_device_address = buffer_address;
     capabilities.descriptor_indexing = descriptor_indexing;
     capabilities.descriptor_buffer = descriptor_buffer;
+    capabilities.vulkan13 = vulkan13;
+    capabilities.compute_derivatives = compute_derivatives;
     capabilities.core = features.features;
 
     capabilities.matrix_shapes =
@@ -309,25 +317,50 @@ std::string GpuCapabilities::missingMatrixShapeName(VkComponentTypeKHR type) con
     return reason.str();
 }
 
-// The runtime binds every resource through descriptor buffers and dispatches
-// compute work, so these hold whichever model it ends up running.
-bool GpuCapabilities::supportsRuntimeContract() const {
-    return core.shaderInt16 &&
-           core.shaderStorageImageReadWithoutFormat &&
+// Everything but the descriptors themselves: the feature chain, the storage-image
+// formats the passes write, the 8-bit and 16-bit building blocks, device addressing
+// and the subgroup contract. Both transports need all of it, so it is stated once
+// and the transports differ by exactly one question.
+bool GpuCapabilities::supportsSharedContract() const {
+    return core.shaderInt16 && core.shaderStorageImageReadWithoutFormat &&
            core.shaderStorageImageWriteWithoutFormat && float16_int8.shaderFloat16 &&
            float16_int8.shaderInt8 && storage8.storageBuffer8BitAccess &&
            buffer_device_address.bufferDeviceAddress &&
-           descriptor_indexing.runtimeDescriptorArray && descriptor_buffer.descriptorBuffer &&
+           descriptor_indexing.runtimeDescriptorArray &&
            (subgroups.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) &&
            (subgroups.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
 }
 
-std::vector<std::string> GpuCapabilities::int8Blockers() const {
+// The transport the shipped assets were validated under: descriptor bytes in a
+// buffer the frame binds, which VK_EXT_descriptor_buffer both spells itself as an
+// extension name and gates with a feature bit.
+bool GpuCapabilities::supportsDescriptorBuffers() const {
+    return supportsSharedContract() && hasExtension(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME) &&
+           descriptor_buffer.descriptorBuffer;
+}
+
+// The fallback: six sets of runtime arrays bound the ordinary way, which is core
+// Vulkan and therefore needs nothing the extension adds. A device can lose the
+// extension and still run the whole upscaler.
+bool GpuCapabilities::supportsDescriptorSets() const {
+    return supportsSharedContract();
+}
+
+// Whether either transport runs here, which is what the [capabilities] line calls
+// "runtime". A refusal below this line is about a feature, not about a transport.
+bool GpuCapabilities::supportsRuntimeContract() const {
+    return supportsDescriptorBuffers() || supportsDescriptorSets();
+}
+
+std::vector<std::string> GpuCapabilities::runtimeBlockers() const {
     std::vector<std::string> blockers;
 
-    if (!hasExtension(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME)) {
-        blockers.emplace_back(std::string("missing extension ") +
-                              VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+    // Neither transport is a feature the model needs: it is how the runtime moves
+    // descriptors at all. A device missing VK_EXT_descriptor_buffer is refused only
+    // when it also misses the core descriptor indexing that both transports ride on.
+    if (!supportsDescriptorBuffers() && !supportsDescriptorSets()) {
+        blockers.emplace_back("no descriptor transport: VK_EXT_descriptor_buffer is absent "
+                              "and core descriptor indexing is not reported");
     }
 
     const std::pair<const char*, bool> required[] = {
@@ -339,7 +372,6 @@ std::vector<std::string> GpuCapabilities::int8Blockers() const {
         {"storageBuffer8BitAccess", storage8.storageBuffer8BitAccess},
         {"bufferDeviceAddress", buffer_device_address.bufferDeviceAddress},
         {"runtimeDescriptorArray", descriptor_indexing.runtimeDescriptorArray},
-        {"descriptorBuffer", descriptor_buffer.descriptorBuffer},
     };
 
     for (const auto& [name, enabled] : required) {
@@ -355,6 +387,15 @@ std::vector<std::string> GpuCapabilities::int8Blockers() const {
         blockers.emplace_back("quad subgroup operations are missing");
     }
 
+    // Both models' modules declare SPV_KHR_float_controls (189 of the INT8 set,
+    // 138 of the FP8 set). Float controls are properties-only: this header revision
+    // has no feature bit for them, so the API level is the honest gate here, and
+    // the float_controls properties the runtime reads for denormal behaviour come
+    // off the same properties chain this snapshot was taken from.
+    if (properties.apiVersion < VK_API_VERSION_1_2) {
+        blockers.emplace_back("device API version is below 1.2, where float controls arrive");
+    }
+
     // The passes around the model itself pin 32-lane subgroups in every preset,
     // so a reported range that excludes 32 rules the runtime out entirely. A
     // range the probe never reported is unknown, not a reason to refuse.
@@ -365,12 +406,42 @@ std::vector<std::string> GpuCapabilities::int8Blockers() const {
     return blockers;
 }
 
+// The INT8 model's own capability lines, from the census of its 340 shipped
+// modules: 168 declare SPV_KHR_integer_dot_product, and 93 declare
+// SPV_KHR_compute_shader_derivatives - all 93 with "OpExecutionMode %main
+// DerivativeGroupLinearKHR", so the feature bit that matters at this header
+// revision is the linear derivative group rather than the base capability, which
+// the Vulkan 1.4 era made core. No FP8 module declares either, which is why these
+// lines sit apart from the shared base: a module asking for a capability the device
+// never reported is a driver-side compile failure with no useful message, and that
+// is what these two lines exist to replace.
+std::vector<std::string> GpuCapabilities::int8ModelBlockers() const {
+    std::vector<std::string> blockers;
+
+    if (!vulkan13.shaderIntegerDotProduct) {
+        blockers.emplace_back("feature shaderIntegerDotProduct is not reported");
+    }
+    if (!compute_derivatives.computeDerivativeGroupLinear) {
+        blockers.emplace_back("feature computeDerivativeGroupLinear is not reported");
+    }
+    return blockers;
+}
+
+std::vector<std::string> GpuCapabilities::int8Blockers() const {
+    auto blockers = runtimeBlockers();
+    const auto model_blockers = int8ModelBlockers();
+    blockers.insert(blockers.end(), model_blockers.begin(), model_blockers.end());
+    return blockers;
+}
+
 // The FP8 gate mirrors what the shipped model shaders compile against: the
 // shader_float8 and cooperative_matrix extensions, subgroups wide enough to
 // require 32 lanes explicitly, and one 16x16x16 tile per input type that
-// accumulates without saturation into float32.
+// accumulates without saturation into float32. It starts from the shared
+// runtime contract rather than from the INT8 list, because the two models
+// declare different SPIR-V capabilities and neither should inherit the other's.
 std::vector<std::string> GpuCapabilities::fp8Blockers() const {
-    auto blockers = int8Blockers();
+    auto blockers = runtimeBlockers();
 
     if (!hasExtension(VK_EXT_SHADER_FLOAT8_EXTENSION_NAME)) {
         blockers.emplace_back(std::string("missing extension ") +
@@ -405,7 +476,7 @@ std::vector<std::string> GpuCapabilities::fp8Blockers() const {
     if (!float_controls.shaderDenormPreserveFloat16) {
         blockers.emplace_back("float16 denormals are not preserved");
     }
-    // The 32-lane range check arrives from int8Blockers(), which this list starts
+    // The 32-lane range check arrives from runtimeBlockers(), which this list starts
     // from, so the pinned stage sizes are only judged once per rejection.
     if (!(subgroup_sizes.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT)) {
         blockers.emplace_back("explicit subgroup sizes are unavailable in compute");
@@ -590,8 +661,40 @@ std::string joinBlockers(const std::vector<std::string>& blockers) {
 // would later reach for a function the contract never promised - the two used to
 // keep separate name lists, this one and DeviceDispatch's literals.
 std::vector<std::string> missingEntryPoints(VkDevice device,
-                                            PFN_vkGetDeviceProcAddr get_device_proc_addr) {
-    return fsr4vk::missingEntryPointGroups(device, get_device_proc_addr);
+                                            PFN_vkGetDeviceProcAddr get_device_proc_addr,
+                                            DescriptorBackend backend) {
+    return fsr4vk::missingEntryPointGroups(device, get_device_proc_addr, backend);
+}
+
+// The transport choice, decided from the snapshot the model choice came from so
+// that a host which never implemented VK_EXT_descriptor_buffer still gets its
+// models. The extension path wins when both are available: it is the one the
+// shipped assets were generated and validated under, and it costs no pool, no
+// 64 frame slots times 6 sets, and no descriptor update per recorded frame.
+DescriptorBackend selectDescriptorBackend(const GpuCapabilities& capabilities) {
+    if (capabilities.supportsDescriptorBuffers()) {
+        return DescriptorBackend::DescriptorBuffers;
+    }
+    return DescriptorBackend::DescriptorSets;
+}
+
+// FSR4_DESCRIPTOR_BACKEND=descriptor-set|descriptor-buffer|sets|buffers. Only an
+// exact spelling answers; anything else reports nothing so the operator sees a
+// refusal naming the value instead of a silently different transport, which is
+// how the two transports stay comparable on one device during a change of this
+// size.
+std::optional<DescriptorBackend> descriptorBackendOverride() {
+    const char* value = std::getenv("FSR4_DESCRIPTOR_BACKEND");
+    if (!value || !*value) {
+        return std::nullopt;
+    }
+    if (std::strcmp(value, "descriptor-set") == 0 || std::strcmp(value, "sets") == 0) {
+        return DescriptorBackend::DescriptorSets;
+    }
+    if (std::strcmp(value, "descriptor-buffer") == 0 || std::strcmp(value, "buffers") == 0) {
+        return DescriptorBackend::DescriptorBuffers;
+    }
+    return std::nullopt;
 }
 
 std::optional<ModelChoice> parseModelChoice(const char* value) {

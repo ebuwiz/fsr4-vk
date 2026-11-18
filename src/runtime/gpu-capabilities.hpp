@@ -95,6 +95,17 @@ struct GpuCapabilities {
     VkPhysicalDeviceShaderFloat8FeaturesEXT shader_float8{};
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR cooperative_matrix{};
 
+    // Two further links in the same chain, added because the shipped SPIR-V modules
+    // declare the capabilities and nothing in the runtime was checking them. At this
+    // header revision (VK_HEADER_VERSION 357, the Vulkan 1.4 spec era) integer dot
+    // product is a Vulkan 1.3 member rather than a 1.2 one, and compute shader
+    // derivatives are core: the KHR struct carries only the derivative-group
+    // controls left as feature bits. Float controls have no feature bit anywhere
+    // in these headers - the extension is properties-only - so they gate on API
+    // level instead.
+    VkPhysicalDeviceVulkan13Features vulkan13{};
+    VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR compute_derivatives{};
+
     // Cooperative matrix shapes offered for compute workloads. Empty is
     // ambiguous on its own, so matrix_probe_route records whether a query ran
     // and which handle answered it. tools/cap-probe.cpp reaches that list the
@@ -118,7 +129,23 @@ struct GpuCapabilities {
     // order createDescriptorLayouts consumes them.
     std::string descriptorSizeSummary() const;
 
-    // Feature chain and subgroup contract the runtime always needs.
+    // Feature chain and subgroup contract the runtime needs whichever transport
+    // carries its descriptors. Everything here is independent of how descriptors
+    // reach a shader, including the runtime array of descriptors the converted
+    // shaders are built on.
+    bool supportsSharedContract() const;
+
+    // The VK_EXT_descriptor_buffer transport: today's path, where descriptors are
+    // bytes inside a bound buffer.
+    bool supportsDescriptorBuffers() const;
+
+    // Conventional descriptor sets: the fallback, and the reason a host without
+    // the extension is not automatically unusable. It asks for nothing beyond
+    // the shared contract.
+    bool supportsDescriptorSets() const;
+
+    // Whether either transport works here at all, which is what the [capabilities]
+    // line has always called "runtime".
     bool supportsRuntimeContract() const;
 
     // Cooperative matrix tiles the FP8 model shaders are built around.
@@ -152,6 +179,19 @@ private:
     const char* matrixInputName(VkComponentTypeKHR type) const;
     std::string missingMatrixShapeName(VkComponentTypeKHR type) const;
     std::string wave32BlockerText() const;
+
+    // The contract that is not model-specific: transports, feature chain and
+    // subgroup width. Both model lists start from this rather than from each
+    // other, because the INT8 model's own SPIR-V requirements - integer dot
+    // products and compute shader derivatives - are not FP8's, and a shared base
+    // that carried them would have refused FP8 for capabilities its modules never
+    // declare.
+    std::vector<std::string> runtimeBlockers() const;
+
+    // The INT8 model's own SPIR-V capability lines, kept apart from the shared
+    // base because the FP8 modules declare neither integer dot products nor compute
+    // shader derivatives.
+    std::vector<std::string> int8ModelBlockers() const;
 };
 
 std::string joinBlockers(const std::vector<std::string>& blockers);
@@ -186,9 +226,26 @@ bool canReadStorageImage(VkPhysicalDevice physical_device,
                          const GpuCapabilities& capabilities,
                          VkFormat format);
 
-// Entry points missing from the device the loader handed over.
+// Entry points missing from the device the loader handed over, for one
+// transport. The provider chooses the transport from the same cached snapshot
+// it chooses a model with, so the contract it validates is the contract the
+// runtime is about to use, and rows belonging to the other transport are not
+// held against a device that would never call them.
 std::vector<std::string> missingEntryPoints(VkDevice device,
-                                            PFN_vkGetDeviceProcAddr get_device_proc_addr);
+                                            PFN_vkGetDeviceProcAddr get_device_proc_addr,
+                                            DescriptorBackend backend);
+
+// Which transport this device can run. The extension path wins whenever the
+// device reports it, because it is the cheaper of the two and the one every
+// shipped asset was validated under; the sets path covers hosts that never
+// implemented the extension.
+DescriptorBackend selectDescriptorBackend(const GpuCapabilities& capabilities);
+
+// FSR4_DESCRIPTOR_BACKEND, so both transports can be exercised on a device that
+// supports both. An unrecognised value answers nothing rather than quietly
+// picking a transport: the caller logs the refusal and falls back to the
+// capability decision.
+std::optional<DescriptorBackend> descriptorBackendOverride();
 
 const char* modelName(ModelChoice choice);
 

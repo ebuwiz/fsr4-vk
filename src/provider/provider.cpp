@@ -116,9 +116,11 @@ const CreateBackendVkInstanceDesc* findBackendInstanceBlock(const ffxApiHeader* 
     return nullptr;
 }
 
-void validateDeviceEntryPoints(const ProviderContext& provider) {
+void validateDeviceEntryPoints(const ProviderContext& provider,
+                               fsr4vk::DescriptorBackend backend) {
     const auto missing = fsr4vk::missingEntryPoints(provider.device,
-                                                    provider.getDeviceProcAddr);
+                                                    provider.getDeviceProcAddr,
+                                                    backend);
     if (!missing.empty()) {
         throw std::runtime_error("missing Vulkan device entry point groups: " +
                                  fsr4vk::joinBlockers(missing));
@@ -244,7 +246,21 @@ ffxReturnCode_t createContext(ffxContext* context,
         // vkGetDescriptorEXT needs no probe of its own any more: it is a row of
         // the table this check walks, the same table DeviceDispatch::load binds
         // for the runtime, so asking the loader twice bought no extra information.
-        validateDeviceEntryPoints(*provider);
+        // The table is transport-scoped now, so the transport has to be chosen
+        // here exactly as the context will choose it - same cached snapshot, same
+        // override - otherwise this check could promise a contract the runtime
+        // then declines to use, or refuse a device that would have run fine.
+        const auto forced_backend = fsr4vk::descriptorBackendOverride();
+        const auto descriptor_backend =
+            forced_backend.value_or(fsr4vk::selectDescriptorBackend(capabilities));
+        diagnostic(*provider,
+                   "[FSR4-descriptors] backend='" +
+                   std::string(fsr4vk::descriptorBackendName(descriptor_backend)) + "'" +
+                   (forced_backend.has_value() ? " forced=FSR4_DESCRIPTOR_BACKEND" : "") +
+                   " buffers=" +
+                   (capabilities.supportsDescriptorBuffers() ? "yes" : "no") +
+                   " sets=" + (capabilities.supportsDescriptorSets() ? "yes" : "no"));
+        validateDeviceEntryPoints(*provider, descriptor_backend);
 
         fsr4::validateDimensions(create->maxRenderSize.width,
                                  create->maxRenderSize.height,

@@ -513,6 +513,127 @@ QualityContext::descriptorAddress(Frame& frame, uint32_t set_index, uint32_t bin
     return descriptor_bytes + set_offset + binding_offset;
 }
 
+// --- Conventional descriptor sets, the fallback transport --------------------
+//
+// The three functions below replace the byte arithmetic the buffers path does
+// inside the write helpers. A queued write points at payload storage that lives in
+// the same frame slot, which is why the two vectors are reserved to the frame's
+// ceiling up front: reallocation would leave a recorded pointer aimed at freed
+// memory. Writes are applied at the next bind rather than when queued, because
+// vkCmdBindDescriptorSets reads set contents at record time.
+void QualityContext::allocateDescriptorSets(Frame& frame) {
+    const VkDescriptorPoolSize pool_sizes[] = {
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kDescriptorCount},
+        {VK_DESCRIPTOR_TYPE_SAMPLER, kDescriptorCount},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kDescriptorCount},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 * kDescriptorCount},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kDescriptorCount},
+    };
+
+    VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool_info.maxSets = kNumDescriptorSets;
+    pool_info.poolSizeCount = static_cast<uint32_t>(sizeof(pool_sizes) / sizeof(pool_sizes[0]));
+    pool_info.pPoolSizes = pool_sizes;
+    check(vkCreateDescriptorPool(device, &pool_info, nullptr, &frame.descriptor_pool),
+          "vkCreateDescriptorPool(fallback descriptor sets)");
+
+    for (uint32_t set_index = 0; set_index < kNumDescriptorSets; ++set_index) {
+        VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        allocate.descriptorPool = frame.descriptor_pool;
+        allocate.descriptorSetCount = 1;
+        allocate.pSetLayouts = &set_layouts[set_index];
+        check(vkAllocateDescriptorSets(device, &allocate, &frame.descriptor_sets[set_index]),
+              "vkAllocateDescriptorSets(fallback descriptor sets)");
+    }
+
+    frame.descriptor_writes.reserve(Frame::kDescriptorWriteCeiling);
+    frame.descriptor_payloads.reserve(Frame::kDescriptorWriteCeiling);
+}
+
+void QualityContext::queueDescriptorWrite(Frame& frame,
+                                          uint32_t set_index,
+                                          uint32_t binding_index,
+                                          VkDescriptorType type,
+                                          const VkDescriptorImageInfo* image_info,
+                                          const VkDescriptorBufferInfo* buffer_info) {
+    if (!frame.descriptor_sets[set_index]) {
+        throw std::runtime_error("descriptor set is not allocated for this frame slot");
+    }
+    if (frame.descriptor_payloads.size() >= Frame::kDescriptorWriteCeiling) {
+        throw std::runtime_error("descriptor write staging exceeded its reservation");
+    }
+
+    frame.descriptor_payloads.emplace_back();
+    auto& payload = frame.descriptor_payloads.back();
+    if (image_info) {
+        payload.image = *image_info;
+    }
+    if (buffer_info) {
+        payload.buffer = *buffer_info;
+    }
+
+    // dstBinding stays 0 for every set: this runtime's layouts declare exactly one
+    // binding per set and address resources by array index, which is the shape the
+    // converted shaders were emitted with. The member names below are the Vulkan
+    // 1.0 spellings these pinned headers declare - dstArrayElement, pImageInfo,
+    // pBufferInfo; the 1.3-era aliases (dstIndex, pImageInfos, and the write-
+    // descriptor-set-2 family) are absent from this header revision entirely.
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = frame.descriptor_sets[set_index];
+    write.dstBinding = 0;
+    write.dstArrayElement = binding_index;
+    write.descriptorCount = 1;
+    write.descriptorType = type;
+
+    const bool buffer_typed =
+        type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER || type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    if (buffer_typed) {
+        write.pBufferInfo = &payload.buffer;
+    } else {
+        write.pImageInfo = &payload.image;
+    }
+    frame.descriptor_writes.push_back(write);
+}
+
+void QualityContext::flushDescriptorWrites(Frame& frame) {
+    if (frame.descriptor_writes.empty()) {
+        return;
+    }
+    // void by signature: unlike the create/allocate calls around it, an update
+    // cannot report a failure to this code, so the only honest check here is that
+    // the writes queued are the writes applied, which the clear below guarantees
+    // and the bind that follows depends on.
+    vkUpdateDescriptorSets(device,
+                           static_cast<uint32_t>(frame.descriptor_writes.size()),
+                           frame.descriptor_writes.data(),
+                           0,
+                           nullptr);
+    frame.descriptor_writes.clear();
+}
+
+// The single place both transports agree on: "make the descriptors this stage
+// needs visible to the next dispatch". Under the buffers transport that is a no-op
+// here, because binding a descriptor buffer and offsetting six sets is done once
+// per command buffer by the recorder. Under sets it is an applied flush plus a
+// bind, and a stage that writes descriptors after an earlier stage bound them
+// has to call this again before it dispatches.
+void QualityContext::bindDescriptors(VkCommandBuffer command_buffer, Frame& frame) {
+    if (descriptor_backend != DescriptorBackend::DescriptorSets) {
+        return;
+    }
+
+    flushDescriptorWrites(frame);
+    vkCmdBindDescriptorSets(command_buffer,
+                            VK_PIPELINE_BIND_POINT_COMPUTE,
+                            pipeline_layout,
+                            0,
+                            kNumDescriptorSets,
+                            frame.descriptor_sets.data(),
+                            static_cast<uint32_t>(descriptor_dynamic_offsets.size()),
+                            descriptor_dynamic_offsets.data());
+}
+
 void QualityContext::writeImageDescriptorBuffer(Frame& frame,
                                                 uint32_t set_index,
                                                 uint32_t binding_index,
@@ -526,6 +647,13 @@ void QualityContext::writeImageDescriptorBuffer(Frame& frame,
     VkDescriptorImageInfo image_info{};
     image_info.imageView = view;
     image_info.imageLayout = image_layout;
+
+    // Sets transport: the same view and layout, expressed as a write into the
+    // frame's set for this array slot instead of bytes at a computed offset.
+    if (descriptor_backend == DescriptorBackend::DescriptorSets) {
+        queueDescriptorWrite(frame, set_index, binding_index, type, &image_info, nullptr);
+        return;
+    }
 
     VkDescriptorGetInfoEXT descriptor_info{VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
     descriptor_info.type = type;
@@ -570,6 +698,18 @@ void QualityContext::writeSamplerDescriptor(Frame& frame,
                                             uint32_t set_index,
                                             uint32_t binding_index,
                                             VkSampler sampler_handle) {
+    if (descriptor_backend == DescriptorBackend::DescriptorSets) {
+        // In a descriptor set a sampler rides in the same VkDescriptorImageInfo the
+        // image descriptors use, with only the sampler handle filled. That is the
+        // ordinary spelling of this runtime's separate sampler heap, which is why
+        // set 2 exists apart from set 0 at all.
+        VkDescriptorImageInfo image_info{};
+        image_info.sampler = sampler_handle;
+        queueDescriptorWrite(
+            frame, set_index, binding_index, VK_DESCRIPTOR_TYPE_SAMPLER, &image_info, nullptr);
+        return;
+    }
+
     VkDescriptorGetInfoEXT descriptor_info{VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
     descriptor_info.type = VK_DESCRIPTOR_TYPE_SAMPLER;
     descriptor_info.data.pSampler = &sampler_handle;
@@ -582,6 +722,17 @@ void QualityContext::writeSamplerDescriptor(Frame& frame,
 
 void QualityContext::writeStorageBufferDescriptor(
     Frame& frame, uint32_t set_index, uint32_t binding_index, VkBuffer buffer, VkDeviceSize size) {
+    if (descriptor_backend == DescriptorBackend::DescriptorSets) {
+        // A set descriptor names a VkBuffer with its own offset and range, so this
+        // transport needs no device address for the resource at all: the address
+        // arithmetic below belongs to the buffers path alone, and a host that lacks
+        // vkGetBufferDeviceAddress for descriptors is still not a problem here.
+        VkDescriptorBufferInfo buffer_info{buffer, 0, size};
+        queueDescriptorWrite(
+            frame, set_index, binding_index, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &buffer_info);
+        return;
+    }
+
     VkDescriptorAddressInfoEXT buffer_address_info{VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT};
     buffer_address_info.address =
         fsr4_411::deviceAddress(dispatch.get_buffer_device_address, device, buffer);
@@ -600,6 +751,18 @@ void QualityContext::fillStorageBufferDescriptors(Frame& frame,
                                                   uint32_t set_index,
                                                   VkBuffer buffer,
                                                   VkDeviceSize size) {
+    if (descriptor_backend == DescriptorBackend::DescriptorSets) {
+        // The buffers path writes slot 0 once and memcpy-copies that descriptor
+        // across the array; a set has no bytes to copy, so every slot is queued
+        // on its own. This is the heaviest writer in the runtime - two full
+        // arrays of kDescriptorCount per frame - and the staging ceiling exists
+        // to cover it plus everything a frame writes afterwards.
+        for (uint32_t binding_index = 0; binding_index < kDescriptorCount; ++binding_index) {
+            writeStorageBufferDescriptor(frame, set_index, binding_index, buffer, size);
+        }
+        return;
+    }
+
     writeStorageBufferDescriptor(frame, set_index, 0, buffer, size);
     auto* first_descriptor = descriptorAddress(frame, set_index, 0);
 
@@ -612,6 +775,13 @@ void QualityContext::fillStorageBufferDescriptors(Frame& frame,
 
 void QualityContext::writeUniformBufferDescriptor(
     Frame& frame, uint32_t set_index, uint32_t binding_index, VkBuffer buffer, VkDeviceSize size) {
+    if (descriptor_backend == DescriptorBackend::DescriptorSets) {
+        VkDescriptorBufferInfo buffer_info{buffer, 0, size};
+        queueDescriptorWrite(
+            frame, set_index, binding_index, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &buffer_info);
+        return;
+    }
+
     VkDescriptorAddressInfoEXT buffer_address_info{VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT};
     buffer_address_info.address =
         fsr4_411::deviceAddress(dispatch.get_buffer_device_address, device, buffer);
@@ -718,6 +888,22 @@ QualityContext::createDescriptorLayouts() {
 
     check(vkCreateSampler(device, &sampler_info, nullptr, &sampler), "vkCreateSampler");
 
+    // The descriptor type of every set, in one table. It is used three ways: to
+    // build the set layouts, to count the dynamic offsets vkCmdBindDescriptorSets
+    // will demand, and to label a queued set write, so a type that ever changes
+    // cannot silently disagree with the layout it was written against.
+    const std::array<VkDescriptorType, kNumDescriptorSets> set_types{{
+        VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        VK_DESCRIPTOR_TYPE_SAMPLER,
+        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+    }};
+
+    const bool use_descriptor_sets =
+        descriptor_backend == DescriptorBackend::DescriptorSets;
+
     const auto make_set_layout = [&](uint32_t set_index, VkDescriptorType type, uint32_t count) {
         VkDescriptorSetLayoutBinding binding{};
         binding.binding = 0;
@@ -727,7 +913,14 @@ QualityContext::createDescriptorLayouts() {
 
         VkDescriptorSetLayoutCreateInfo layout_info{
             VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+        // One binding at index 0 holding kDescriptorCount descriptors either way:
+        // the shaders' vocabulary is the same under both transports, and only this
+        // flag says whether the descriptors will be read out of a bound buffer.
+        if (use_descriptor_sets) {
+            layout_info.flags = 0;
+        } else {
+            layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+        }
         layout_info.bindingCount = 1;
         layout_info.pBindings = &binding;
 
@@ -735,17 +928,9 @@ QualityContext::createDescriptorLayouts() {
               "vkCreateDescriptorSetLayout");
     };
 
-    make_set_layout(
-        descriptor_set::sampled_images, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kDescriptorCount);
-    make_set_layout(
-        descriptor_set::model_reads, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kDescriptorCount);
-    make_set_layout(descriptor_set::samplers, VK_DESCRIPTOR_TYPE_SAMPLER, kDescriptorCount);
-    make_set_layout(
-        descriptor_set::storage_images, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kDescriptorCount);
-    make_set_layout(
-        descriptor_set::model_writes, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kDescriptorCount);
-    make_set_layout(
-        descriptor_set::uniform_buffers, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kDescriptorCount);
+    for (uint32_t set_index = 0; set_index < kNumDescriptorSets; ++set_index) {
+        make_set_layout(set_index, set_types[set_index], kDescriptorCount);
+    }
 
     VkPushConstantRange push_range{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(RootConstants)};
 
@@ -757,6 +942,30 @@ QualityContext::createDescriptorLayouts() {
 
     check(vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &pipeline_layout),
           "vkCreatePipelineLayout");
+
+    // A sets backend measures nothing: it never does arithmetic over a bound buffer
+    // of descriptor bytes, it hands the driver one set per binding. What it does
+    // need is the dynamic-offset array vkCmdBindDescriptorSets insists on, and that
+    // array's length comes from the same set_types table the layouts were built
+    // from, so a type change cannot leave the bind call short or long by accident.
+    // Every entry is zero: a queued write already carries buffer, offset and range.
+    if (use_descriptor_sets) {
+        size_t dynamic_offsets = 0;
+        for (VkDescriptorType type : set_types) {
+            if (type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ||
+                type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+                dynamic_offsets += kDescriptorCount;
+            }
+        }
+        descriptor_dynamic_offsets.assign(dynamic_offsets, 0);
+        log("[descriptor] backend=descriptor-set sets_per_frame=" +
+            std::to_string(kNumDescriptorSets) + " bindings_per_set=1"
+            " descriptors_per_binding=" +
+            std::to_string(kDescriptorCount) +
+            " dynamic_offsets=" + std::to_string(dynamic_offsets) +
+            " pool_max_sets=" + std::to_string(kNumDescriptorSets));
+        return {0, 0};
+    }
 
     // The five descriptor functions come from the dispatch table loaded at the
     // top of this constructor, which resolves the same table the provider's
@@ -1091,7 +1300,7 @@ void QualityContext::createAutoExposurePipeline(const fs::path& path) {
 }
 
 void QualityContext::recordAutoExposure(VkCommandBuffer command_buffer,
-                                        const Frame& frame,
+                                        Frame& frame,
                                         const OptimizedConstants& main_constants) {
     computeBarrier(dispatch.cmd_pipeline_barrier2, command_buffer);
     imageBarrier(dispatch.cmd_pipeline_barrier2,
@@ -1104,27 +1313,35 @@ void QualityContext::recordAutoExposure(VkCommandBuffer command_buffer,
                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                  VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
-    VkDescriptorBufferBindingInfoEXT binding{VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT};
-    binding.address = frame.descriptor_buffer_address;
-    binding.usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
-                    VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
-    dispatch.cmd_bind_descriptor_buffers(command_buffer, 1, &binding);
-    constexpr std::array<uint32_t, kNumDescriptorSets> buffer_indices{};
-    const std::array<VkDeviceSize, kNumDescriptorSets> offsets{{
-        0 * descriptor_capacity,
-        1 * descriptor_capacity,
-        2 * descriptor_capacity,
-        3 * descriptor_capacity,
-        4 * descriptor_capacity,
-        5 * descriptor_capacity,
-    }};
-    dispatch.cmd_set_descriptor_buffer_offsets(command_buffer,
-                                       VK_PIPELINE_BIND_POINT_COMPUTE,
-                                       pipeline_layout,
-                                       0,
-                                       kNumDescriptorSets,
-                                       buffer_indices.data(),
-                                       offsets.data());
+    // Publishing the frame's descriptors to this stage: identical intent, two
+    // spellings. The sets transport applies its queued writes and binds the frame
+    // slot's six sets; the buffers transport binds the byte buffer once and offsets
+    // the six sets inside it by stride.
+    if (descriptor_backend == DescriptorBackend::DescriptorSets) {
+        bindDescriptors(command_buffer, frame);
+    } else {
+        VkDescriptorBufferBindingInfoEXT binding{VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT};
+        binding.address = frame.descriptor_buffer_address;
+        binding.usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
+                        VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
+        dispatch.cmd_bind_descriptor_buffers(command_buffer, 1, &binding);
+        constexpr std::array<uint32_t, kNumDescriptorSets> buffer_indices{};
+        const std::array<VkDeviceSize, kNumDescriptorSets> offsets{{
+            0 * descriptor_capacity,
+            1 * descriptor_capacity,
+            2 * descriptor_capacity,
+            3 * descriptor_capacity,
+            4 * descriptor_capacity,
+            5 * descriptor_capacity,
+        }};
+        dispatch.cmd_set_descriptor_buffer_offsets(command_buffer,
+                                                   VK_PIPELINE_BIND_POINT_COMPUTE,
+                                                   pipeline_layout,
+                                                   0,
+                                                   kNumDescriptorSets,
+                                                   buffer_indices.data(),
+                                                   offsets.data());
+    }
 
     const VkDeviceAddress exposure_constants_address =
         frame.constants_address + constant_offset::auto_exposure;

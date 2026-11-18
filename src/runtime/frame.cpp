@@ -212,6 +212,11 @@ void QualityContext::recordFrame(VkCommandBuffer command_buffer,
     for (auto pipeline : active_pipelines) {
         trackPipelineUse(pipeline);
     }
+    // Both transports reach this point with the frame's descriptors decided, but
+    // only the sets transport has to apply its queued writes here: the recorder is
+    // a free function, so the flush happens one level above it and the bind below
+    // then sees this frame's own resources.
+    flushDescriptorWrites(frame);
     recordModelPasses(FrameRecordingInfo{
         .command_buffer = command_buffer,
         .pipeline_layout = pipeline_layout,
@@ -221,6 +226,12 @@ void QualityContext::recordFrame(VkCommandBuffer command_buffer,
         .bind_descriptor_buffers = dispatch.cmd_bind_descriptor_buffers,
         .set_descriptor_buffer_offsets = dispatch.cmd_set_descriptor_buffer_offsets,
         .descriptor_buffers_bound = run_auto_exposure,
+
+        .descriptor_sets = frame.descriptor_sets,
+        .bind_descriptor_sets = vkCmdBindDescriptorSets,
+        .dynamic_offsets = descriptor_dynamic_offsets.data(),
+        .dynamic_offset_count = static_cast<uint32_t>(descriptor_dynamic_offsets.size()),
+        .use_descriptor_sets = descriptor_backend == DescriptorBackend::DescriptorSets,
 
         .use_wmma = use_wmma,
         .model_policy = &model_pass_policy,
@@ -832,9 +843,18 @@ void recordModelPasses(const FrameRecordingInfo& recording) {
     const auto passes =
         recording.model_policy ? recording.model_policy->passes : std::span<const Pass>{};
 
+    // One guard for two transports: whichever was chosen has to have arrived
+    // complete. A null handle in the first set of a frame slot means the sets were
+    // never allocated, so the recorder refuses rather than binding a null set and
+    // leaving the driver to report it.
+    const bool buffers_ready = recording.descriptor_buffer_address != 0 &&
+                               recording.bind_descriptor_buffers != nullptr &&
+                               recording.set_descriptor_buffer_offsets != nullptr;
+    const bool sets_ready = recording.descriptor_sets[0] != VK_NULL_HANDLE &&
+                            recording.bind_descriptor_sets != nullptr &&
+                            recording.dynamic_offsets != nullptr;
     if (!recording.command_buffer || !recording.pipeline_layout ||
-        !recording.descriptor_buffer_address || !recording.bind_descriptor_buffers ||
-        !recording.set_descriptor_buffer_offsets || passes.empty() ||
+        (recording.use_descriptor_sets ? !sets_ready : !buffers_ready) || passes.empty() ||
         recording.pipelines.size() != passes.size() || !recording.constants_address ||
         !recording.history || !recording.recurrent || !recording.reprojected ||
         !recording.model_policy || !recording.model_policy->dispatch_size ||
@@ -880,31 +900,48 @@ void recordModelPasses(const FrameRecordingInfo& recording) {
                          fsr4log::Level::Debug);
     }
 
-    std::array<VkDescriptorBufferBindingInfoEXT, 1> binding_infos{};
-    binding_infos[0].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
-    binding_infos[0].address = recording.descriptor_buffer_address;
-    binding_infos[0].usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
-                             VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
-    if (!recording.descriptor_buffers_bound) {
-        recording.bind_descriptor_buffers(recording.command_buffer, 1, binding_infos.data());
-    }
+    // Publishing this frame's descriptors, which is the one place the two transports
+    // really differ in a command buffer: six sets bound by handle, or one buffer
+    // bound once and six set offsets measured in bytes. The sets path also carries
+    // the dynamic-offset array vkCmdBindDescriptorSets demands for the three buffer
+    // -typed bindings, all zero because each queued write already named its own
+    // buffer, offset and range.
+    if (recording.use_descriptor_sets) {
+        recording.bind_descriptor_sets(recording.command_buffer,
+                                       VK_PIPELINE_BIND_POINT_COMPUTE,
+                                       recording.pipeline_layout,
+                                       0,
+                                       static_cast<uint32_t>(recording.descriptor_sets.size()),
+                                       recording.descriptor_sets.data(),
+                                       recording.dynamic_offset_count,
+                                       recording.dynamic_offsets);
+    } else {
+        std::array<VkDescriptorBufferBindingInfoEXT, 1> binding_infos{};
+        binding_infos[0].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
+        binding_infos[0].address = recording.descriptor_buffer_address;
+        binding_infos[0].usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
+                                 VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
+        if (!recording.descriptor_buffers_bound) {
+            recording.bind_descriptor_buffers(recording.command_buffer, 1, binding_infos.data());
+        }
 
-    constexpr std::array<uint32_t, 6> buffer_indices{{0, 0, 0, 0, 0, 0}};
-    const std::array<VkDeviceSize, 6> buffer_offsets{{
-        0 * recording.descriptor_set_capacity,
-        1 * recording.descriptor_set_capacity,
-        2 * recording.descriptor_set_capacity,
-        3 * recording.descriptor_set_capacity,
-        4 * recording.descriptor_set_capacity,
-        5 * recording.descriptor_set_capacity,
-    }};
-    recording.set_descriptor_buffer_offsets(recording.command_buffer,
-                                            VK_PIPELINE_BIND_POINT_COMPUTE,
-                                            recording.pipeline_layout,
-                                            0,
-                                            buffer_indices.size(),
-                                            buffer_indices.data(),
-                                            buffer_offsets.data());
+        constexpr std::array<uint32_t, 6> buffer_indices{{0, 0, 0, 0, 0, 0}};
+        const std::array<VkDeviceSize, 6> buffer_offsets{{
+            0 * recording.descriptor_set_capacity,
+            1 * recording.descriptor_set_capacity,
+            2 * recording.descriptor_set_capacity,
+            3 * recording.descriptor_set_capacity,
+            4 * recording.descriptor_set_capacity,
+            5 * recording.descriptor_set_capacity,
+        }};
+        recording.set_descriptor_buffer_offsets(recording.command_buffer,
+                                                VK_PIPELINE_BIND_POINT_COMPUTE,
+                                                recording.pipeline_layout,
+                                                0,
+                                                buffer_indices.size(),
+                                                buffer_indices.data(),
+                                                buffer_offsets.data());
+    }
 
     const auto should_skip_padding_pass = [&](uint32_t pass_index) {
         if (pass_index >= passes.size() || passes[pass_index].type != PassType::TensorPadding) {

@@ -99,6 +99,10 @@ using fsr4_411::kConstantBufSize;
 using fsr4_411::kDescriptorCount;
 using fsr4_411::kNumDescriptorSets;
 using fsr4_411::OptimizedConstants;
+
+// The transport enum and its names live in fsr4vk beside the entry-point table
+// they scope; the runtime refers to them unqualified from here on.
+using fsr4vk::DescriptorBackend;
 using fsr4_411::readBytes;
 using fsr4_411::readModelSpirv;
 using fsr4_411::readSpirv;
@@ -126,9 +130,25 @@ class QualityContext final : public fsr4_411::QualityContext {
     VkDevice device;
     fsr4vk::DeviceDispatch dispatch;
 
+    // Which transport this context ended up using, chosen from the device snapshot
+    // below and overruled only by an exact FSR4_DESCRIPTOR_BACKEND spelling. Every
+    // descriptor path in the runtime reads this one value.
+    fsr4vk::DescriptorBackend descriptor_backend =
+        fsr4vk::DescriptorBackend::DescriptorBuffers;
+
     VkDeviceSize descriptor_capacity = 0;
     std::array<VkDeviceSize, kNumDescriptorSets> set_strides{};
     std::array<VkDeviceSize, kNumDescriptorSets> set_binding_offsets{};
+
+    // Dynamic offsets for the sets transport: vkCmdBindDescriptorSets wants one
+    // entry per array element of every buffer-typed binding, which is three sets
+    // times kDescriptorCount here. Every entry is zero, because a queued write
+    // already carries the buffer, offset and range it points at; the array exists
+    // to match the layout's count, not to move anything. Built once per context.
+    // uint32_t rather than VkDynamicOffset: the pinned headers type pDynamicOffsets
+    // as uint32_t, and the VkDynamicOffset alias only arrives with the 1.3 write-
+    // descriptor-set-2 surface this host's headers do not declare at all.
+    std::vector<uint32_t> descriptor_dynamic_offsets;
 
     VkSampler sampler{};
     VkPipelineLayout pipeline_layout{};
@@ -282,6 +302,20 @@ class QualityContext final : public fsr4_411::QualityContext {
     double gpu_timestamp_period_ns = 0.0;
 
     struct Frame {
+        // What a conventional descriptor-set write points at. The write and the
+        // payload live in the same frame slot, and both vectors are reserved to
+        // this ceiling before any write is queued, because a reallocation would
+        // leave the pointer inside VkWriteDescriptorSet aimed at freed storage.
+        struct DescriptorWritePayload {
+            VkDescriptorImageInfo image{};
+            VkDescriptorBufferInfo buffer{};
+        };
+        // Sized to the heaviest frame the fallback transport can produce: the two
+        // full-array fills of kDescriptorCount storage buffer descriptors plus every
+        // per-frame write the runtime makes after them. Overflow is refused by name
+        // rather than left to a reallocation that would strand a recorded pointer.
+        static constexpr size_t kDescriptorWriteCeiling = 512;
+
         VkPipeline rcas_pipeline{};
         VkExtent2D rcas_dispatch{};
         Buffer constants{};
@@ -289,7 +323,16 @@ class QualityContext final : public fsr4_411::QualityContext {
         Buffer exposure_upload{};
 
         std::vector<VkImageView> views;
+        // Buffers transport: one mapped byte buffer per frame slot, six sets wide.
         Buffer descriptor_buffer{};
+        // Sets transport: one pool per frame slot with six sets allocated from
+        // it, plus the writes staged between binds. Destroying the pool releases
+        // its sets, which is why no per-set free call exists anywhere.
+        VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
+        std::array<VkDescriptorSet, kNumDescriptorSets> descriptor_sets{};
+        std::vector<VkWriteDescriptorSet> descriptor_writes;
+        std::vector<DescriptorWritePayload> descriptor_payloads;
+
         VkBuffer model_weights{};
 
         VkDeviceAddress constants_address = 0;
@@ -473,8 +516,10 @@ private:
     void initializeFrameHistory(VkCommandBuffer command_buffer,
                                 Frame& frame,
                                 const OptimizedConstants& main_constants);
+    // Takes the frame slot by reference, not const: publishing descriptors to a
+    // stage under the sets transport applies that frame's queued writes first.
     void recordAutoExposure(VkCommandBuffer command_buffer,
-                            const Frame& frame,
+                            Frame& frame,
                             const OptimizedConstants& main_constants);
     void writeAutoExposureConstants(Frame& frame, const OptimizedConstants& main_constants);
     void prepareStagingOutput(VkCommandBuffer command_buffer,
@@ -545,6 +590,21 @@ private:
                                       VkBuffer buffer,
                                       VkDeviceSize size);
     void writeWeightDescriptors(Frame& frame, const Buffer& model_data);
+
+    // Conventional descriptor sets, for the fallback transport. Writes are queued
+    // per frame and applied at the next bind, because vkCmdBindDescriptorSets reads
+    // the set contents when the command is recorded rather than when the frame
+    // runs, so a stage that writes descriptors after another stage bound them has
+    // to bind again before it dispatches.
+    void allocateDescriptorSets(Frame& frame);
+    void queueDescriptorWrite(Frame& frame,
+                              uint32_t set_index,
+                              uint32_t binding_index,
+                              VkDescriptorType type,
+                              const VkDescriptorImageInfo* image_info,
+                              const VkDescriptorBufferInfo* buffer_info);
+    void flushDescriptorWrites(Frame& frame);
+    void bindDescriptors(VkCommandBuffer command_buffer, Frame& frame);
 
     void writeStaticDescriptors(Frame& frame);
     void writeAllStaticDescriptors();

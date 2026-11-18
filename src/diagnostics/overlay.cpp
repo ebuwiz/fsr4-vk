@@ -164,6 +164,11 @@ void QualityContext::recordOverlay(VkCommandBuffer command_buffer,
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, overlay_pipeline);
     vkCmdPushConstants(
         command_buffer, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+    // The overlay reads the app's own output as a storage image when blending, which
+    // is a descriptor the frame wrote earlier; under the sets transport that binding
+    // has to be re-recorded here or the overlay keeps whatever set contents an earlier
+    // stage saw. Under the buffers transport this call does nothing at all.
+    bindDescriptors(command_buffer, frame);
     vkCmdDispatch(command_buffer,
                   fsr4::divideUp(options.debug_view ? output.width : header_width, 8),
                   fsr4::divideUp(options.debug_view ? output.height : push.header_height, 8),

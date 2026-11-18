@@ -86,17 +86,34 @@ void QualityContext::prepareRcas(VkCommandBuffer command_buffer,
                                 descriptor_set::storage_images,
                                 kRcasOutput,
                                 use_staging_output ? staging_output.view : output.view);
-    VkDescriptorAddressInfoEXT address{VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT};
-    address.address = frame.constants_address + kRcasConstantOffset;
-    address.range = sizeof(RcasConstants);
-    VkDescriptorGetInfoEXT descriptor{VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
-    descriptor.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    descriptor.data.pUniformBuffer = &address;
-    dispatch.get_descriptor(
-        device,
-        &descriptor,
-        descriptor_size.uniform_buffer,
-        descriptorAddress(frame, descriptor_set::uniform_buffers, kRcasConstantDescriptor));
+    if (descriptor_backend == DescriptorBackend::DescriptorSets) {
+        // The rcas constants sit part-way inside the frame's own constants buffer,
+        // which is what a set descriptor expresses directly: a buffer handle, an
+        // offset inside it and a length. The block below instead turns the same
+        // region into a device address, because the buffers path identifies
+        // descriptors that way.
+        VkDescriptorBufferInfo buffer_info{frame.constants.buffer,
+                                           kRcasConstantOffset,
+                                           sizeof(RcasConstants)};
+        queueDescriptorWrite(frame,
+                             descriptor_set::uniform_buffers,
+                             kRcasConstantDescriptor,
+                             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                             nullptr,
+                             &buffer_info);
+    } else {
+        VkDescriptorAddressInfoEXT address{VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT};
+        address.address = frame.constants_address + kRcasConstantOffset;
+        address.range = sizeof(RcasConstants);
+        VkDescriptorGetInfoEXT descriptor{VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
+        descriptor.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptor.data.pUniformBuffer = &address;
+        dispatch.get_descriptor(
+            device,
+            &descriptor,
+            descriptor_size.uniform_buffer,
+            descriptorAddress(frame, descriptor_set::uniform_buffers, kRcasConstantDescriptor));
+    }
 }
 
 void QualityContext::recordRcas(VkCommandBuffer command_buffer,
@@ -123,6 +140,12 @@ void QualityContext::recordRcas(VkCommandBuffer command_buffer,
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, frame.rcas_pipeline);
     vkCmdPushConstants(
         command_buffer, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(root), &root);
+    // The rcas stage wrote four descriptors of its own after the model passes bound
+    // the frame, and a set is read when the bind is recorded, so this stage has to
+    // publish them again for itself. The buffers path needs nothing here: its
+    // offsets were set once for the command buffer and the mapped bytes are read at
+    // execution time.
+    bindDescriptors(command_buffer, frame);
     vkCmdDispatch(command_buffer, frame.rcas_dispatch.width, frame.rcas_dispatch.height, 1);
 }
 } // namespace fsr4runtime
