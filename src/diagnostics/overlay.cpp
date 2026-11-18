@@ -44,33 +44,6 @@ static_assert(sizeof(OverlayPush) == sizeof(RootConstants));
 static_assert(offsetof(OverlayData, text) == 48);
 static_assert(kOverlayOffset + sizeof(OverlayData) <= kConstantBufSize);
 
-// Vulkan 1.3 and format_feature_flags2 expose read support per format.
-// The caller may not have enabled shaderStorageImageReadWithoutFormat.
-bool canReadOutput(VkPhysicalDevice physical_device, VkFormat format) {
-    VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(physical_device, &properties);
-    if (properties.apiVersion < VK_API_VERSION_1_3) {
-        uint32_t count = 0;
-        check(vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &count, nullptr),
-              "overlay extension count");
-        std::vector<VkExtensionProperties> extensions(count);
-        check(vkEnumerateDeviceExtensionProperties(
-                  physical_device, nullptr, &count, extensions.data()),
-              "overlay extensions");
-        if (std::none_of(extensions.begin(), extensions.end(), [](const auto& extension) {
-                return std::string_view(extension.extensionName) ==
-                       VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME;
-            })) {
-            return false;
-        }
-    }
-    VkFormatProperties3 features{VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3};
-    VkFormatProperties2 properties2{VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, &features};
-    vkGetPhysicalDeviceFormatProperties2(physical_device, format, &properties2);
-    return (features.optimalTilingFeatures & VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT) !=
-           0;
-}
-
 uint32_t writeText(uint32_t* destination, std::string_view text) {
     // Sorted glyph positions let the shader search only the visible text.
     std::fill_n(destination, kTextColumns, 0xffffff00u);
@@ -105,7 +78,8 @@ void QualityContext::recordOverlay(VkCommandBuffer command_buffer,
             deviceAddress(dispatch.get_buffer_device_address, device, overlay_font.buffer);
     }
     if (overlay_read_format != output.format) {
-        overlay_read_supported = canReadOutput(physical_device, output.format);
+        overlay_read_supported =
+            fsr4vk::canReadStorageImage(physical_device, device_capabilities, output.format);
         overlay_read_format = output.format;
     }
     // Debug view uses the write-only shader.
@@ -119,6 +93,7 @@ void QualityContext::recordOverlay(VkCommandBuffer command_buffer,
         const auto size = blend ? std::size(kOverlayBlendSpirv) : std::size(kOverlaySpirv);
         overlay_pipeline = createComputePipeline(std::vector<uint32_t>(data, data + size), false);
         log(std::string("[overlay] pipeline ready; scene blending=") + (blend ? "yes" : "no") +
+            " read_output=" + (overlay_read_supported ? "yes" : "no") +
             " | " + std::string(kLibraryLabel) + " | RDNA2: " + (device_is_rdna2 ? "Yes" : "No") +
             " | " + model_wave_label);
     }

@@ -83,6 +83,11 @@ struct GpuCapabilities {
     VkPhysicalDeviceSubgroupSizeControlProperties subgroup_sizes{};
     VkPhysicalDeviceFloatControlsProperties float_controls{};
     VkPhysicalDeviceCooperativeMatrixPropertiesKHR cooperative{};
+    // Descriptor byte sizes the runtime's descriptor sets are built from. They
+    // ride in the same properties chain as the rest, and a host without VK_EXT
+    // descriptor_buffer leaves them zeroed - which is caught by the feature bit
+    // below rather than by sizing sets of zero bytes.
+    VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_buffer_properties{};
 
     std::vector<VkExtensionProperties> extensions;
 
@@ -116,6 +121,10 @@ struct GpuCapabilities {
 
     // The tile list as the log lines print it: a count, or "unprobed".
     std::string matrixShapeSummary() const;
+
+    // The five descriptor byte sizes the runtime's sets are built from, in the
+    // order createDescriptorLayouts consumes them.
+    std::string descriptorSizeSummary() const;
 
     // Feature chain and subgroup contract the runtime always needs.
     bool supportsRuntimeContract() const;
@@ -175,6 +184,15 @@ std::optional<GpuCapabilities> detectCached(VkPhysicalDevice physical_device,
                                             InstanceResolver resolver = {});
 
 void clearCapabilityCache();
+
+// Whether this device can read back a storage image in that format without the
+// app having requested shaderStorageImageReadWithoutFormat, which decides whether
+// the overlay is allowed to blend against the app's own output image. The version
+// and extension facts come from the snapshot, so this makes only the per-format
+// query that the decision actually needs.
+bool canReadStorageImage(VkPhysicalDevice physical_device,
+                         const GpuCapabilities& capabilities,
+                         VkFormat format);
 
 // Entry points missing from the device the loader handed over.
 std::vector<std::string> missingEntryPoints(VkDevice device,

@@ -776,11 +776,15 @@ QualityContext::createDescriptorLayouts(PFN_vkGetDeviceProcAddr get_device_proc_
         throw std::runtime_error("descriptor buffer entry points unavailable");
     }
 
-    VkPhysicalDeviceDescriptorBufferPropertiesEXT buffer_properties{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
-    VkPhysicalDeviceProperties2 properties2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-    properties2.pNext = &buffer_properties;
-    vkGetPhysicalDeviceProperties2(physical_device, &properties2);
+    // The descriptor byte sizes arrive with the device snapshot the model choice
+    // was made from, so this path no longer builds its own properties2 chain. A
+    // host that never reported them would otherwise size every descriptor set at
+    // zero bytes, which is worth refusing out loud.
+    const auto& buffer_properties = device_capabilities.descriptor_buffer_properties;
+    const bool sizes_reported = buffer_properties.sampledImageDescriptorSize != 0;
+    if (!device_capabilities.descriptor_buffer.descriptorBuffer || !sizes_reported) {
+        throw std::runtime_error("descriptor buffer properties unavailable");
+    }
 
     descriptor_size.sampled_image = buffer_properties.sampledImageDescriptorSize;
     descriptor_size.storage_image = buffer_properties.storageImageDescriptorSize;

@@ -181,9 +181,10 @@ void QualityContext::configureGpuProfile() {
             }
         }
 
-        VkPhysicalDeviceProperties properties{};
-        vkGetPhysicalDeviceProperties(physical_device, &properties);
-        gpu_timestamp_period_ns = properties.limits.timestampPeriod;
+        // The timestamp scale is part of the device snapshot the runtime already
+        // took for model and shader decisions, so no second properties query is
+        // needed here.
+        gpu_timestamp_period_ns = device_capabilities.properties.limits.timestampPeriod;
 
         if (!(gpu_timestamp_period_ns > 0.0)) {
             throw std::runtime_error("invalid Vulkan timestampPeriod for GPU profiler");

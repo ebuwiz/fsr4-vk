@@ -52,6 +52,13 @@ int main() {
 
     // Both extensions have to be enabled at instance creation for the tile list
     // to mean anything, exactly as the app does through the provider chain.
+    // Descriptor byte sizes only mean anything when VK_EXT_descriptor_buffer is
+    // enabled on the instance that created the device, which is what the app's
+    // own create-context chain does; asking without it is the unreported case.
+    VkPhysicalDeviceDescriptorBufferFeaturesEXT buffer{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
+    buffer.descriptorBuffer = VK_TRUE;
+
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR cooperative{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
     cooperative.cooperativeMatrix = VK_TRUE;
@@ -60,10 +67,11 @@ int main() {
     float8.shaderFloat8 = VK_TRUE;
     float8.shaderFloat8CooperativeMatrix = VK_TRUE;
     cooperative.pNext = &float8;
+    buffer.pNext = &cooperative;
 
     VkInstanceCreateInfo create{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     create.pApplicationInfo = &application;
-    create.pNext = &cooperative;
+    create.pNext = &buffer;
 
     VkInstance instance = VK_NULL_HANDLE;
     if (vkCreateInstance(&create, nullptr, &instance) != VK_SUCCESS) {
@@ -113,6 +121,21 @@ int main() {
                   << " wmma=" << with_block.supportsModelMatrixShapes()
                   << " wave32=" << with_block.supportsWave32Pipelines()
                   << " null_handle_has_snapshot=" << fsr4vk::detectCached(nullptr).has_value()
+                  << '\n';
+
+        // The Phase 7 facts come from the same snapshot the models were chosen
+        // with: the descriptor byte sizes the runtime's sets are sized from, the
+        // timestamp scale the GPU profiler converts with, and the per-format
+        // read-back verdict that decides whether the overlay may blend against
+        // the app's own output. Printing them here proves no consumer has to
+        // ask the driver again for the gating half of those decisions.
+        std::cout << "  descriptor_sizes=" << with_block.descriptorSizeSummary()
+                  << " timestamp_period_ns=" << with_block.properties.limits.timestampPeriod
+                  << " blend_bgra8="
+                  << fsr4vk::canReadStorageImage(device, with_block, VK_FORMAT_B8G8R8A8_UNORM)
+                  << " blend_rgba16f="
+                  << fsr4vk::canReadStorageImage(device, with_block,
+                                                 VK_FORMAT_R16G16B16A16_SFLOAT)
                   << '\n';
     }
 

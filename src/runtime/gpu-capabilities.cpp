@@ -131,6 +131,9 @@ GpuCapabilities detect(VkPhysicalDevice physical_device, InstanceResolver resolv
     capabilities.cooperative =
         VkPhysicalDeviceCooperativeMatrixPropertiesKHR{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
+    capabilities.descriptor_buffer_properties =
+        VkPhysicalDeviceDescriptorBufferPropertiesEXT{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
 
     VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
     properties.pNext = &capabilities.identity;
@@ -139,6 +142,7 @@ GpuCapabilities detect(VkPhysicalDevice physical_device, InstanceResolver resolv
     capabilities.subgroups.pNext = &capabilities.subgroup_sizes;
     capabilities.subgroup_sizes.pNext = &capabilities.float_controls;
     capabilities.float_controls.pNext = &capabilities.cooperative;
+    capabilities.cooperative.pNext = &capabilities.descriptor_buffer_properties;
     vkGetPhysicalDeviceProperties2(physical_device, &properties);
 
     uint32_t extension_count = 0;
@@ -494,6 +498,59 @@ std::string GpuCapabilities::matrixShapeSummary() const {
     return matrixShapesProbed() ? std::to_string(matrix_shapes.size()) : "unprobed";
 }
 
+// One line answers the question the runtime asks when it sizes descriptor sets:
+// which byte costs each of the five descriptor types carries on this device.
+std::string GpuCapabilities::descriptorSizeSummary() const {
+    if (!descriptor_buffer.descriptorBuffer) {
+        return "unsupported";
+    }
+
+    if (!descriptor_buffer_properties.sampledImageDescriptorSize) {
+        // The extension is supported but was never enabled on the instance that
+        // created the device, so the driver left the byte sizes alone. Printing
+        // zeros would read like a measurement the hardware had given us.
+        return "unreported";
+    }
+
+    std::ostringstream sizes;
+    sizes << descriptor_buffer_properties.sampledImageDescriptorSize << '/'
+          << descriptor_buffer_properties.storageImageDescriptorSize << '/'
+          << descriptor_buffer_properties.uniformBufferDescriptorSize << '/'
+          << descriptor_buffer_properties.storageBufferDescriptorSize << '/'
+          << descriptor_buffer_properties.samplerDescriptorSize;
+    return sizes.str();
+}
+
+// The overlay blends against the app's own output image, which the device may
+// only allow it to read back per format. Vulkan 1.3 reports that in
+// VkFormatProperties3, while a 1.1 or 1.2 host needs VK_KHR_format_feature_flags2
+// advertised as well - both facts are already in the snapshot, so the check
+// makes one per-format query instead of the four it used to make on its own.
+// Nothing here throws: an unanswered query reads as "cannot read", which lands
+// on the write-only overlay shader the same way the old code did.
+bool canReadStorageImage(VkPhysicalDevice physical_device,
+                         const GpuCapabilities& capabilities,
+                         VkFormat format) {
+    if (!physical_device) {
+        return false;
+    }
+
+    if (capabilities.properties.apiVersion < VK_API_VERSION_1_3 &&
+        !capabilities.hasExtension(VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME)) {
+        return false;
+    }
+
+    // Both structs have to carry their own sType: the chain is validated by the
+    // driver, and a zeroed sType leaves the flags empty, which reads as "cannot
+    // read" instead of answering. The command itself returns no result code.
+    VkFormatProperties3 features{VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3};
+    VkFormatProperties2 chain{VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, &features};
+    vkGetPhysicalDeviceFormatProperties2(physical_device, format, &chain);
+
+    return (features.optimalTilingFeatures &
+            VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT) != 0;
+}
+
 std::string GpuCapabilities::describe() const {
     std::ostringstream line;
     line << "device=" << std::quoted(properties.deviceName) << " type=" << deviceTypeName(properties.deviceType)
@@ -502,6 +559,8 @@ std::string GpuCapabilities::describe() const {
          << " driver=" << std::quoted(driver.driverName)
          << " driver_info=" << std::quoted(driver.driverInfo) << " extensions=" << extensions.size()
          << " matrix_shapes=" << matrixShapeSummary() << " matrix_probe=" << matrixProbeRouteName()
+         << " descriptor_sizes=" << descriptorSizeSummary()
+         << " timestamp_period=" << properties.limits.timestampPeriod
          << " memory_types=" << memory.memoryTypeCount
          << " subgroup_size=" << subgroups.subgroupSize
          << " subgroup_range=" << subgroup_sizes.minSubgroupSize << '-' << subgroup_sizes.maxSubgroupSize

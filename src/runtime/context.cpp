@@ -571,7 +571,8 @@ QualityContext::ShaderDriverPolicy QualityContext::configureDeviceShaderPolicy()
                    << " force_windows_shaders=" << (force_windows_amd_shaders ? "yes" : "no")
                    << " matrix_shapes=" << shape_summary
                    << " matrix_probe=" << device_capabilities.matrixProbeRouteName()
-                   << " wmma=" << (use_wmma ? "yes" : "no");
+                   << " wmma=" << (use_wmma ? "yes" : "no")
+                   << " descriptor_sizes=" << device_capabilities.descriptorSizeSummary();
     log(policy_message.str());
 
     return {windows_amd_shaders_allowed, rdna2_device};
