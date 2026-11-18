@@ -26,6 +26,7 @@ from pathlib import Path
 
 from sdk import (CASE_BRANCHES, COLORS, ENDPOINT_KEYS, MODEL_PREFIX, PRESET_GUARD,
                  PRESETS, SDK, TIERS)
+from fp8 import PASS_NAMES
 
 KEYS_DIR = Path(__file__).resolve().parent / "keys"
 STOCK_KEY = 0
@@ -131,7 +132,7 @@ def families(sdk):
     pinned = sdk.keys().get("model") or {}
     if not pinned:
         raise ValueError(f'keys/{sdk.version}.json has "model": null: pin the shipping '
-                         "variant map with tools/extract/modelmap.py --dll <dll> --write")
+                         "variant map with tools/extract/dispatch.py --dll <dll> --model --write")
     for tier, rows in sorted(pinned.items()):
         for name, pin in sorted(rows.items()):
             selected = {}
@@ -165,6 +166,43 @@ def families(sdk):
     return found
 
 
+def model_map(sdk, decoded):
+    """The shipping model variant map, as the image selects it.
+
+    One record per pass and tier: the stock variant (endpoint key 0) of the standard
+    preset branch of the reference switch, which is the variant the reference build
+    runs when a caller asks for no endpoint flags at all. Pass names come from
+    `fp8.PASS_NAMES` by the same suffix rule :func:`families` matches pins with, so a
+    name is never invented by trimming a prefix the image does not promise. Written
+    into ``keys/<version>.json`` under ``model`` with ``--model --write`` and checked
+    against the image by :func:`families` on every later run.
+    """
+    found = {}
+    for entry, rows in decoded["fp8"]["passes"].items():
+        name = None
+        for known in PASS_NAMES:
+            if entry == known or entry.endswith("_" + known):
+                if name is not None:
+                    raise ValueError(f"{entry}: two pinned pass names are suffixes of "
+                                     f"the same entry ({name}, {known}), refusing to "
+                                     "guess which one the pin means")
+                name = known
+        if name is None:
+            raise ValueError(f"{entry}: no name in fp8.PASS_NAMES is a suffix of this "
+                             "entry: update PASS_NAMES to the new build's vocabulary "
+                             "before re-pinning the model map")
+        for tier in TIERS:
+            record = rows["tiers"].get(tier, {}).get("standard", {}).get(STOCK_KEY)
+            if record is None:
+                raise ValueError(f"the reference switch selects no {tier}/{name} stock "
+                                 "record: the decode is incomplete, refusing to pin "
+                                 "a partial model map")
+            if found.setdefault(tier, {}).setdefault(name, record) != record:
+                raise ValueError(f"{tier}/{name}: two entries decode to the same pinned "
+                                 "pass with different records")
+    return found
+
+
 def load(sdk):
     """The pinned dispatch of this build, re-derived and checked against the pins."""
     path = KEYS_DIR / f"{sdk.version}.json"
@@ -194,10 +232,26 @@ def main(argv=None):
     parser.add_argument("--dll", type=Path, required=True)
     parser.add_argument("--write", action="store_true",
                         help="store the labelled switches in keys/<version>.json")
+    parser.add_argument("--model", action="store_true",
+                        help="with --write, also re-pin the shipping model variant map")
     args = parser.parse_args(argv)
     try:
         sdk = SDK(args.dll)
         decoded = families(sdk)
+        derived = model_map(sdk, decoded)
+        pinned_model = sdk.keys().get("model") or {}
+        if pinned_model and pinned_model != derived:
+            for tier in sorted(set(derived) | set(pinned_model)):
+                for name in sorted(set(derived.get(tier, {})) |
+                                   set(pinned_model.get(tier, {}))):
+                    got, want = (derived.get(tier, {}).get(name),
+                                 pinned_model.get(tier, {}).get(name))
+                    if got != want:
+                        raise ValueError(
+                            f"the model map the image derives for {tier}/{name} is "
+                            f"{got}, keys/<version>.json pins {want}")
+        print(f"model map: {sum(len(rows) for rows in derived.values())} stock records, "
+              f"{'matches the pin' if pinned_model == derived else 'derived for the first time'}")
         for family in FAMILIES:
             spec = decoded[family]
             label = "reference" if family == "fp8" else family
@@ -225,6 +279,15 @@ def main(argv=None):
                 "historical reasons; the other is the int8 dispatch. The real "
                 "fp8 matrix dispatch is extracted separately."
             )
+            if args.model:
+                keys["model"] = model_map(sdk, decoded)
+                keys["model_rule"] = (
+                    "the shipping model variant map: one record per pass and tier, "
+                    "namely the stock endpoint key 0 of the standard preset branch of "
+                    "the reference indexed switch; tools/extract/dispatch.py --model "
+                    "--write derives it out of the image and families() re-checks every "
+                    "entry against the image on later runs"
+                )
             path.write_text(json.dumps(keys, indent=2) + "\n")
             print(f"wrote the dispatch pins to {path}")
     except (ValueError, OSError) as error:

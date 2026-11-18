@@ -544,7 +544,7 @@
       }
     }
   },
-  "model_rule": "the shipping fp8 model variant is what the pass switch in .text selects for endpoint key 0 of the standard preset branch; tools/extract/modelmap.py decodes it from the image and fp8.py re-checks every entry against it",
+  "model_rule": "the shipping model variant map: one record per pass and tier, namely the stock endpoint key 0 of the standard preset branch of the reference indexed switch; tools/extract/dispatch.py --model --write derives it out of the image and families() re-checks every entry against the image on later runs",
   "dispatchers": {
     "int8": {
       "jump_table": 624168,
