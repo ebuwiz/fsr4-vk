@@ -124,12 +124,13 @@ The build itself verifies every embedded asset payload and alias. On top of that
   accounts for every shader record table by the pattern that selects it, by whether any of
   its records points into a model weight bank, and by the DXBC part shape its containers
   carry. Minutes to run; it is the answer to "does this DLL hold model assets we do not extract".
-- `python3 tools/extract/modelclasses.py --dll <dll> --expect-model-names 5 --expect-rtti-names 33 --expect-provider-variants 7 --expect-referenced-descriptors 0 --expect-labeled-vftables 0`
-  names every RTTI class in the image and asks whether any name links to code: it finds
-  the seven `ffxProvider_` algorithm variants (including `_FSR4Lite_Int8` and
-  `_FSR4_Int8_Navi2`), the five upscaler-model classes behind them, and no inbound pointer
-  to any of them, which is why Lite/Navi2 are provider variants keyed by algorithm here and
-  not a separate family of model assets.
+- `python3 tools/extract/modelclasses.py --dll <dll> --expect-model-names 5 --expect-rtti-names 33 --expect-provider-variants 7 --expect-referenced-descriptors 0 --expect-referenced-strings 5 --expect-labeled-vftables 0`
+  names every RTTI class in the image, checks whether any name links to code, and looks for
+  a string-keyed provider registry: it finds the seven `ffxProvider_` algorithm variants
+  (including `_FSR4Lite_Int8` and `_FSR4_Int8_Navi2`), the five upscaler-model classes
+  behind them, no inbound pointer to any of them, and only DXBC signature semantics among
+  the pointed-at variant strings — so Lite/Navi2 are provider variants keyed by compiled
+  constants here, not a separate family of model assets and not a table you can read.
 - Captures are compared frame by frame: `python3 tools/validate/ab-frames.py <capture_a> <capture_b>`.
   Add `--relax-variant` when the two runs differ by more than the descriptor transport,
   which is how an INT8/FP8 A/B is paired, since the two models select different wave

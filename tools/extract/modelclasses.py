@@ -13,7 +13,8 @@ actually keyed on:
 
     tools/extract/modelclasses.py --dll amd_fidelityfx_upscaler_dx12.dll \
         --expect-model-names 5 --expect-rtti-names 33 --expect-provider-variants 7 \
-        --expect-referenced-descriptors 0 --expect-labeled-vftables 0
+        --expect-referenced-descriptors 0 --expect-referenced-strings 5 \
+        --expect-labeled-vftables 0
 
 The 33 `.?AV` names of this image include seven `ffxProvider_` algorithm variants -
 `_FSR4Lite_Int8`, `_FSR4_Int8_Navi2`, `_FSR4_Int8`, `_FSR4`, `_FSR4_Common`, `_FSR3Upscale`
@@ -31,6 +32,17 @@ anywhere in the file equals one of those names' addresses or an address 4, 8, 16
 records are bytes with no inbound pointer, which is why `dynamic_cast`/`typeid` is provably
 not how the SDK selects a variant.
 
+Not-a-registry, the third angle on the same question: outside the RTTI names, 1616 strings
+in the image name a variant token (both quantizations, the two disputed variants, the four
+FSR algorithms, the upscale verb), and exactly five of them have any inbound pointer -
+`cbFSR2`, `cbFSR3Upscaler`, `r_internal_upscaled_color`, `rw_upscaled_output` and
+`rw_internal_upscaled_color` - all DXBC signature semantics, i.e. c-buffer and shader
+resource names, not provider lookup keys. So the SDK has no string-keyed provider table to
+read a variant key out of; its variant choice is compiled constants. The two c-buffer names
+are a useful side result: they are the FSR2 and FSR3 kits' own signatures, which is what the
+`ffxProvider_FSR2` and `ffxProvider_FSR3Upscale` classes imply, and it matches the 15 non-model
+switches `modeltables.py` counts.
+
 Constructors: the data sections hold 17 vftable-shaped runs of `.text` pointers (entry
 counts 8, 5 or 3), and `.text` installs 15 of them at 22 sites through rip-relative loads,
 so the constructor sites are enumerable as addresses without touching `.reloc` - but zero
@@ -40,6 +52,7 @@ constructor can be labelled by reading this file; the names give the vocabulary,
 """
 
 import argparse
+import re
 import struct
 import sys
 from collections import Counter
@@ -176,6 +189,40 @@ def installers(sdk, runs):
     return hits
 
 
+# One word at a time, anchored on a variant token; scanning every printable run in a
+# 60 MiB image would take minutes to find the few dozen hits this pattern has. The
+# tokens are the ones an FFX provider key would use: the two disputed variants, both
+# quantizations, the four FSR algorithms and the upscale verb of the FSR3 provider.
+VOCABULARY = re.compile(rb"(?i)[A-Za-z0-9_.:@-]{0,64}(navi2|lite|int8|fp8|float8|"
+                       rb"fsr[1234]|upscal)[A-Za-z0-9_.:@-]{0,64}")
+
+
+def variant_strings(sdk):
+    """Plain (non-RTTI) strings naming a variant, and whether anything points at them.
+
+    A provider registry would key variants by string id, which is the second place a
+    Lite/Navi2 key could live after the RTTI names. A run only counts as a key if some
+    u64 in the image equals its start address, the way a table of string pointers looks.
+    """
+    data = sdk.data
+    found = set()
+    for match in VOCABULARY.finditer(data):
+        begin = data.rfind(b"\x00", 0, match.start()) + 1
+        end = data.find(b"\x00", match.start())
+        if end == -1:
+            end = len(data)
+        text = data[begin:end]
+        if len(text) > 200 or text.startswith(RTTI_PREFIX):
+            continue
+        found.add((sdk.image().rva(begin), text.decode("latin-1", "replace")))
+    referenced = []
+    for rva, text in sorted(found):
+        hits = len(pointer_hits(sdk, sdk.image_base + rva))
+        if hits:
+            referenced.append((text, rva, hits))
+    return sorted(found), referenced
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dll", type=Path, required=True)
@@ -192,6 +239,9 @@ def main(argv=None):
     parser.add_argument("--expect-provider-variants", type=int, default=None,
                        help="exit non-zero unless this many ffxProvider_ algorithm variant "
                        "names exist")
+    parser.add_argument("--expect-referenced-strings", type=int, default=None,
+                       help="exit non-zero unless this many non-RTTI variant-vocabulary "
+                       "strings have an inbound pointer")
     args = parser.parse_args(argv)
 
     sdk = SDK(args.dll)
@@ -219,6 +269,16 @@ def main(argv=None):
     for name, rva, hits in referenced:
         print(f"  {name} at {rva:#x}: {hits} pointer(s)")
 
+    strings, referenced_strings = variant_strings(sdk)
+    print(f"\nnon-RTTI strings naming a variant token: {len(strings)}")
+    print(f"  of those, pointed at by a u64: {len(referenced_strings)}")
+    for text, rva, hits in referenced_strings:
+        print(f"    {text!r} at {rva:#x} referenced {hits} time(s)")
+    print("  meaning: the pointed-at strings are DXBC signature semantics (cbFSR2, cbFSR3Upscaler,"
+          " the upscaled-colour resources), not provider keys, so no string-keyed provider registry"
+          " exists to read a variant key out of; the FSR2 and FSR3 c-buffer names also confirm this"
+          " image carries those kits beside the FSR4 ones.")
+
     runs = vftable_runs(sdk, names)
     sizes = Counter(run["entries"] for run in runs)
     print(f"\nvftable-shaped runs in the data sections: {len(runs)}")
@@ -243,7 +303,8 @@ def main(argv=None):
               "referenced descriptors": (len(referenced), args.expect_referenced_descriptors),
               "labeled vftables": (sum(1 for run in runs if run["labelled"]),
                                    args.expect_labeled_vftables),
-              "provider variants": (len(variants), args.expect_provider_variants)}
+              "provider variants": (len(variants), args.expect_provider_variants),
+              "referenced strings": (len(referenced_strings), args.expect_referenced_strings)}
     for what, (found, expected) in checks.items():
         if expected is not None and found != expected:
             raise SystemExit(f"expected {expected} {what}, found {found}")
