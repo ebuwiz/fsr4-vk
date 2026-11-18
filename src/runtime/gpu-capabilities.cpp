@@ -512,6 +512,27 @@ bool GpuCapabilities::amdIntegratedApu() const {
     return isAmdIntegratedDevice(properties.vendorID, properties.deviceType);
 }
 
+// The driver's own graphics-IP token, read out of the device name. RADV writes
+// "AMD Radeon RX 9070 XT (RADV GFX1201)" for this machine's card, which is RDNA4
+// silicon by that name; the AMD proprietary driver prints no such token, so the
+// answer here is "unreported" rather than a guess, and nothing in the runtime
+// branches on it - the RDNA2 packaging verdict stays on measured device IDs.
+std::string GpuCapabilities::gfxIpName() const {
+    const std::string name(properties.deviceName);
+    const auto at = name.find("GFX");
+    if (at == std::string::npos) {
+        return "unreported";
+    }
+
+    std::size_t end = at + 3;
+    while (end < name.size() &&
+           ((name[end] >= '0' && name[end] <= '9') || name[end] == '.')) {
+        ++end;
+    }
+
+    return end == at + 3 ? "unreported" : name.substr(at, end - at);
+}
+
 // Forcing a stage subgroup size is a contract with the driver, not with the
 // shader: the value has to be accepted by the subgroup size control feature and
 // sit inside the range the device reported. An unprobed snapshot has a zero
@@ -642,6 +663,7 @@ std::string GpuCapabilities::describe() const {
          << " amd_proprietary=" << (amdProprietaryDriver() ? "yes" : "no")
          << " rdna2=" << (rdna2Device() ? "yes" : "no")
          << " integrated_amd=" << (amdIntegratedApu() ? "yes" : "no")
+         << " gfx_ip=" << gfxIpName()
          << " wave32=" << (supportsWave32Pipelines() ? "yes" : "no")
          << " runtime=" << (supportsRuntimeContract() ? "yes" : "no")
          << " int8=" << (supportsInt8Model() ? "yes" : "no")

@@ -179,6 +179,14 @@ struct GpuCapabilities {
     // identity fields can yield (see isAmdIntegratedDevice in resources.hpp).
     bool amdIntegratedApu() const;
 
+    // The driver's own name for the graphics IP block, when it prints one: RADV
+    // labels this machine's card "AMD Radeon RX 9070 XT (RADV GFX1201)", and that
+    // token names the RDNA generation of the silicon without any inference from a
+    // device ID. Reported only - the AMD proprietary driver prints no such token, so
+    // a rule could not be built on it, and the RDNA2 packaging verdict stays on
+    // measured device IDs.
+    std::string gfxIpName() const;
+
     std::string describe() const;
 
     bool hasMatrixShape(VkComponentTypeKHR input_type) const;

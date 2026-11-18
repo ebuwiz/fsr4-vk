@@ -108,6 +108,18 @@ inline constexpr bool allowWindowsAmdShaders(std::uint32_t vendor_id,
 }
 
 // Identify RDNA2 GPUs and APUs by PCI device ID.
+//
+// This predicate is RDNA2-only *by design*, and the exclusions are deliberate and
+// asserted: RDNA1 (Navi 10, 0x731f), RDNA3 (Navi 31, 0x744c) and RDNA4 (this
+// machine's RX 9070 XT, deviceID 0x7550, which RADV names "(RADV GFX1201)") are
+// all "not RDNA2". The reason is narrow: the verdict only feeds the wave32 pin and
+// the AMD shader-pack allowance, and "wave32 was slightly faster" was measured on
+// RDNA2 silicon, where the native wavefront is 32 lanes. RDNA3 and RDNA4 can run
+// 64-lane wavefronts, so pinning 32 there is a performance decision this project
+// has no measurement for - and the RX 9070 XT here shows exactly that shape:
+// default subgroup 64, range 32-64, rdna2=no. Nothing else is generation-blind:
+// allowWindowsAmdShaders keys on the *driver*, so an RDNA3 or RDNA4 card on the
+// AMD proprietary driver still gets the AMD-optimised shader packs.
 inline constexpr bool isRdna2DeviceId(std::uint32_t device_id) {
     return (device_id >= 0x73a0 && device_id <= 0x73ff) ||
            (device_id >= 0x7420 && device_id <= 0x743f) ||
@@ -125,8 +137,15 @@ static_assert(isAmdRdna2Device(kAmdVendorId, 0x73bf));  // Navi 21
 static_assert(isAmdRdna2Device(kAmdVendorId, 0x73df));  // Navi 22
 static_assert(isAmdRdna2Device(kAmdVendorId, 0x73ff));  // Navi 23
 static_assert(isAmdRdna2Device(kAmdVendorId, 0x7422));  // Navi 24
-static_assert(!isAmdRdna2Device(kAmdVendorId, 0x731f)); // Navi 10
-static_assert(!isAmdRdna2Device(kAmdVendorId, 0x744c)); // Navi 31
+static_assert(!isAmdRdna2Device(kAmdVendorId, 0x731f)); // Navi 10 (RDNA1)
+static_assert(!isAmdRdna2Device(kAmdVendorId, 0x744c)); // Navi 31 (RDNA3)
+// The RDNA4 card this project has measured, straight off tools/cap-probe.cpp:
+// device="AMD Radeon RX 9070 XT (RADV GFX1201)" device_id=0x7550 type=discrete
+// subgroup_size=64 subgroup_range=32-64 -> rdna2=no.
+static_assert(!isAmdRdna2Device(kAmdVendorId, 0x7550)); // RX 9070 XT (GFX1201, RDNA4)
+// Outside the AMD vendor table entirely: the Intel integrated device measured here
+// (vendor 0x8086, device_id 0xa780), which must never reach an AMD-specific rule.
+static_assert(!isAmdRdna2Device(0x8086, 0x73bf));
 
 // Whether an AMD device reports itself integrated, which is how an APU's graphics
 // block arrives (a Ryzen A1..Z2-class part shows up as INTEGRATED_GPU rather than

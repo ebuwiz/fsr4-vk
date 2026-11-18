@@ -29,6 +29,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <string>
@@ -282,6 +283,7 @@ int main() {
                   << " device_id=0x" << with_block.properties.deviceID << std::dec
                   << " rdna2=" << (with_block.rdna2Device() ? "yes" : "no")
                   << " integrated_amd=" << (with_block.amdIntegratedApu() ? "yes" : "no")
+                  << " gfx_ip=" << with_block.gfxIpName()
                   << " deviceUUID=";
         for (const auto byte : with_block.identity.deviceUUID) {
             std::cout << std::hex << std::setw(2) << std::setfill('0')
@@ -488,12 +490,32 @@ int main() {
             ++identity_failures;
         }
 
+        // The RDNA4 card measured on this machine, spelled exactly as RADV reports
+        // it: it must read as not-RDNA2, while the driver's own GFX token names the
+        // generation. Both halves matter - the first is the packaging decision, the
+        // second is the reason it can be reported without being acted on.
+        auto rdna4 = syntheticHost();
+        rdna4.properties.vendorID = fsr4vk::kAmdVendorId;
+        rdna4.properties.deviceID = 0x7550;
+        rdna4.properties.deviceType = VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+        const char* radv_name = "AMD Radeon RX 9070 XT (RADV GFX1201)";
+        std::memcpy(rdna4.properties.deviceName, radv_name, std::strlen(radv_name) + 1);
+        std::cout << "  synthetic_identity rdna4 rdna2="
+                  << (rdna4.rdna2Device() ? "yes" : "no")
+                  << " gfx_ip=" << rdna4.gfxIpName() << '\n';
+        if (rdna4.rdna2Device() || rdna4.gfxIpName() != "GFX1201") {
+            ++identity_failures;
+        }
+
         auto intel = syntheticHost();
         intel.properties.vendorID = 0x8086;  // the Intel RPL-S device on this machine
         intel.properties.deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+        const char* intel_name = "Intel(R) Graphics (RPL-S)";
+        std::memcpy(intel.properties.deviceName, intel_name, std::strlen(intel_name) + 1);
         std::cout << "  synthetic_identity intel_integrated integrated_amd="
-                  << (intel.amdIntegratedApu() ? "yes" : "no") << '\n';
-        if (intel.amdIntegratedApu()) {
+                  << (intel.amdIntegratedApu() ? "yes" : "no")
+                  << " gfx_ip=" << intel.gfxIpName() << '\n';
+        if (intel.amdIntegratedApu() || intel.gfxIpName() != "unreported") {
             ++identity_failures;
         }
 
