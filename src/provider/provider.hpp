@@ -17,6 +17,7 @@
 #include "diagnostics/diagnostics.hpp"
 #include "ffx_upscale.h"
 #include "models/models.hpp"
+#include "runtime/gpu-capabilities.hpp"
 
 #include <algorithm>
 #include <array>
@@ -75,16 +76,6 @@ inline const std::array<AdvertisedVersion, 3> kAdvertisedVersions{{
     {fsr4fp8::kVersionId, fsr4fp8::kVersionName},
 }};
 
-constexpr const char* kRequiredDeviceFunctionGroups[] = {
-    "vkGetDescriptorEXT",
-    "vkCmdBindDescriptorBuffersEXT",
-    "vkCmdSetDescriptorBufferOffsetsEXT",
-    "vkGetDescriptorSetLayoutSizeEXT",
-    "vkGetDescriptorSetLayoutBindingOffsetEXT",
-    "vkCmdPipelineBarrier2|vkCmdPipelineBarrier2KHR",
-    "vkCmdWriteTimestamp2|vkCmdWriteTimestamp2KHR",
-    "vkGetBufferDeviceAddress|vkGetBufferDeviceAddressKHR",
-};
 
 struct ColorCaptureState {
     bool enabled = false;
@@ -195,7 +186,12 @@ void recordColorCapture(ProviderContext& provider,
 void finishColorCapture(ProviderContext& provider) noexcept;
 
 std::uint64_t requestedVersionId(const ffxApiHeader* header);
-const ProviderVersion* selectVersion(std::uint64_t id, VkPhysicalDevice physical_device);
+// Resolves the requested model against a probed device. selection_reason
+// explains both an accepted choice and a rejection, so the log can name the
+// exact feature, extension or matrix shape that was missing.
+const ProviderVersion* selectVersion(std::uint64_t id,
+                                     const fsr4vk::GpuCapabilities& capabilities,
+                                     std::string& selection_reason);
 
 ffxReturnCode_t createContext(ffxContext* context,
                               ffxCreateContextDescHeader* header,

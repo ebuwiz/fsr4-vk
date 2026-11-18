@@ -104,47 +104,11 @@ const CreateBackendVkDesc* findVulkanBackend(const ffxApiHeader* header) {
 }
 
 void validateDeviceEntryPoints(const ProviderContext& provider) {
-    std::vector<std::string> missing;
-
-    for (const char* groupValue : kRequiredDeviceFunctionGroups) {
-        const std::string group(groupValue);
-        bool found = false;
-        std::size_t begin = 0;
-
-        while (begin <= group.size()) {
-            const std::size_t end = group.find('|', begin);
-            const std::string name =
-                group.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
-
-            if (!name.empty() && provider.getDeviceProcAddr(provider.device, name.c_str())) {
-                found = true;
-                break;
-            }
-
-            if (end == std::string::npos) {
-                break;
-            }
-
-            begin = end + 1;
-        }
-
-        if (!found) {
-            missing.push_back(group);
-        }
-    }
-
+    const auto missing = fsr4vk::missingEntryPoints(provider.device,
+                                                    provider.getDeviceProcAddr);
     if (!missing.empty()) {
-        std::string message = "missing Vulkan device entry point groups: ";
-
-        for (std::size_t i = 0; i < missing.size(); ++i) {
-            if (i) {
-                message += ", ";
-            }
-
-            message += missing[i];
-        }
-
-        throw std::runtime_error(message);
+        throw std::runtime_error("missing Vulkan device entry point groups: " +
+                                 fsr4vk::joinBlockers(missing));
     }
 }
 
@@ -170,9 +134,16 @@ ffxReturnCode_t createContext(ffxContext* context,
     }
 
     const std::uint64_t requested_version = requestedVersionId(header);
-    const auto* version = selectVersion(requested_version, backend->physicalDevice);
+
+    // Probe once: model selection and the diagnostics below share this snapshot.
+    const auto capabilities = fsr4vk::detect(backend->physicalDevice);
+    diagnosticLine(std::string("[capabilities] ") + capabilities.describe());
+
+    std::string selection_reason;
+    const auto* version = selectVersion(requested_version, capabilities, selection_reason);
 
     if (!version) {
+        diagnosticLine("[model] " + selection_reason, fsr4log::Level::Error);
         return FFX_API_RETURN_NO_PROVIDER;
     }
 
@@ -210,7 +181,7 @@ ffxReturnCode_t createContext(ffxContext* context,
         std::ostringstream selection;
         selection << "[model] selection source=" << source << " requested_id=0x" << std::hex
                   << requested_version << " selected_id=0x" << version->id << std::dec
-                  << " selected='" << version->name << "'";
+                  << " selected='" << version->name << "' reason=" << selection_reason;
         diagnostic(*provider, selection.str());
     }
 
@@ -350,216 +321,48 @@ std::uint64_t requestedVersionId(const ffxApiHeader* header) {
     return 0;
 }
 
-namespace {
-bool physicalDeviceHasExtension(VkPhysicalDevice physical_device, const char* wanted) {
-    std::uint32_t count = 0;
+const ProviderVersion* selectVersion(std::uint64_t id,
+                                     const fsr4vk::GpuCapabilities& capabilities,
+                                     std::string& selection_reason) {
+    // The model choice comes from the loader override, then FSR4_VK_MODEL, then
+    // auto. An override that no provider advertises is rejected outright.
+    auto model = fsr4vk::ModelChoice::Auto;
 
-    if (vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &count, nullptr) !=
-        VK_SUCCESS) {
-        return false;
-    }
-
-    std::vector<VkExtensionProperties> extensions(count);
-
-    if (vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &count, extensions.data()) !=
-        VK_SUCCESS) {
-        return false;
-    }
-
-    return std::any_of(
-        extensions.begin(), extensions.end(), [wanted](const VkExtensionProperties& extension) {
-            return std::strcmp(extension.extensionName, wanted) == 0;
-        });
-}
-
-bool physicalDeviceSupportsFp8Matrices(VkPhysicalDevice physical_device) {
-    VkPhysicalDeviceIDProperties target_id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
-    VkPhysicalDeviceProperties2 target{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-    target.pNext = &target_id;
-    vkGetPhysicalDeviceProperties2(physical_device, &target);
-
-    // The backend supplies no VkInstance for resolving physical-device extension commands.
-    struct ProbeInstance {
-        VkInstance handle{};
-
-        ~ProbeInstance() {
-            if (handle) {
-                vkDestroyInstance(handle, nullptr);
-            }
-        }
-    } probe;
-
-    VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    app.apiVersion = VK_API_VERSION_1_1;
-    VkInstanceCreateInfo info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
-    info.pApplicationInfo = &app;
-    if (vkCreateInstance(&info, nullptr, &probe.handle) != VK_SUCCESS) {
-        return false;
-    }
-    const auto get_matrices =
-        reinterpret_cast<PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR>(
-            vkGetInstanceProcAddr(probe.handle,
-                                  "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR"));
-    if (!get_matrices) {
-        return false;
-    }
-    uint32_t count = 0;
-    if (vkEnumeratePhysicalDevices(probe.handle, &count, nullptr) != VK_SUCCESS) {
-        return false;
-    }
-    std::vector<VkPhysicalDevice> devices(count);
-    if (vkEnumeratePhysicalDevices(probe.handle, &count, devices.data()) != VK_SUCCESS) {
-        return false;
-    }
-    devices.resize(count);
-    for (auto candidate : devices) {
-        VkPhysicalDeviceIDProperties id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
-        VkPhysicalDeviceCooperativeMatrixPropertiesKHR cooperative{
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
-        VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-        properties.pNext = &id;
-        id.pNext = &cooperative;
-        vkGetPhysicalDeviceProperties2(candidate, &properties);
-        if (std::memcmp(id.deviceUUID, target_id.deviceUUID, VK_UUID_SIZE) != 0 ||
-            std::memcmp(id.driverUUID, target_id.driverUUID, VK_UUID_SIZE) != 0) {
-            continue;
-        }
-        if (!(cooperative.cooperativeMatrixSupportedStages & VK_SHADER_STAGE_COMPUTE_BIT)) {
-            return false;
-        }
-        count = 0;
-        if (get_matrices(candidate, &count, nullptr) != VK_SUCCESS) {
-            return false;
-        }
-        std::vector<VkCooperativeMatrixPropertiesKHR> matrices(
-            count, {VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR});
-        if (get_matrices(candidate, &count, matrices.data()) != VK_SUCCESS) {
-            return false;
-        }
-        matrices.resize(count);
-        const auto supports = [&](VkComponentTypeKHR input_type) {
-            return std::any_of(matrices.begin(), matrices.end(), [&](const auto& matrix) {
-                return matrix.scope == VK_SCOPE_SUBGROUP_KHR && matrix.MSize == 16 &&
-                       matrix.NSize == 16 && matrix.KSize == 16 && matrix.AType == input_type &&
-                       matrix.BType == input_type &&
-                       matrix.CType == VK_COMPONENT_TYPE_FLOAT32_KHR &&
-                       matrix.ResultType == VK_COMPONENT_TYPE_FLOAT32_KHR &&
-                       !matrix.saturatingAccumulation;
-            });
-        };
-        return supports(VK_COMPONENT_TYPE_FLOAT16_KHR) &&
-               supports(VK_COMPONENT_TYPE_FLOAT8_E4M3_EXT);
-    }
-    return false;
-}
-
-bool physicalDeviceSupportsFp8(VkPhysicalDevice physical_device) {
-    if (!physicalDeviceHasExtension(physical_device, VK_EXT_SHADER_FLOAT8_EXTENSION_NAME) ||
-        !physicalDeviceHasExtension(physical_device, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME) ||
-        !physicalDeviceHasExtension(physical_device, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME)) {
-        return false;
-    }
-
-    VkPhysicalDeviceSubgroupSizeControlProperties subgroup{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES};
-    VkPhysicalDeviceSubgroupProperties subgroup_operations{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
-    VkPhysicalDeviceFloatControlsProperties float_controls{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES};
-    VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-    properties.pNext = &subgroup;
-    subgroup.pNext = &subgroup_operations;
-    subgroup_operations.pNext = &float_controls;
-    vkGetPhysicalDeviceProperties2(physical_device, &properties);
-    if (properties.properties.apiVersion < VK_API_VERSION_1_3 ||
-        subgroup.minSubgroupSize > 32 || subgroup.maxSubgroupSize < 32 ||
-        !(subgroup.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) ||
-        !(subgroup_operations.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) ||
-        !(subgroup_operations.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT) ||
-        !float_controls.shaderDenormPreserveFloat16) {
-        return false;
-    }
-
-    VkPhysicalDeviceShaderFloat8FeaturesEXT float8{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT};
-    VkPhysicalDeviceCooperativeMatrixFeaturesKHR cooperative{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
-    VkPhysicalDeviceShaderFloat16Int8Features float16{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES};
-    VkPhysicalDevice8BitStorageFeatures storage8{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES};
-    VkPhysicalDeviceVulkanMemoryModelFeatures memory_model{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES};
-    VkPhysicalDeviceSubgroupSizeControlFeatures subgroup_features{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES};
-    VkPhysicalDeviceBufferDeviceAddressFeatures buffer_address{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
-    VkPhysicalDeviceDescriptorIndexingFeatures descriptor_indexing{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES};
-    VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
-    VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-
-    features.pNext = &cooperative;
-    cooperative.pNext = &float8;
-    float8.pNext = &float16;
-    float16.pNext = &storage8;
-    storage8.pNext = &memory_model;
-    memory_model.pNext = &subgroup_features;
-    subgroup_features.pNext = &buffer_address;
-    buffer_address.pNext = &descriptor_indexing;
-    descriptor_indexing.pNext = &descriptor_buffer;
-    vkGetPhysicalDeviceFeatures2(physical_device, &features);
-
-    return cooperative.cooperativeMatrix && float8.shaderFloat8 &&
-           float8.shaderFloat8CooperativeMatrix && float16.shaderFloat16 && float16.shaderInt8 &&
-           storage8.storageBuffer8BitAccess && memory_model.vulkanMemoryModel &&
-           subgroup_features.subgroupSizeControl && subgroup_features.computeFullSubgroups &&
-           buffer_address.bufferDeviceAddress && descriptor_indexing.runtimeDescriptorArray &&
-           descriptor_buffer.descriptorBuffer && features.features.shaderInt16 &&
-           features.features.shaderStorageImageReadWithoutFormat &&
-           features.features.shaderStorageImageWriteWithoutFormat &&
-           physicalDeviceSupportsFp8Matrices(physical_device);
-}
-
-} // namespace
-
-const ProviderVersion* selectVersion(std::uint64_t id, VkPhysicalDevice physical_device) {
-    // An explicit loader version takes precedence over the environment.
     if (id != 0 && id != kAutoVersionId) {
-        for (const auto& version : kProviderVersions) {
-            if (version.id == id) {
-                if (id == fsr4fp8::kVersionId && !physicalDeviceSupportsFp8(physical_device)) {
-                    diagnosticLine("[fp8] device does not support required FP8 matrices",
-                                   fsr4log::Level::Error);
-                    return nullptr;
-                }
-                return &version;
-            }
+        if (id != fsr4int8::kVersionId && id != fsr4fp8::kVersionId) {
+            selection_reason = "no provider advertises the requested version id";
+            return nullptr;
         }
 
+        model = id == fsr4int8::kVersionId ? fsr4vk::ModelChoice::ForceInt8
+                                           : fsr4vk::ModelChoice::ForceFp8;
+    } else if (const char* value = std::getenv("FSR4_VK_MODEL"); value && *value) {
+        const auto parsed = fsr4vk::parseModelChoice(value);
+
+        if (!parsed) {
+            selection_reason = std::string("unsupported FSR4_VK_MODEL value=") + value;
+            return nullptr;
+        }
+
+        model = *parsed;
+    }
+
+    // Auto keeps the historical INT8 default: INT8 is the cheaper contract, and
+    // selecting FP8 implicitly would change what existing deployments run.
+    const bool force_fp8 = model == fsr4vk::ModelChoice::ForceFp8;
+    const auto* version = force_fp8 ? &kProviderVersions[1] : &kProviderVersions[0];
+
+    // Auto still has to satisfy the model it falls back to, so a device that
+    // cannot run INT8 reports its blockers instead of failing on first dispatch.
+    const auto blockers = force_fp8 ? capabilities.fp8Blockers() : capabilities.int8Blockers();
+    if (!blockers.empty()) {
+        selection_reason = "device cannot run " + std::string(version->name) + ": " +
+                           fsr4vk::joinBlockers(blockers);
         return nullptr;
     }
 
-    const char* model = std::getenv("FSR4_VK_MODEL");
-
-    if (model && *model) {
-        if (std::strcmp(model, "int8") == 0) {
-            return &kProviderVersions[0];
-        }
-        if (std::strcmp(model, "fp8") == 0) {
-            if (!physicalDeviceSupportsFp8(physical_device)) {
-                diagnosticLine("[fp8] device does not support required FP8 matrices",
-                               fsr4log::Level::Error);
-                return nullptr;
-            }
-            return &kProviderVersions[1];
-        }
-
-        return nullptr;
-    }
-
-    return &kProviderVersions[0];
+    selection_reason = std::string("device satisfies the ") + version->name + " contract";
+    return version;
 }
 } // namespace fsr4provider
 

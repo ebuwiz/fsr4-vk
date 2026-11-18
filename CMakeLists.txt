@@ -131,11 +131,12 @@ target_include_directories(fsr4_assets PUBLIC src "${FSR4_GENERATED}")
 add_library(fsr4_runtime STATIC
     "${overlay_header}"
     src/runtime/context.cpp src/runtime/frame.cpp src/runtime/resources.cpp src/runtime/rcas.cpp src/runtime/color-space.cpp
+    src/runtime/gpu-capabilities.cpp
     src/models/fp8.cpp src/models/int8.cpp
     src/diagnostics/logging.cpp src/diagnostics/capture.cpp src/diagnostics/overlay.cpp
     src/diagnostics/gpu-profile.cpp)
 set_target_properties(fsr4_runtime PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_link_libraries(fsr4_runtime PUBLIC fsr4_assets Vulkan::Vulkan)
+target_link_libraries(fsr4_runtime PUBLIC fsr4_assets Vulkan::Vulkan ${CMAKE_DL_LIBS})
 target_include_directories(fsr4_runtime PUBLIC src PRIVATE
     third_party/fidelityfx-api/upscalers/include)
 add_library(amd_fidelityfx_upscaler_vk SHARED
