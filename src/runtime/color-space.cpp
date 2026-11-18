@@ -20,6 +20,7 @@ std::span<const VkPipeline> QualityContext::prepareColorSpacePipelines(ColorSpac
                                    family,
                                    debug_view,
                                    !use_int8_dispatch && model_pipeline_plan.windows_fp8_optimized);
+    bool created = false;
     for (unsigned endpoint = 0; endpoint < 2; ++endpoint) {
         const auto index = endpoint ? pipelines.size() - 1 : 0;
         const auto& path = endpoint ? shaders.postpass : shaders.prepass;
@@ -32,6 +33,12 @@ std::span<const VkPipeline> QualityContext::prepareColorSpacePipelines(ColorSpac
         pipelines[index] = pipeline;
         active_shader_paths[index] = path;
         log("[color-space] shader=" + path.string());
+        created = true;
+    }
+    if (created) {
+        log("[pipelines] creation_calls=" + std::to_string(pipeline_creation_count) +
+            " creation_ms=" + std::to_string(pipeline_creation_ms) + " cache=" +
+            (pipeline_cache_initial_data ? "warm" : "cold"));
     }
     return pipelines;
 }

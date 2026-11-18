@@ -52,6 +52,7 @@ bool QualityContext::collectGpuProfile(Frame& frame) {
     };
 
     const auto csv_path = diagnosticPath("FSR4_VK_GPU_PROFILE_PATH", "fsr4-gpu-profile.csv");
+    constexpr std::string_view csv_header = "frame,model,transport,zone,ms";
     bool write_header = true;
     std::error_code file_error;
 
@@ -59,7 +60,26 @@ bool QualityContext::collectGpuProfile(Frame& frame) {
         const auto csv_size = std::filesystem::file_size(csv_path, file_error);
 
         if (!file_error && csv_size != 0) {
-            write_header = false;
+            std::ifstream existing(csv_path);
+            std::string header;
+            std::getline(existing, header);
+            if (!header.empty() && header.back() == '\r') {
+                header.pop_back();
+            }
+            if (header == csv_header) {
+                write_header = false;
+            } else {
+                existing.close();
+                std::filesystem::remove(csv_path, file_error);
+                if (file_error) {
+                    log("[gpu-profile] cannot rotate incompatible CSV: " +
+                            file_error.message(),
+                        fsr4log::Level::Warning);
+                    frame.profile_pending = false;
+                    return true;
+                }
+                write_header = true;
+            }
         }
     }
 
@@ -67,12 +87,15 @@ bool QualityContext::collectGpuProfile(Frame& frame) {
 
     if (stream) {
         if (write_header) {
-            stream << "frame,zone,ms\n";
+            stream << csv_header << '\n';
         }
 
         stream << std::fixed << std::setprecision(6);
         const auto emit = [&](const std::string& zone, uint64_t begin, uint64_t end) {
-            stream << frame.profile_frame_id << ',' << zone << ',' << profileMs(begin, end) << '\n';
+            stream << frame.profile_frame_id << ','
+                   << (use_int8_dispatch ? "int8" : "fp8") << ','
+                   << fsr4vk::descriptorBackendName(descriptor_backend) << ',' << zone << ','
+                   << profileMs(begin, end) << '\n';
         };
 
         emit("frame_total", timestamp_ticks(kProfileFrameStart), timestamp_ticks(kProfileFrameEnd));
@@ -183,6 +206,9 @@ void QualityContext::configureGpuProfile() {
         gpu_benchmark_enabled = std::strcmp(value, "0") != 0;
         gpu_profile_enabled = gpu_profile_enabled || gpu_benchmark_enabled;
     }
+    if (const char* value = std::getenv("FSR4_VK_BENCHMARK_PASSES")) {
+        gpu_benchmark_passes = std::strcmp(value, "0") != 0;
+    }
 
     if (gpu_profile_enabled) {
         if (const char* value = std::getenv("FSR4_VK_GPU_PROFILE_SUMMARY_ONLY")) {
@@ -191,7 +217,7 @@ void QualityContext::configureGpuProfile() {
 
         gpu_profile_interval = gpu_benchmark_enabled ? 1 : gpu_profile_interval;
         if (gpu_benchmark_enabled) {
-            gpu_profile_summary_only = true;
+            gpu_profile_summary_only = !gpu_benchmark_passes;
         }
         if (const char* value = std::getenv("FSR4_VK_GPU_PROFILE_INTERVAL")) {
             char* end = nullptr;

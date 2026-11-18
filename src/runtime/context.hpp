@@ -152,6 +152,9 @@ class QualityContext final : public fsr4_411::QualityContext {
     VkPipelineLayout pipeline_layout{};
     VkPipelineCache pipeline_cache{};
     fs::path pipeline_cache_path;
+    bool pipeline_cache_initial_data = false;
+    double pipeline_creation_ms = 0.0;
+    uint32_t pipeline_creation_count = 0;
     std::array<VkDescriptorSetLayout, kNumDescriptorSets> set_layouts{};
 
     // Only the selected shaders own pipelines; inactive variants are retired.
@@ -301,6 +304,7 @@ class QualityContext final : public fsr4_411::QualityContext {
     bool gpu_profile_enabled = false;
     bool gpu_profile_summary_only = false;
     bool gpu_benchmark_enabled = false;
+    bool gpu_benchmark_passes = false;
     bool gpu_benchmark_reported = false;
     uint32_t gpu_profile_interval = 60;
     uint32_t gpu_benchmark_warmup = 30;

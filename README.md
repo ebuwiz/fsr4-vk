@@ -89,6 +89,7 @@ visible instead of silently picking a model or a packaging shape for the operato
 | `FSR4_VK_DESCRIPTOR_BACKEND` | `auto`; `sets` or `descriptor-set`; `buffers` or `descriptor-buffer` | Selects conventional descriptor sets or `VK_EXT_descriptor_buffer`. `auto` prefers descriptor buffers only when support and device entry points are available, otherwise it selects sets. Manual choices still pass the same capability and entry-point checks. The legacy `FSR4_DESCRIPTOR_BACKEND` spelling is also accepted. |
 | `FSR4_VK_PIPELINE_CACHE_PATH` | file path | Stores Vulkan pipeline-cache data under a GPU/driver-specific default filename, or at this exact path. The Vulkan cache header performs the final UUID and driver-compatibility check. Set `FSR4_VK_PIPELINE_CACHE_DISABLED=1` to keep the cache in memory only. |
 | `FSR4_VK_BENCHMARK` | `1` / `0` | Enables the existing GPU timestamp profiler at every frame and reports average, median, P95 and P99 after a warm-up. `FSR4_VK_BENCHMARK_WARMUP` and `FSR4_VK_BENCHMARK_FRAMES` default to 30 and 300. |
+| `FSR4_VK_BENCHMARK_PASSES` | `1` / `0` | Adds per-dispatch and post-dispatch barrier timings to benchmark CSV output. |
 | `FSR4_VK_DEVICE_CLASS` | `rdna2`, `apu`, `integrated` pin RDNA2 packaging; `not-rdna2`, `modern` lift it | The RDNA2 verdict feeds exactly two things: the INT8 wave32 pin and the AMD shader-pack allowance. The device-ID table in `src/runtime/resources.hpp` is RDNA2-only by design — RDNA1, RDNA3 and RDNA4 run 64-lane wavefronts and "wave32 was slightly faster" was measured on RDNA2 — so this lever is how an operator covers an AMD device whose ID that release has not measured. It adds no ID to the table, and it cannot make a non-AMD device RDNA2. |
 | `FSR4_VK_FORCE_WINDOWS_AMD_SHADERS` | unset; `0` off; anything else on | Requests the AMD-optimised Windows shader packs without waiting for the AMD driver check. Native-asset builds have no such packs, which the same log line reports as `windows_shaders_available=no`, so forcing changes the request, not the availability. |
 
@@ -156,7 +157,10 @@ The build itself verifies every embedded asset payload and alias. On top of that
   descriptor-set fallback against the shipped shaders rather than only probing
   entry points. `FSR4_VK_SMOKE_FRAMES=N` extends the smoke run; enabling
   `FSR4_VK_BENCHMARK=1` uses the runtime's GPU timestamps and reports average,
-  median, P95 and P99. Devices without a suitable AMD GPU return exit code 77.
+  median, P95 and P99. `FSR4_VK_SMOKE_RENDER_SIZE=960x540` and
+  `FSR4_VK_SMOKE_OUTPUT_SIZE=1920x1080` select production-sized inputs; per-pass
+  and barrier CSV rows require `FSR4_VK_BENCHMARK_PASSES=1`. Devices without a
+  suitable AMD GPU return exit code 77.
 - `FSR4_VK_PIPELINE_CACHE_PATH` records a measured cold start on the first run and
   a warm start on later runs, while `FSR4_VK_BENCHMARK_WARMUP` and
   `FSR4_VK_BENCHMARK_FRAMES` control GPU timing. Cache data is accepted only by

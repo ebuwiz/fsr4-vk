@@ -4,8 +4,38 @@
 
 #include "provider/provider.hpp"
 
+#include <chrono>
+#include <thread>
+
 namespace fsr4provider {
 namespace {
+bool waitCaptureEvent(ProviderContext& provider, VkEvent event) noexcept {
+    if (!event) {
+        return true;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    for (;;) {
+        const VkResult status = vkGetEventStatus(provider.device, event);
+        if (status == VK_EVENT_SET) {
+            return true;
+        }
+        if (status != VK_EVENT_RESET) {
+            diagnostic(provider,
+                       "[capture] event wait failed with VkResult " +
+                           std::to_string(status),
+                       fsr4log::Level::Error);
+            return false;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            diagnostic(provider,
+                       "[capture] event wait timed out after 30 seconds",
+                       fsr4log::Level::Warning);
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
 void releaseCaptureStorage(ProviderContext& provider, ColorCaptureState& capture) noexcept {
 
     if (capture.mapped && capture.memory) {
@@ -421,7 +451,10 @@ void finishColorCapture(ProviderContext& provider) noexcept {
     auto& capture = provider.color_capture;
 
     if (capture.pending) {
-        if (vkDeviceWaitIdle(provider.device) == VK_SUCCESS) {
+        const bool complete =
+            waitCaptureEvent(provider, capture.event) ||
+            vkDeviceWaitIdle(provider.device) == VK_SUCCESS;
+        if (complete) {
             writeCompletedColorCapture(provider);
         }
     }
@@ -828,7 +861,17 @@ void finishFrameCapture(ProviderContext& provider) noexcept {
     if (!c.enabled) {
         return;
     }
-    if (vkDeviceWaitIdle(provider.device) == VK_SUCCESS) {
+    bool events_complete = true;
+    for (const auto& slot : c.slots) {
+        if (slot.storage.pending &&
+            !waitCaptureEvent(provider, slot.storage.event)) {
+            events_complete = false;
+        }
+    }
+    if (!events_complete) {
+        events_complete = vkDeviceWaitIdle(provider.device) == VK_SUCCESS;
+    }
+    if (events_complete) {
         pollFrameCapture(provider);
     }
     if (c.completed != c.count && c.started) {

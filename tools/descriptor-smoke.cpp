@@ -40,6 +40,28 @@ Image externalImage(const fsr4vk::GpuCapabilities& capabilities,
     return fsr4_411::createImage(capabilities.memory, device, width, height, format, usage);
 }
 
+std::pair<uint32_t, uint32_t> smokeExtent(const char* environment, uint32_t fallback) {
+    const char* value = std::getenv(environment);
+    if (!value || !*value) {
+        return {fallback, fallback};
+    }
+    const std::string text(value);
+    const auto separator = text.find('x');
+    if (separator == std::string::npos || separator == 0 || separator + 1 == text.size()) {
+        throw std::runtime_error(std::string(environment) + " must use WIDTHxHEIGHT");
+    }
+    char* width_end = nullptr;
+    char* height_end = nullptr;
+    const unsigned long width = std::strtoul(text.c_str(), &width_end, 10);
+    const unsigned long height = std::strtoul(text.c_str() + separator + 1, &height_end, 10);
+    if (width_end != text.c_str() + separator || *height_end != '\0' ||
+        width < 64 || height < 64 || width > 7680 || height > 4320) {
+        throw std::runtime_error(std::string(environment) +
+                                 " is outside supported WIDTHxHEIGHT bounds");
+    }
+    return {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
+}
+
 void transitionExternal(PFN_vkCmdPipelineBarrier2 barrier2,
                         VkCommandBuffer command_buffer,
                         const Image& image,
@@ -78,6 +100,10 @@ std::vector<uint8_t> runBackend(VkPhysicalDevice physical_device,
                                 fsr4vk::DescriptorBackend backend,
                                 bool fp8) {
     const auto context_start = std::chrono::steady_clock::now();
+    const auto [render_width, render_height] =
+        smokeExtent("FSR4_VK_SMOKE_RENDER_SIZE", 128);
+    const auto [output_width, output_height] =
+        smokeExtent("FSR4_VK_SMOKE_OUTPUT_SIZE", 128);
     const uint32_t queue_family = findComputeQueue(physical_device);
     const float priority = 1.0f;
     VkDeviceQueueCreateInfo queue_info{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
@@ -198,28 +224,27 @@ std::vector<uint8_t> runBackend(VkPhysicalDevice physical_device,
         .asset_root = fsr4assets::root,
         .diagnostic_root = std::filesystem::current_path(),
         .get_device_proc_addr = get_device_proc_addr,
-        .max_render_width = 128,
-        .max_render_height = 128,
-        .max_output_width = 128,
-        .max_output_height = 128,
+        .max_render_width = render_width,
+        .max_render_height = render_height,
+        .max_output_width = output_width,
+        .max_output_height = output_height,
         .api_version = supported.properties.apiVersion,
     };
     auto context = fp8 ? fsr4fp8::createContext(context_info)
                        : fsr4int8::createContext(context_info);
     const auto context_ready = std::chrono::steady_clock::now();
 
-    const uint32_t width = 128;
     auto color = externalImage(
-        supported, device, width, width, VK_FORMAT_R16G16B16A16_SFLOAT,
+        supported, device, render_width, render_height, VK_FORMAT_R16G16B16A16_SFLOAT,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     auto depth = externalImage(
-        supported, device, width, width, VK_FORMAT_R32_SFLOAT,
+        supported, device, render_width, render_height, VK_FORMAT_R32_SFLOAT,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     auto motion = externalImage(
-        supported, device, width, width, VK_FORMAT_R16G16_SFLOAT,
+        supported, device, render_width, render_height, VK_FORMAT_R16G16_SFLOAT,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     auto output = externalImage(
-        supported, device, width, width, VK_FORMAT_R16G16B16A16_SFLOAT,
+        supported, device, output_width, output_height, VK_FORMAT_R16G16B16A16_SFLOAT,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
 
@@ -298,13 +323,22 @@ std::vector<uint8_t> runBackend(VkPhysicalDevice physical_device,
         }
 
         OptimizedConstants constants{};
-        constants.inv_size[0] = constants.inv_size[1] = 1.0f / width;
-        constants.scale[0] = constants.scale[1] = 1.0f;
-        constants.inv_scale[0] = constants.inv_scale[1] = 1.0f;
-        constants.tex_size[0] = constants.tex_size[1] = width;
-        constants.max_render_size[0] = constants.max_render_size[1] = width;
-        constants.width = constants.height = width;
-        constants.width_lr = constants.height_lr = width;
+        const uint32_t padded_width = fsr4::roundUp(output_width, 8);
+        const uint32_t padded_height = fsr4::roundUp(output_height, 8);
+        constants.inv_size[0] = 1.0f / padded_width;
+        constants.inv_size[1] = 1.0f / padded_height;
+        constants.scale[0] = static_cast<float>(padded_width) / render_width;
+        constants.scale[1] = static_cast<float>(padded_height) / render_height;
+        constants.inv_scale[0] = 1.0f / constants.scale[0];
+        constants.inv_scale[1] = 1.0f / constants.scale[1];
+        constants.tex_size[0] = padded_width;
+        constants.tex_size[1] = padded_height;
+        constants.max_render_size[0] = render_width;
+        constants.max_render_size[1] = render_height;
+        constants.width = padded_width;
+        constants.height = padded_height;
+        constants.width_lr = render_width;
+        constants.height_lr = render_height;
         constants.pre_exposure = 1.0f;
         constants.previous_pre_exposure = 1.0f;
         const auto record_start = std::chrono::steady_clock::now();
@@ -336,7 +370,8 @@ std::vector<uint8_t> runBackend(VkPhysicalDevice physical_device,
                                                   frames_start)
             .count();
 
-    const VkDeviceSize output_bytes = width * width * 8;
+    const VkDeviceSize output_bytes =
+        static_cast<VkDeviceSize>(output_width) * output_height * 8;
     auto readback = fsr4_411::createBuffer(supported.memory,
                                           device,
                                           output_bytes,
@@ -371,7 +406,7 @@ std::vector<uint8_t> runBackend(VkPhysicalDevice physical_device,
     dispatch.cmd_pipeline_barrier2(readback_command, &readback_dependency);
     VkBufferImageCopy copy{};
     copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    copy.imageExtent = {width, width, 1};
+    copy.imageExtent = {output_width, output_height, 1};
     vkCmdCopyImageToBuffer(readback_command,
                            output.image,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -398,6 +433,8 @@ std::vector<uint8_t> runBackend(VkPhysicalDevice physical_device,
     vkDestroyDevice(device, nullptr);
     std::cout << "descriptor backend " << backend_name
               << " model=" << (fp8 ? "fp8" : "int8")
+              << " render=" << render_width << 'x' << render_height
+              << " output=" << output_width << 'x' << output_height
               << " frames=" << frame_count << " create_ms="
               << std::chrono::duration<double, std::milli>(context_ready - context_start).count()
               << " average_record_ms=" << total_record_ms / frame_count

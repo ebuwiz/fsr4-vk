@@ -755,6 +755,7 @@ void QualityContext::configureModelPipelines(const fs::path& shader_dir,
 
 namespace fsr4runtime {
 VkPipeline QualityContext::createComputePipeline(const std::vector<uint32_t>& code, bool wave32) {
+    const auto pipeline_start = std::chrono::steady_clock::now();
     VkShaderModuleCreateInfo module_info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     module_info.codeSize = code.size() * sizeof(uint32_t);
     module_info.pCode = code.data();
@@ -801,6 +802,12 @@ VkPipeline QualityContext::createComputePipeline(const std::vector<uint32_t>& co
         vkDestroyPipeline(device, pipeline, nullptr);
     }
     check(result, "compute pipeline");
+    const double elapsed_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                  pipeline_start)
+            .count();
+    pipeline_creation_ms += elapsed_ms;
+    ++pipeline_creation_count;
     return pipeline;
 }
 
@@ -858,7 +865,12 @@ void QualityContext::createPipelineCache() {
         if (!root.empty()) {
             const auto fingerprint = pipelineDeviceFingerprint(device_capabilities);
             std::ostringstream filename;
-            filename << "v2-" << std::hex << fingerprint << ".bin";
+            filename << "v3-" << std::hex << fingerprint << '-'
+                     << (use_int8_dispatch ? "int8" : "fp8") << '-'
+                     << (descriptor_backend == DescriptorBackend::DescriptorBuffers
+                             ? "buffers"
+                             : "sets")
+                     << ".bin";
             if (const char* exact = std::getenv("FSR4_VK_PIPELINE_CACHE_PATH");
                 exact && *exact) {
                 pipeline_cache_path = exact;
@@ -914,6 +926,7 @@ void QualityContext::createPipelineCache() {
             fsr4log::Level::Warning);
     }
     check(result, "vkCreatePipelineCache");
+    pipeline_cache_initial_data = !initial_data.empty();
     log("[pipeline-cache] status=" +
         std::string(initial_data.empty() ? "cold" : "loaded") + " persistent=" +
         (pipeline_cache_path.empty() ? "disabled" : "enabled") + " path='" +
@@ -1007,7 +1020,10 @@ void QualityContext::prepareModelPipelines() {
     }
     model_pipeline_variant = variant;
     log("[pipelines] model=" + std::string(variant ? "ultraperf" : "standard") +
-        " created=" + std::to_string(created));
+        " created=" + std::to_string(created) + " creation_calls=" +
+        std::to_string(pipeline_creation_count) + " creation_ms=" +
+        std::to_string(pipeline_creation_ms) + " cache=" +
+        (pipeline_cache_initial_data ? "warm" : "cold"));
 }
 
 void QualityContext::retirePipeline(VkPipeline& pipeline) {
