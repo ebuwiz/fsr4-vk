@@ -5,6 +5,40 @@
 #include "runtime/context.hpp"
 
 namespace fsr4runtime {
+namespace {
+
+// A capture pairing key. Not cryptographic: the point is that two runs of a game
+// can be matched on the exact frame they were shown, and a 64-bit FNV-1a over the
+// payload bytes does that with a false-pair chance nobody can reach at the frame
+// counts a capture can arm for.
+uint64_t payloadFingerprint(const void* data, size_t bytes) {
+    uint64_t hash = 0xcbf29ce484222325ull;
+    const uint8_t* cursor = static_cast<const uint8_t*>(data);
+    for (size_t index = 0; index < bytes; ++index) {
+        hash ^= cursor[index];
+        hash *= 0x100000001b3ull;
+    }
+    return hash;
+}
+
+// FNV-1a combining step: folds one payload fingerprint into an aggregate, so a
+// frame's identity is one number over every payload that defines it.
+uint64_t foldFingerprint(uint64_t aggregate, uint64_t value) {
+    aggregate ^= value;
+    aggregate *= 0x100000001b3ull;
+    return aggregate;
+}
+
+std::string hexFingerprint(uint64_t value) {
+    std::ostringstream text;
+    text << "0x" << std::hex << value;
+    return text.str();
+}
+
+} // namespace
+} // namespace fsr4runtime
+
+namespace fsr4runtime {
 
 uint32_t QualityContext::bytesPerPixel(VkFormat format) {
     switch (format) {
@@ -145,7 +179,10 @@ void QualityContext::liveCaptureManifest(const Image& color,
             << ", \"width_lr\": " << constants.width_lr
             << ", \"height_lr\": " << constants.height_lr << ", \"reset\": " << constants.reset
             << ", \"pre_exposure\": " << constants.pre_exposure
-            << ", \"previous_pre_exposure\": " << constants.previous_pre_exposure << "},\n"
+            << ", \"previous_pre_exposure\": " << constants.previous_pre_exposure
+            << ", \"constants_fingerprint\": \""
+            << hexFingerprint(payloadFingerprint(&constants, sizeof(OptimizedConstants)))
+            << "\"},\n"
             << "  \"external_images\": {\n";
 
         emit_image("color", color, true);
@@ -332,15 +369,67 @@ void QualityContext::liveCaptureFlush() noexcept {
             return;
         }
 
+        struct FingerprintRow {
+            std::string relative_path;
+            uint64_t bytes = 0;
+            uint64_t fingerprint = 0;
+        };
+
+        std::vector<FingerprintRow> fingerprints;
+
         for (auto& item : live_capture_items) {
             if (item.staging.mapped && item.bytes) {
                 liveCaptureWrite(live_capture_frame_dir / item.relative_path,
                                  item.staging.mapped,
                                  static_cast<size_t>(item.bytes));
+                fingerprints.push_back({item.relative_path,
+                                        static_cast<uint64_t>(item.bytes),
+                                        payloadFingerprint(item.staging.mapped,
+                                                          static_cast<size_t>(item.bytes))});
             }
 
             destroyBuffer(device, item.staging);
         }
+
+        // The pairing keys a transport A/B compares on: prepass_in/* is what a frame
+        // *is* (the app's picture plus the runtime's incoming state), postpass_out/
+        // * is what this run's transport made from it. Rows are folded in path order
+        // so the numbers depend only on what was captured and never on the order
+        // the stages happened to record it, and the transport name travels with
+        // them so a comparison of two runs that used the same transport cannot pass
+        // as an A/B by accident.
+        std::sort(fingerprints.begin(),
+                  fingerprints.end(),
+                  [](const FingerprintRow& left, const FingerprintRow& right) {
+                      return left.relative_path < right.relative_path;
+                  });
+
+        uint64_t input_fingerprint = 0xcbf29ce484222325ull;
+        uint64_t output_fingerprint = 0xcbf29ce484222325ull;
+        for (const auto& row : fingerprints) {
+            if (row.relative_path.rfind("prepass_in/", 0) == 0) {
+                input_fingerprint = foldFingerprint(input_fingerprint, row.fingerprint);
+            } else if (row.relative_path.rfind("postpass_out/", 0) == 0) {
+                output_fingerprint = foldFingerprint(output_fingerprint, row.fingerprint);
+            }
+        }
+
+        std::ostringstream ab;
+        ab << "{\n"
+           << "  \"frame\": " << live_capture_target_frame << ",\n"
+           << "  \"transport\": \"" << fsr4vk::descriptorBackendName(descriptor_backend) << "\",\n"
+           << "  \"files\": [\n";
+        for (size_t index = 0; index < fingerprints.size(); ++index) {
+            const auto& row = fingerprints[index];
+            ab << "    {\"path\": \"" << row.relative_path << "\", \"bytes\": " << row.bytes
+               << ", \"fnv1a64\": \"" << hexFingerprint(row.fingerprint) << "\"}"
+               << (index + 1 == fingerprints.size() ? "\n" : ",\n");
+        }
+        ab << "  ],\n"
+           << "  \"input_fingerprint\": \"" << hexFingerprint(input_fingerprint) << "\",\n"
+           << "  \"output_fingerprint\": \"" << hexFingerprint(output_fingerprint) << "\"\n"
+           << "}\n";
+        liveCaptureWrite(live_capture_frame_dir / "ab-hashes.json", ab.str().data(), ab.str().size());
 
         const size_t count = live_capture_items.size();
 
@@ -348,7 +437,9 @@ void QualityContext::liveCaptureFlush() noexcept {
         live_capture_pending = false;
 
         log("[411-capture] COMPLETE frame=" + std::to_string(live_capture_target_frame) +
-            " dir=" + live_capture_frame_dir.string() + " files=" + std::to_string(count));
+            " dir=" + live_capture_frame_dir.string() + " files=" + std::to_string(count) +
+            " input=" + hexFingerprint(input_fingerprint) +
+            " output=" + hexFingerprint(output_fingerprint));
 
     } catch (const std::exception& e) {
         log(std::string("[411-capture] flush failed: ") + e.what(), fsr4log::Level::Error);

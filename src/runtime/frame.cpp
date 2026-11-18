@@ -87,6 +87,47 @@ void QualityContext::recordFrame(VkCommandBuffer command_buffer,
     }
 
     prepareExternalViews(frame, color, depth, motion, exposure_image, optional_mask, output);
+
+    // A transport A/B can only be judged on frames the two runs genuinely saw, so
+    // a capture has to record what a frame *is*: the app's own colour, depth, motion
+    // and exposure images, plus the output before the runtime writes it, all in the
+    // layouts the caller handed over and before any stage has touched them. The
+    // runtime's incoming history, recurrent, reprojected and scratch state are
+    // already captured at this same point; without these six the same internal
+    // state under a different picture would look like a pair and compare unfair.
+    if (live_capture_recording) {
+        liveCaptureImage(command_buffer,
+                         CapturePoint::BeforePrepass,
+                         "color",
+                         color,
+                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        liveCaptureImage(command_buffer,
+                         CapturePoint::BeforePrepass,
+                         "depth",
+                         depth,
+                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        liveCaptureImage(command_buffer,
+                         CapturePoint::BeforePrepass,
+                         "motion",
+                         motion,
+                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        liveCaptureImage(command_buffer,
+                         CapturePoint::BeforePrepass,
+                         "exposure_image",
+                         exposure_image,
+                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        liveCaptureImage(command_buffer,
+                         CapturePoint::BeforePrepass,
+                         "optional_mask",
+                         optional_mask,
+                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        liveCaptureImage(command_buffer,
+                         CapturePoint::BeforePrepass,
+                         "output_before_write",
+                         output,
+                         VK_IMAGE_LAYOUT_GENERAL);
+    }
+
     auto& history = images[image_slot::history];
     auto& reprojected = images[image_slot::reprojected];
     auto& recurrent = images[image_slot::recurrent];
