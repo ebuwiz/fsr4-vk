@@ -7,6 +7,7 @@
 #include "diagnostics/diagnostics.hpp"
 
 #include <cstdio>
+#include <mutex>
 
 namespace fsr4runtime {
 
@@ -16,6 +17,13 @@ void QualityContext::release() {
     }
 
     vkDeviceWaitIdle(device);
+    for (auto& frame : frames) {
+        if (!collectGpuProfile(frame)) {
+            log("[gpu-profile] pending query was unavailable during release",
+                fsr4log::Level::Warning);
+        }
+    }
+    reportGpuBenchmark();
 
     if (live_capture_pending) {
         liveCaptureFlush();
@@ -32,8 +40,8 @@ void QualityContext::release() {
     }
 
     for (auto& frame : frames) {
-        for (auto image_view : frame.views) {
-            vkDestroyImageView(device, image_view, nullptr);
+        for (const auto& cached_view : frame.image_view_cache) {
+            vkDestroyImageView(device, cached_view.view, nullptr);
         }
 
         destroyBuffer(device, frame.constants);
@@ -63,6 +71,9 @@ void QualityContext::release() {
     }
 
     for (auto& image : retired_staging_outputs) {
+        destroyImage(device, image);
+    }
+    for (auto& image : retired_internal_images) {
         destroyImage(device, image);
     }
 
@@ -117,6 +128,10 @@ void QualityContext::release() {
     if (pipeline_layout) {
         vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
     }
+    savePipelineCache();
+    if (pipeline_cache) {
+        vkDestroyPipelineCache(device, pipeline_cache, nullptr);
+    }
 
     for (auto& layout : set_layouts) {
         if (layout) {
@@ -168,7 +183,16 @@ QualityContext::QualityContext(VkPhysicalDevice physical_device_,
         if (auto forced = fsr4vk::descriptorBackendOverride()) {
             descriptor_backend = *forced;
         } else {
-            descriptor_backend = fsr4vk::selectDescriptorBackend(device_capabilities);
+            descriptor_backend = fsr4vk::selectDescriptorBackend(
+                device_capabilities, device, get_device_proc_addr_);
+        }
+        const auto backend_blockers =
+            fsr4vk::descriptorBackendBlockers(device_capabilities, descriptor_backend);
+        if (!backend_blockers.empty()) {
+            throw std::runtime_error(
+                "descriptor backend '" +
+                std::string(fsr4vk::descriptorBackendName(descriptor_backend)) +
+                "' is unavailable: " + fsr4vk::joinBlockers(backend_blockers));
         }
         log("[descriptors] backend=" +
             std::string(fsr4vk::descriptorBackendName(descriptor_backend)) + " " +
@@ -197,6 +221,7 @@ QualityContext::QualityContext(VkPhysicalDevice physical_device_,
         const auto shader_policy = configureDeviceShaderPolicy();
         configureLiveCapture();
         configureGpuProfile();
+        createPipelineCache();
 
         const auto descriptor_geometry = createDescriptorLayouts();
         configureModelPipelines(
@@ -756,7 +781,9 @@ VkPipeline QualityContext::createComputePipeline(const std::vector<uint32_t>& co
         VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
     subgroup.requiredSubgroupSize = 32;
     VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    info.flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+    if (descriptor_backend == DescriptorBackend::DescriptorBuffers) {
+        info.flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+    }
     info.layout = pipeline_layout;
     info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -768,13 +795,174 @@ VkPipeline QualityContext::createComputePipeline(const std::vector<uint32_t>& co
     }
     VkPipeline pipeline{};
     const auto result =
-        vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
+        vkCreateComputePipelines(device, pipeline_cache, 1, &info, nullptr, &pipeline);
     vkDestroyShaderModule(device, module, nullptr);
     if (result != VK_SUCCESS && pipeline) {
         vkDestroyPipeline(device, pipeline, nullptr);
     }
     check(result, "compute pipeline");
     return pipeline;
+}
+
+namespace {
+std::mutex pipeline_cache_file_mutex;
+
+fs::path pipelineCacheRoot() {
+    if (const char* root = std::getenv("FSR4_VK_PIPELINE_CACHE_PATH")) {
+        if (*root) {
+            return root;
+        }
+    }
+#if defined(_WIN32)
+    if (const char* local = std::getenv("LOCALAPPDATA")) {
+        return fs::path(local) / "fsr4-vk";
+    }
+#else
+    if (const char* xdg = std::getenv("XDG_CACHE_HOME")) {
+        if (*xdg) {
+            return fs::path(xdg) / "fsr4-vk";
+        }
+    }
+    if (const char* home = std::getenv("HOME")) {
+        return fs::path(home) / ".cache" / "fsr4-vk";
+    }
+#endif
+    return {};
+}
+
+std::uint64_t pipelineDeviceFingerprint(const fsr4vk::GpuCapabilities& capabilities) {
+    std::uint64_t hash = 1469598103934665603ull;
+    const auto consume = [&hash](const void* data, std::size_t size) {
+        const auto* bytes = static_cast<const std::uint8_t*>(data);
+        for (std::size_t index = 0; index < size; ++index) {
+            hash ^= bytes[index];
+            hash *= 1099511628211ull;
+        }
+    };
+    consume(capabilities.identity.deviceUUID, sizeof(capabilities.identity.deviceUUID));
+    consume(&capabilities.properties.vendorID, sizeof(capabilities.properties.vendorID));
+    consume(&capabilities.properties.deviceID, sizeof(capabilities.properties.deviceID));
+    consume(&capabilities.properties.driverVersion, sizeof(capabilities.properties.driverVersion));
+    consume(&capabilities.driver.driverID, sizeof(capabilities.driver.driverID));
+    return hash;
+}
+} // namespace
+
+void QualityContext::createPipelineCache() {
+    VkPipelineCacheCreateInfo info{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    std::vector<uint8_t> initial_data;
+    const char* disabled = std::getenv("FSR4_VK_PIPELINE_CACHE_DISABLED");
+    const bool persistent = !disabled || std::strcmp(disabled, "0") == 0;
+    if (persistent) {
+        auto root = pipelineCacheRoot();
+        if (!root.empty()) {
+            const auto fingerprint = pipelineDeviceFingerprint(device_capabilities);
+            std::ostringstream filename;
+            filename << "v2-" << std::hex << fingerprint << ".bin";
+            if (const char* exact = std::getenv("FSR4_VK_PIPELINE_CACHE_PATH");
+                exact && *exact) {
+                pipeline_cache_path = exact;
+            } else {
+                pipeline_cache_path = root / filename.str();
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(pipeline_cache_file_mutex);
+    if (!pipeline_cache_path.empty()) {
+        std::error_code error;
+        if (fs::exists(pipeline_cache_path, error) && !error) {
+            const auto cache_size = fs::file_size(pipeline_cache_path, error);
+            constexpr std::uintmax_t kMaximumCacheBytes = 256u * 1024u * 1024u;
+            if (!error && cache_size && cache_size <= kMaximumCacheBytes) {
+                std::ifstream stream(pipeline_cache_path, std::ios::binary);
+                initial_data.resize(static_cast<std::size_t>(cache_size));
+                stream.read(reinterpret_cast<char*>(initial_data.data()),
+                            static_cast<std::streamsize>(initial_data.size()));
+                if (!stream) {
+                    log("[pipeline-cache] read failed path='" + pipeline_cache_path.string() +
+                            "'; rebuilding",
+                        fsr4log::Level::Warning);
+                    initial_data.clear();
+                }
+            } else if (error) {
+                log("[pipeline-cache] stat failed path='" + pipeline_cache_path.string() +
+                        "' error=" + error.message(),
+                    fsr4log::Level::Warning);
+            } else if (cache_size > kMaximumCacheBytes) {
+                log("[pipeline-cache] oversized cache ignored path='" +
+                        pipeline_cache_path.string() + "'",
+                    fsr4log::Level::Warning);
+            }
+        } else if (error) {
+            log("[pipeline-cache] probe failed path='" + pipeline_cache_path.string() +
+                    "' error=" + error.message(),
+                fsr4log::Level::Warning);
+        }
+    }
+
+    info.initialDataSize = initial_data.size();
+    info.pInitialData = initial_data.empty() ? nullptr : initial_data.data();
+    VkResult result = vkCreatePipelineCache(device, &info, nullptr, &pipeline_cache);
+    if (result != VK_SUCCESS && info.initialDataSize != 0) {
+        initial_data.clear();
+        info.initialDataSize = 0;
+        info.pInitialData = nullptr;
+        result = vkCreatePipelineCache(device, &info, nullptr, &pipeline_cache);
+        log("[pipeline-cache] rejected cache rebuilt path='" +
+                pipeline_cache_path.string() + "'",
+            fsr4log::Level::Warning);
+    }
+    check(result, "vkCreatePipelineCache");
+    log("[pipeline-cache] status=" +
+        std::string(initial_data.empty() ? "cold" : "loaded") + " persistent=" +
+        (pipeline_cache_path.empty() ? "disabled" : "enabled") + " path='" +
+        pipeline_cache_path.string() + "'");
+}
+
+void QualityContext::savePipelineCache() noexcept {
+    if (!pipeline_cache || pipeline_cache_path.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(pipeline_cache_file_mutex);
+    try {
+        std::size_t cache_size = 0;
+        if (vkGetPipelineCacheData(device, pipeline_cache, &cache_size, nullptr) != VK_SUCCESS ||
+            cache_size == 0) {
+            log("[pipeline-cache] no data to save", fsr4log::Level::Warning);
+            return;
+        }
+        std::vector<uint8_t> data(cache_size);
+        check(vkGetPipelineCacheData(device, pipeline_cache, &cache_size, data.data()),
+              "vkGetPipelineCacheData");
+        if (!pipeline_cache_path.parent_path().empty()) {
+            fs::create_directories(pipeline_cache_path.parent_path());
+        }
+        const fs::path temporary = pipeline_cache_path.string() + ".tmp";
+        std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+        stream.write(reinterpret_cast<const char*>(data.data()),
+                     static_cast<std::streamsize>(data.size()));
+        stream.close();
+        if (!stream) {
+            throw std::runtime_error("failed to write pipeline cache temporary file");
+        }
+        std::error_code error;
+        fs::rename(temporary, pipeline_cache_path, error);
+        if (error) {
+            fs::remove(pipeline_cache_path, error);
+            error.clear();
+            fs::rename(temporary, pipeline_cache_path, error);
+        }
+        if (error) {
+            fs::remove(temporary, error);
+            throw std::runtime_error("failed to replace pipeline cache: " + error.message());
+        }
+        log("[pipeline-cache] saved bytes=" + std::to_string(data.size()) + " path='" +
+            pipeline_cache_path.string() + "'");
+    } catch (const std::exception& error) {
+        log(std::string("[pipeline-cache] save failed: ") + error.what(),
+            fsr4log::Level::Warning);
+    }
 }
 
 void QualityContext::prepareModelPipelines() {
@@ -829,6 +1017,24 @@ void QualityContext::retirePipeline(VkPipeline& pipeline) {
     }
 }
 
+void QualityContext::retireInternalImage(Image& image) {
+    if (!image.image) {
+        return;
+    }
+    retired_internal_images.push_back(std::move(image));
+    image = {};
+}
+
+void QualityContext::trackInternalImageUse(VkImage image) {
+    if (!image || pending_frame_uses.empty()) {
+        return;
+    }
+    auto& images = pending_frame_uses.back().internal_images;
+    if (std::find(images.begin(), images.end(), image) == images.end()) {
+        images.push_back(image);
+    }
+}
+
 void QualityContext::collectFrameUses() {
     std::erase_if(pending_frame_uses, [&](const PendingFrameUse& use) {
         const auto status = vkGetEventStatus(device, use.completion);
@@ -854,6 +1060,17 @@ void QualityContext::collectFrameUses() {
     std::erase_if(retired_staging_outputs, [&](Image& image) {
         for (const auto& use : pending_frame_uses) {
             if (use.staging_output == image.image) {
+                return false;
+            }
+        }
+        destroyImage(device, image);
+        return true;
+    });
+    std::erase_if(retired_internal_images, [&](Image& image) {
+        for (const auto& use : pending_frame_uses) {
+            if (std::find(use.internal_images.begin(),
+                          use.internal_images.end(),
+                          image.image) != use.internal_images.end()) {
                 return false;
             }
         }

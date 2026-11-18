@@ -85,7 +85,10 @@ visible instead of silently picking a model or a packaging shape for the operato
 
 | Variable | Accepted values | What it decides |
 | --- | --- | --- |
-| `FSR4_VK_MODEL` | `auto`; `int8` or `1`; `fp8` or `2` | Which model family serves the frame. `auto` walks the ladder INT8 → FP8: INT8 stays the first rung, so nothing that runs INT8 today changes, and FP8 is reached only where the driver *refuses* INT8's own SPIR-V capabilities — which is what a low-entry AMD APU does. A device that refuses both is refused, with both blocker lists in the reason. An explicit request is strict: it is refused naming its own blockers, never swapped for the other family behind the caller's back. A version id that names a model (this provider's own INT8/FP8 ids, in the table below) outranks this variable; the reference DLL's own id names no model, so this variable still decides there; and an id no provider advertises is rejected outright. |
+| `FSR4_VK_MODEL` | `auto` or `safe`; `int8` or `1`; `fp8` or `2` | Which model family serves the frame. `auto` and `safe` walk the same validated ladder, INT8 → FP8, without converting either representation: INT8 stays the first rung, and FP8 is reached only where the driver refuses INT8's own SPIR-V capabilities — which is what a low-entry AMD APU does. A device that refuses both is refused, with both blocker lists in the reason. An explicit request is strict: it is refused naming its own blockers, never swapped for the other family behind the caller's back. A version id that names a model (this provider's own INT8/FP8 ids, in the table below) outranks this variable; the reference DLL's own id names no model, so this variable still decides there; and an id no provider advertises is rejected outright. |
+| `FSR4_VK_DESCRIPTOR_BACKEND` | `auto`; `sets` or `descriptor-set`; `buffers` or `descriptor-buffer` | Selects conventional descriptor sets or `VK_EXT_descriptor_buffer`. `auto` prefers descriptor buffers only when support and device entry points are available, otherwise it selects sets. Manual choices still pass the same capability and entry-point checks. The legacy `FSR4_DESCRIPTOR_BACKEND` spelling is also accepted. |
+| `FSR4_VK_PIPELINE_CACHE_PATH` | file path | Stores Vulkan pipeline-cache data under a GPU/driver-specific default filename, or at this exact path. The Vulkan cache header performs the final UUID and driver-compatibility check. Set `FSR4_VK_PIPELINE_CACHE_DISABLED=1` to keep the cache in memory only. |
+| `FSR4_VK_BENCHMARK` | `1` / `0` | Enables the existing GPU timestamp profiler at every frame and reports average, median, P95 and P99 after a warm-up. `FSR4_VK_BENCHMARK_WARMUP` and `FSR4_VK_BENCHMARK_FRAMES` default to 30 and 300. |
 | `FSR4_VK_DEVICE_CLASS` | `rdna2`, `apu`, `integrated` pin RDNA2 packaging; `not-rdna2`, `modern` lift it | The RDNA2 verdict feeds exactly two things: the INT8 wave32 pin and the AMD shader-pack allowance. The device-ID table in `src/runtime/resources.hpp` is RDNA2-only by design — RDNA1, RDNA3 and RDNA4 run 64-lane wavefronts and "wave32 was slightly faster" was measured on RDNA2 — so this lever is how an operator covers an AMD device whose ID that release has not measured. It adds no ID to the table, and it cannot make a non-AMD device RDNA2. |
 | `FSR4_VK_FORCE_WINDOWS_AMD_SHADERS` | unset; `0` off; anything else on | Requests the AMD-optimised Windows shader packs without waiting for the AMD driver check. Native-asset builds have no such packs, which the same log line reports as `windows_shaders_available=no`, so forcing changes the request, not the availability. |
 
@@ -145,6 +148,19 @@ The build itself verifies every embedded asset payload and alias. On top of that
   edges including the RDNA4 card, and every requested version id — including that the
   reference DLL's id names no model and so still upscales on a device that has INT8 but
   no float8 path, which is the case a strict reading used to refuse outright.
+- `cmake --build build/linux --target descriptor-smoke && ./build/linux/descriptor-smoke`
+  creates two real Vulkan devices on the available AMD INT8-capable GPU, one with
+  `VK_EXT_descriptor_buffer` enabled and one without it, records and submits two
+  deterministic INT8 and, when supported, FP8 frames through each backend, copies the outputs back and fails
+  unless every output byte is identical. This validates the conventional
+  descriptor-set fallback against the shipped shaders rather than only probing
+  entry points. `FSR4_VK_SMOKE_FRAMES=N` extends the smoke run; enabling
+  `FSR4_VK_BENCHMARK=1` uses the runtime's GPU timestamps and reports average,
+  median, P95 and P99. Devices without a suitable AMD GPU return exit code 77.
+- `FSR4_VK_PIPELINE_CACHE_PATH` records a measured cold start on the first run and
+  a warm start on later runs, while `FSR4_VK_BENCHMARK_WARMUP` and
+  `FSR4_VK_BENCHMARK_FRAMES` control GPU timing. Cache data is accepted only by
+  Vulkan's driver-specific pipeline-cache header and rebuilt on rejection.
 - `python3 tools/extract/dispatch.py --dll <dll>` re-derives both model switches and
   the model variant map out of the DLL and fails on any drift from
   `tools/extract/keys/4.1.2.4555.json`, so a pin cannot silently describe a different
@@ -165,6 +181,11 @@ The build itself verifies every embedded asset payload and alias. On top of that
   which is how an INT8/FP8 A/B is paired, since the two models select different wave
   sizes. Exit 2 means no pair formed — the comparison proves nothing rather than that
   the sides agree.
+- `python3 tools/shader-inspect.py <spv-file-or-directory> --output-json report.json
+  --output-csv report.csv --summary` records SPIR-V capabilities, workgroup size,
+  scalar/vector types, instruction families, resources and parse errors. Add
+  `--dxil-root <extracted-dxbc-directory>` to translate and inspect source DXIL/DXBC
+  modules too; an undecodable module remains an error record and fails the command.
 
 ## Licensing
 

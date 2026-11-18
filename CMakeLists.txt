@@ -177,6 +177,11 @@ if(FSR4_CAPABILITY_PROBE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(cap-probe PRIVATE Vulkan::Vulkan ${CMAKE_DL_LIBS})
     set_target_properties(cap-probe PROPERTIES CXX_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN YES)
+    add_executable(descriptor-smoke tools/descriptor-smoke.cpp)
+    target_link_libraries(descriptor-smoke PRIVATE fsr4_runtime)
+    target_include_directories(descriptor-smoke PRIVATE src third_party/fidelityfx-api/upscalers/include)
+    set_target_properties(descriptor-smoke PROPERTIES CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN YES)
 endif()
 if(MINGW)
     target_link_options(amd_fidelityfx_upscaler_vk PRIVATE -static $<$<CONFIG:Release>:-s>)

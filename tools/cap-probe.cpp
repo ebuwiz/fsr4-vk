@@ -122,7 +122,9 @@ fsr4vk::GpuCapabilities syntheticHost() {
     host.shader_float8.shaderFloat8CooperativeMatrix = VK_TRUE;
     host.cooperative_matrix.cooperativeMatrix = VK_TRUE;
     host.extensions = {{VK_EXT_SHADER_FLOAT8_EXTENSION_NAME, 1},
-                       {VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, 1}};
+                       {VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, 1},
+                       {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME, 1}};
+    host.descriptor_buffer.descriptorBuffer = VK_TRUE;
     // matrix_probe_route stays Unprobed on purpose: an unprobed device is judged
     // on extension and feature bits alone, so nothing here can look FP8-capable
     // for a reason this fixture did not set.
@@ -443,6 +445,29 @@ int main() {
                       << fsr4vk::descriptorBackendName(backend) << " provider="
                       << fsr4vk::joinBlockers(provider_missing) << " dispatch=" << dispatch_says
                       << " same_row=" << same_row << " row_dropped=" << row_dropped << '\n';
+        }
+    }
+
+    {
+        const auto device = syntheticHost();
+        const auto complete = reinterpret_cast<VkDevice>(static_cast<uintptr_t>(1));
+        const auto one_row_short = reinterpret_cast<VkDevice>(static_cast<uintptr_t>(2));
+        const auto preferred =
+            fsr4vk::selectDescriptorBackend(device, complete, stubDeviceProcAddr);
+        const auto fallback =
+            fsr4vk::selectDescriptorBackend(device, one_row_short, stubDeviceProcAddr);
+        const bool selected_correctly =
+            preferred == fsr4vk::DescriptorBackend::DescriptorBuffers &&
+            fallback == fsr4vk::DescriptorBackend::DescriptorSets &&
+            fsr4vk::descriptorBackendBlockers(
+                device, fsr4vk::DescriptorBackend::DescriptorBuffers)
+                .empty();
+        std::cout << "  descriptor_backend_selection preferred="
+                  << fsr4vk::descriptorBackendName(preferred) << " missing_entry_fallback="
+                  << fsr4vk::descriptorBackendName(fallback) << " ok=" << std::boolalpha
+                  << selected_correctly << '\n';
+        if (!selected_correctly) {
+            ++identity_failures;
         }
     }
 

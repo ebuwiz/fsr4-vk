@@ -614,8 +614,7 @@ Image QualityContext::resolveDepthInput(VkCommandBuffer command_buffer,
     if (recreate) {
         // Allocate enough capacity for dynamic resolution without reallocating each frame.
         if (fallback_depth.image) {
-            vkDeviceWaitIdle(device);
-            destroyImage(device, fallback_depth);
+            retireInternalImage(fallback_depth);
         }
 
         fallback_depth = createImage(device_capabilities.memory,
@@ -682,6 +681,7 @@ Image QualityContext::resolveDepthInput(VkCommandBuffer command_buffer,
     }
 
     Image result = fallback_depth;
+    trackInternalImageUse(fallback_depth.image);
 
     // Report the active size while retaining the larger backing image.
     result.width = active_width;
@@ -893,7 +893,7 @@ void recordModelPasses(const FrameRecordingInfo& recording) {
                                recording.set_descriptor_buffer_offsets != nullptr;
     const bool sets_ready = recording.descriptor_sets[0] != VK_NULL_HANDLE &&
                             recording.bind_descriptor_sets != nullptr &&
-                            recording.dynamic_offsets != nullptr;
+                            recording.dynamic_offset_count == 0;
     if (!recording.command_buffer || !recording.pipeline_layout ||
         (recording.use_descriptor_sets ? !sets_ready : !buffers_ready) || passes.empty() ||
         recording.pipelines.size() != passes.size() || !recording.constants_address ||
@@ -944,9 +944,8 @@ void recordModelPasses(const FrameRecordingInfo& recording) {
     // Publishing this frame's descriptors, which is the one place the two transports
     // really differ in a command buffer: six sets bound by handle, or one buffer
     // bound once and six set offsets measured in bytes. The sets path also carries
-    // the dynamic-offset array vkCmdBindDescriptorSets demands for the three buffer
-    // -typed bindings, all zero because each queued write already named its own
-    // buffer, offset and range.
+    // zero dynamic offsets because the layouts contain ordinary buffer
+    // descriptors and every queued write names its own offset and range.
     if (recording.use_descriptor_sets) {
         recording.bind_descriptor_sets(recording.command_buffer,
                                        VK_PIPELINE_BIND_POINT_COMPUTE,

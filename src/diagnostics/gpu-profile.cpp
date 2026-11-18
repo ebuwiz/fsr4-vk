@@ -4,6 +4,10 @@
 
 #include "runtime/context.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <numeric>
+
 namespace fsr4runtime {
 
 double QualityContext::profileMs(uint64_t begin, uint64_t end) const {
@@ -121,6 +125,15 @@ bool QualityContext::collectGpuProfile(Frame& frame) {
         }
     }
 
+    if (gpu_benchmark_enabled && frame.profile_frame_id > gpu_benchmark_warmup &&
+        !gpu_benchmark_reported) {
+        gpu_benchmark_samples.push_back(
+            profileMs(timestamp_ticks(kProfileFrameStart), timestamp_ticks(kProfileFrameEnd)));
+        if (gpu_benchmark_samples.size() >= gpu_benchmark_frames) {
+            reportGpuBenchmark();
+        }
+    }
+
     frame.profile_pending = false;
 
     return true;
@@ -166,12 +179,20 @@ void QualityContext::configureGpuProfile() {
     if (const char* value = std::getenv("FSR4_VK_GPU_PROFILE")) {
         gpu_profile_enabled = std::strcmp(value, "0") != 0;
     }
+    if (const char* value = std::getenv("FSR4_VK_BENCHMARK")) {
+        gpu_benchmark_enabled = std::strcmp(value, "0") != 0;
+        gpu_profile_enabled = gpu_profile_enabled || gpu_benchmark_enabled;
+    }
 
     if (gpu_profile_enabled) {
         if (const char* value = std::getenv("FSR4_VK_GPU_PROFILE_SUMMARY_ONLY")) {
             gpu_profile_summary_only = std::strcmp(value, "0") != 0;
         }
 
+        gpu_profile_interval = gpu_benchmark_enabled ? 1 : gpu_profile_interval;
+        if (gpu_benchmark_enabled) {
+            gpu_profile_summary_only = true;
+        }
         if (const char* value = std::getenv("FSR4_VK_GPU_PROFILE_INTERVAL")) {
             char* end = nullptr;
             const unsigned long parsed = std::strtoul(value, &end, 10);
@@ -179,6 +200,24 @@ void QualityContext::configureGpuProfile() {
             if (end != value && *end == '\0' && parsed > 0 && parsed <= 10000) {
                 gpu_profile_interval = static_cast<uint32_t>(parsed);
             }
+        }
+
+        if (gpu_benchmark_enabled) {
+            if (const char* value = std::getenv("FSR4_VK_BENCHMARK_WARMUP")) {
+                char* end = nullptr;
+                const unsigned long parsed = std::strtoul(value, &end, 10);
+                if (end != value && *end == '\0' && parsed <= 10000) {
+                    gpu_benchmark_warmup = static_cast<uint32_t>(parsed);
+                }
+            }
+            if (const char* value = std::getenv("FSR4_VK_BENCHMARK_FRAMES")) {
+                char* end = nullptr;
+                const unsigned long parsed = std::strtoul(value, &end, 10);
+                if (end != value && *end == '\0' && parsed > 0 && parsed <= 100000) {
+                    gpu_benchmark_frames = static_cast<uint32_t>(parsed);
+                }
+            }
+            gpu_benchmark_samples.reserve(gpu_benchmark_frames);
         }
 
         // The timestamp scale is part of the device snapshot the runtime already
@@ -192,8 +231,37 @@ void QualityContext::configureGpuProfile() {
 
         log("[gpu-profile] enabled interval_frames=" + std::to_string(gpu_profile_interval) +
             " mode=" + (gpu_profile_summary_only ? std::string("summary") : std::string("passes")) +
-            " timestamp_period_ns=" + std::to_string(gpu_timestamp_period_ns));
+            " timestamp_period_ns=" + std::to_string(gpu_timestamp_period_ns) +
+            (gpu_benchmark_enabled
+                 ? " benchmark_warmup=" + std::to_string(gpu_benchmark_warmup) +
+                       " benchmark_frames=" + std::to_string(gpu_benchmark_frames)
+                 : ""));
     }
+}
+
+void QualityContext::reportGpuBenchmark() noexcept {
+    if (gpu_benchmark_reported || gpu_benchmark_samples.empty()) {
+        return;
+    }
+    auto samples = gpu_benchmark_samples;
+    std::sort(samples.begin(), samples.end());
+    const auto percentile = [&](double percentile_value) {
+        const std::size_t index =
+            std::min(samples.size() - 1,
+                     static_cast<std::size_t>(
+                         std::ceil(percentile_value * static_cast<double>(samples.size())) - 1));
+        return samples[index];
+    };
+    const double average =
+        std::accumulate(samples.begin(), samples.end(), 0.0) / samples.size();
+    const double median = samples[samples.size() / 2];
+    std::ostringstream report;
+    report << std::fixed << std::setprecision(6)
+           << "[gpu-benchmark] samples=" << samples.size() << " average_ms=" << average
+           << " median_ms=" << median << " p95_ms=" << percentile(0.95)
+           << " p99_ms=" << percentile(0.99) << " warmup_frames=" << gpu_benchmark_warmup;
+    log(report.str());
+    gpu_benchmark_reported = true;
 }
 
 } // namespace fsr4runtime

@@ -312,6 +312,13 @@ DescriptorBackend selectDescriptorBackend(const GpuCapabilities& capabilities);
 // capability decision.
 std::optional<DescriptorBackend> descriptorBackendOverride();
 
+std::vector<std::string> descriptorBackendBlockers(const GpuCapabilities& capabilities,
+                                                   DescriptorBackend backend);
+
+DescriptorBackend selectDescriptorBackend(const GpuCapabilities& capabilities,
+                                          VkDevice device,
+                                          PFN_vkGetDeviceProcAddr get_device_proc_addr);
+
 const char* modelName(ModelChoice choice);
 
 // What the provider will run on one device, and why. INT8 is the first rung of

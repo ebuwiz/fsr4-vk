@@ -314,11 +314,9 @@ void QualityContext::prepareExternalViews(Frame& frame,
                                           Image& exposure,
                                           Image& optional_mask,
                                           Image& output) {
-    for (auto view : frame.views) {
-        vkDestroyImageView(device, view, nullptr);
+    for (auto& cached_view : frame.image_view_cache) {
+        cached_view.used = false;
     }
-
-    frame.views.clear();
     const std::array<std::pair<const char*, Image*>, 6> external_images{{
         {"color", &color},
         {"depth", &depth},
@@ -328,7 +326,7 @@ void QualityContext::prepareExternalViews(Frame& frame,
         {"output", &output},
     }};
 
-    frame.views.reserve(external_images.size());
+    frame.image_view_cache.reserve(external_images.size());
     for (std::size_t index = 0; index < external_images.size(); ++index) {
         const auto& [role, image] = external_images[index];
         if (!image->image || image->view) {
@@ -348,14 +346,31 @@ void QualityContext::prepareExternalViews(Frame& frame,
             continue;
         }
 
+        for (auto& cached_view : frame.image_view_cache) {
+            if (cached_view.image == image->image && cached_view.format == image->format &&
+                cached_view.aspect == image->aspect) {
+                image->view = cached_view.view;
+                cached_view.used = true;
+                break;
+            }
+        }
+        if (image->view) {
+            continue;
+        }
+
         VkImageViewCreateInfo view_info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         view_info.image = image->image;
         view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
         view_info.format = image->format;
         view_info.subresourceRange = {image->aspect, 0, 1, 0, 1};
-
-        check(vkCreateImageView(device, &view_info, nullptr, &image->view), "external image view");
-        frame.views.push_back(image->view);
+        VkImageView created_view = VK_NULL_HANDLE;
+        check(vkCreateImageView(device, &view_info, nullptr, &created_view), "external image view");
+        image->view = created_view;
+        frame.image_view_cache.push_back({image->image,
+                                          image->format,
+                                          image->aspect,
+                                          created_view,
+                                          true});
 
         if (extensive_logging && frame_count <= 3) {
             log("[resource] frame=" + std::to_string(frame_count) + " created view role=" + role +
@@ -366,6 +381,14 @@ void QualityContext::prepareExternalViews(Frame& frame,
                 fsr4log::Level::Debug);
         }
     }
+
+    std::erase_if(frame.image_view_cache, [&](const Frame::CachedImageView& cached_view) {
+        if (cached_view.used) {
+            return false;
+        }
+        vkDestroyImageView(device, cached_view.view, nullptr);
+        return true;
+    });
 }
 
 bool QualityContext::updateDynamicDescriptors(VkCommandBuffer command_buffer,
@@ -610,6 +633,7 @@ void QualityContext::flushDescriptorWrites(Frame& frame) {
                            0,
                            nullptr);
     frame.descriptor_writes.clear();
+    frame.descriptor_payloads.clear();
 }
 
 // The single place both transports agree on: "make the descriptors this stage
@@ -944,25 +968,16 @@ QualityContext::createDescriptorLayouts() {
           "vkCreatePipelineLayout");
 
     // A sets backend measures nothing: it never does arithmetic over a bound buffer
-    // of descriptor bytes, it hands the driver one set per binding. What it does
-    // need is the dynamic-offset array vkCmdBindDescriptorSets insists on, and that
-    // array's length comes from the same set_types table the layouts were built
-    // from, so a type change cannot leave the bind call short or long by accident.
-    // Every entry is zero: a queued write already carries buffer, offset and range.
+    // of descriptor bytes, it hands the driver one set per binding. These are plain
+    // STORAGE_BUFFER and UNIFORM_BUFFER descriptors, not dynamic descriptors, so
+    // vkCmdBindDescriptorSets must receive no dynamic offsets.
     if (use_descriptor_sets) {
-        size_t dynamic_offsets = 0;
-        for (VkDescriptorType type : set_types) {
-            if (type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ||
-                type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
-                dynamic_offsets += kDescriptorCount;
-            }
-        }
-        descriptor_dynamic_offsets.assign(dynamic_offsets, 0);
+        descriptor_dynamic_offsets.clear();
         log("[descriptor] backend=descriptor-set sets_per_frame=" +
             std::to_string(kNumDescriptorSets) + " bindings_per_set=1"
             " descriptors_per_binding=" +
             std::to_string(kDescriptorCount) +
-            " dynamic_offsets=" + std::to_string(dynamic_offsets) +
+            " dynamic_offsets=0"
             " pool_max_sets=" + std::to_string(kNumDescriptorSets));
         return {0, 0};
     }
@@ -1436,8 +1451,7 @@ Image QualityContext::resampleDisplayMotionVectors(VkCommandBuffer command_buffe
     if (needs_motion_image_reallocation) {
         // Reallocate only when the format changes or the required size exceeds capacity.
         if (render_motion.image) {
-            vkDeviceWaitIdle(device);
-            destroyImage(device, render_motion);
+            retireInternalImage(render_motion);
         }
 
         render_motion = createImage(device_capabilities.memory,
@@ -1471,6 +1485,7 @@ Image QualityContext::resampleDisplayMotionVectors(VkCommandBuffer command_buffe
                                    render_motion_initialized);
 
     render_motion_initialized = true;
+    trackInternalImageUse(render_motion.image);
 
     // Keep the larger backing image but report only the active render size.
     Image result = render_motion;

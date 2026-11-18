@@ -178,6 +178,14 @@ ffxReturnCode_t createContext(ffxContext* context,
     }
 
     const auto* create = reinterpret_cast<const ffxCreateContextDescUpscale*>(header);
+    if ((create->flags & FFX_UPSCALE_ENABLE_AUTO_EXPOSURE) &&
+        !capabilities.core.shaderStorageImageReadWithoutFormat) {
+        diagnosticLine("[model] automatic exposure refused: feature "
+                       "core.shaderStorageImageReadWithoutFormat is not supported "
+                       "(external exposure can still be used)",
+                       fsr4log::Level::Error);
+        return FFX_API_RETURN_NO_PROVIDER;
+    }
     void* storage = allocate(callbacks, sizeof(ProviderContext));
 
     if (!storage) {
@@ -261,12 +269,36 @@ ffxReturnCode_t createContext(ffxContext* context,
         // override - otherwise this check could promise a contract the runtime
         // then declines to use, or refuse a device that would have run fine.
         const auto forced_backend = fsr4vk::descriptorBackendOverride();
-        const auto descriptor_backend =
-            forced_backend.value_or(fsr4vk::selectDescriptorBackend(capabilities));
+        const bool backend_value_present = [] {
+            const char* current = std::getenv("FSR4_VK_DESCRIPTOR_BACKEND");
+            const char* legacy = std::getenv("FSR4_DESCRIPTOR_BACKEND");
+            const auto requests_override = [](const char* value) {
+                return value && *value && std::strcmp(value, "auto") != 0;
+            };
+            return requests_override(current) || requests_override(legacy);
+        }();
+        if (backend_value_present && !forced_backend) {
+            const char* current = std::getenv("FSR4_VK_DESCRIPTOR_BACKEND");
+            const char* shown =
+                current && *current ? current : std::getenv("FSR4_DESCRIPTOR_BACKEND");
+            throw std::runtime_error(std::string("unsupported descriptor backend value=") +
+                                     (shown ? shown : ""));
+        }
+        const auto descriptor_backend = forced_backend.value_or(
+            fsr4vk::selectDescriptorBackend(
+                capabilities, provider->device, provider->getDeviceProcAddr));
+        const auto backend_blockers =
+            fsr4vk::descriptorBackendBlockers(capabilities, descriptor_backend);
+        if (!backend_blockers.empty()) {
+            throw std::runtime_error(
+                "descriptor backend '" +
+                std::string(fsr4vk::descriptorBackendName(descriptor_backend)) +
+                "' is unavailable: " + fsr4vk::joinBlockers(backend_blockers));
+        }
         diagnostic(*provider,
                    "[FSR4-descriptors] backend='" +
                    std::string(fsr4vk::descriptorBackendName(descriptor_backend)) + "'" +
-                   (forced_backend.has_value() ? " forced=FSR4_DESCRIPTOR_BACKEND" : "") +
+                   (forced_backend.has_value() ? " forced=yes" : " forced=no") +
                    " buffers=" +
                    (capabilities.supportsDescriptorBuffers() ? "yes" : "no") +
                    " sets=" + (capabilities.supportsDescriptorSets() ? "yes" : "no"));

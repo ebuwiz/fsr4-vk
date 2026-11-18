@@ -140,11 +140,9 @@ class QualityContext final : public fsr4_411::QualityContext {
     std::array<VkDeviceSize, kNumDescriptorSets> set_strides{};
     std::array<VkDeviceSize, kNumDescriptorSets> set_binding_offsets{};
 
-    // Dynamic offsets for the sets transport: vkCmdBindDescriptorSets wants one
-    // entry per array element of every buffer-typed binding, which is three sets
-    // times kDescriptorCount here. Every entry is zero, because a queued write
-    // already carries the buffer, offset and range it points at; the array exists
-    // to match the layout's count, not to move anything. Built once per context.
+    // Dynamic offsets for the sets transport. The current layouts use ordinary
+    // buffer descriptors, so this remains empty rather than imposing dynamic
+    // offset binding semantics on a conventional descriptor set.
     // uint32_t rather than VkDynamicOffset: the pinned headers type pDynamicOffsets
     // as uint32_t, and the VkDynamicOffset alias only arrives with the 1.3 write-
     // descriptor-set-2 surface this host's headers do not declare at all.
@@ -152,6 +150,8 @@ class QualityContext final : public fsr4_411::QualityContext {
 
     VkSampler sampler{};
     VkPipelineLayout pipeline_layout{};
+    VkPipelineCache pipeline_cache{};
+    fs::path pipeline_cache_path;
     std::array<VkDescriptorSetLayout, kNumDescriptorSets> set_layouts{};
 
     // Only the selected shaders own pipelines; inactive variants are retired.
@@ -167,6 +167,7 @@ class QualityContext final : public fsr4_411::QualityContext {
     struct PendingFrameUse {
         VkEvent completion{};
         std::vector<VkPipeline> pipelines;
+        std::vector<VkImage> internal_images;
         VkImage staging_output{};
     };
 
@@ -174,6 +175,7 @@ class QualityContext final : public fsr4_411::QualityContext {
     std::vector<VkEvent> available_frame_events;
     std::vector<VkPipeline> retired_pipelines;
     std::vector<Image> retired_staging_outputs;
+    std::vector<Image> retired_internal_images;
     VkFormat overlay_read_format = VK_FORMAT_UNDEFINED;
     bool overlay_read_supported = false;
     // One probe of the physical device answers identity, drivers, subgroups and
@@ -298,8 +300,13 @@ class QualityContext final : public fsr4_411::QualityContext {
 
     bool gpu_profile_enabled = false;
     bool gpu_profile_summary_only = false;
+    bool gpu_benchmark_enabled = false;
+    bool gpu_benchmark_reported = false;
     uint32_t gpu_profile_interval = 60;
+    uint32_t gpu_benchmark_warmup = 30;
+    uint32_t gpu_benchmark_frames = 300;
     double gpu_timestamp_period_ns = 0.0;
+    std::vector<double> gpu_benchmark_samples;
 
     struct Frame {
         // What a conventional descriptor-set write points at. The write and the
@@ -310,10 +317,9 @@ class QualityContext final : public fsr4_411::QualityContext {
             VkDescriptorImageInfo image{};
             VkDescriptorBufferInfo buffer{};
         };
-        // Sized to the heaviest frame the fallback transport can produce: the two
-        // full-array fills of kDescriptorCount storage buffer descriptors plus every
-        // per-frame write the runtime makes after them. Overflow is refused by name
-        // rather than left to a reallocation that would strand a recorded pointer.
+        // Sized to the heaviest single flush the fallback transport can produce.
+        // Both vectors are cleared after vkUpdateDescriptorSets, while retaining
+        // capacity so a reused frame slot cannot accumulate stale writes.
         static constexpr size_t kDescriptorWriteCeiling = 512;
 
         VkPipeline rcas_pipeline{};
@@ -322,7 +328,14 @@ class QualityContext final : public fsr4_411::QualityContext {
         Buffer model_constants{};
         Buffer exposure_upload{};
 
-        std::vector<VkImageView> views;
+        struct CachedImageView {
+            VkImage image = VK_NULL_HANDLE;
+            VkFormat format = VK_FORMAT_UNDEFINED;
+            VkImageAspectFlags aspect = 0;
+            VkImageView view = VK_NULL_HANDLE;
+            bool used = false;
+        };
+        std::vector<CachedImageView> image_view_cache;
         // Buffers transport: one mapped byte buffer per frame slot, six sets wide.
         Buffer descriptor_buffer{};
         // Sets transport: one pool per frame slot with six sets allocated from
@@ -357,6 +370,7 @@ class QualityContext final : public fsr4_411::QualityContext {
     static void log(const std::string& text, fsr4log::Level level = fsr4log::Level::Info) noexcept;
 
     double profileMs(uint64_t begin, uint64_t end) const;
+    void reportGpuBenchmark() noexcept;
     bool collectGpuProfile(Frame& frame);
     bool beginGpuProfile(VkCommandBuffer command_buffer, Frame& frame);
     void
@@ -478,12 +492,16 @@ private:
                                  const ModelRuntimeOptions& runtime_options,
                                  uint32_t api_version,
                                  const ShaderDriverPolicy& shader_policy);
+    void createPipelineCache();
+    void savePipelineCache() noexcept;
     void prepareModelPipelines();
     VkPipeline createComputePipeline(const std::vector<uint32_t>& code, bool wave32);
     void retirePipeline(VkPipeline& pipeline);
     void collectFrameUses();
     void beginFrameUse();
     void trackPipelineUse(VkPipeline pipeline);
+    void trackInternalImageUse(VkImage image);
+    void retireInternalImage(Image& image);
     void prepareRcas(VkCommandBuffer command_buffer,
                      Frame& frame,
                      const Image& output,

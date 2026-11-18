@@ -8,7 +8,9 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#if !defined(_WIN32)
 #include <dlfcn.h>
+#endif
 #include <iomanip>
 #include <mutex>
 #include <sstream>
@@ -72,11 +74,14 @@ std::vector<VkCooperativeMatrixPropertiesKHR> probeMatrixShapes(
                                             "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR"));
     }
 
+    ShapeQuery dynamic_query = nullptr;
+#if !defined(_WIN32)
+    dynamic_query = reinterpret_cast<ShapeQuery>(
+        dlsym(RTLD_DEFAULT, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR"));
+#endif
     const std::pair<MatrixProbeRoute, ShapeQuery> sources[] = {
         {MatrixProbeRoute::HostInstance, host_query},
-        {MatrixProbeRoute::DynamicLookup,
-         reinterpret_cast<ShapeQuery>(
-             dlsym(RTLD_DEFAULT, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR"))},
+        {MatrixProbeRoute::DynamicLookup, dynamic_query},
     };
 
     for (const auto& [candidate_route, query] : sources) {
@@ -322,8 +327,8 @@ std::string GpuCapabilities::missingMatrixShapeName(VkComponentTypeKHR type) con
 // and the subgroup contract. Both transports need all of it, so it is stated once
 // and the transports differ by exactly one question.
 bool GpuCapabilities::supportsSharedContract() const {
-    return core.shaderInt16 && core.shaderStorageImageReadWithoutFormat &&
-           core.shaderStorageImageWriteWithoutFormat && float16_int8.shaderFloat16 &&
+    return core.shaderInt16 && core.shaderStorageImageWriteWithoutFormat &&
+           float16_int8.shaderFloat16 &&
            float16_int8.shaderInt8 && storage8.storageBuffer8BitAccess &&
            buffer_device_address.bufferDeviceAddress &&
            descriptor_indexing.runtimeDescriptorArray &&
@@ -365,7 +370,6 @@ std::vector<std::string> GpuCapabilities::runtimeBlockers() const {
 
     const std::pair<const char*, bool> required[] = {
         {"core.shaderInt16", core.shaderInt16},
-        {"core.shaderStorageImageReadWithoutFormat", core.shaderStorageImageReadWithoutFormat},
         {"core.shaderStorageImageWriteWithoutFormat", core.shaderStorageImageWriteWithoutFormat},
         {"shaderFloat16", float16_int8.shaderFloat16},
         {"shaderInt8", float16_int8.shaderInt8},
@@ -656,6 +660,7 @@ std::string GpuCapabilities::describe() const {
          << " driver_info=" << std::quoted(driver.driverInfo) << " extensions=" << extensions.size()
          << " matrix_shapes=" << matrixShapeSummary() << " matrix_probe=" << matrixProbeRouteName()
          << " descriptor_sizes=" << descriptorSizeSummary()
+         << " feature_scope=\"physical-support; enabled-state-unverified\""
          << " timestamp_period=" << properties.limits.timestampPeriod
          << " memory_types=" << memory.memoryTypeCount
          << " subgroup_size=" << subgroups.subgroupSize
@@ -705,13 +710,52 @@ DescriptorBackend selectDescriptorBackend(const GpuCapabilities& capabilities) {
     return DescriptorBackend::DescriptorSets;
 }
 
-// FSR4_DESCRIPTOR_BACKEND=descriptor-set|descriptor-buffer|sets|buffers. Only an
+std::vector<std::string> descriptorBackendBlockers(const GpuCapabilities& capabilities,
+                                                   DescriptorBackend backend) {
+    std::vector<std::string> blockers;
+    if (backend == DescriptorBackend::DescriptorBuffers) {
+        if (!capabilities.hasExtension(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME)) {
+            blockers.emplace_back("missing extension VK_EXT_descriptor_buffer");
+        }
+        if (!capabilities.descriptor_buffer.descriptorBuffer) {
+            blockers.emplace_back("feature descriptorBuffer is not reported");
+        }
+        if (!capabilities.supportsDescriptorBuffers()) {
+            blockers.emplace_back("descriptor-buffer shared runtime contract is unavailable");
+        }
+        return blockers;
+    }
+
+    if (!capabilities.supportsDescriptorSets()) {
+        blockers.emplace_back("descriptor-set shared runtime contract is unavailable");
+    }
+    return blockers;
+}
+
+DescriptorBackend selectDescriptorBackend(const GpuCapabilities& capabilities,
+                                          VkDevice device,
+                                          PFN_vkGetDeviceProcAddr get_device_proc_addr) {
+    if (capabilities.supportsDescriptorBuffers() &&
+        missingEntryPoints(device,
+                           get_device_proc_addr,
+                           DescriptorBackend::DescriptorBuffers)
+            .empty()) {
+        return DescriptorBackend::DescriptorBuffers;
+    }
+    return DescriptorBackend::DescriptorSets;
+}
+
+// FSR4_VK_DESCRIPTOR_BACKEND (or legacy FSR4_DESCRIPTOR_BACKEND)
+// =descriptor-set|descriptor-buffer|sets|buffers. Only an
 // exact spelling answers; anything else reports nothing so the operator sees a
 // refusal naming the value instead of a silently different transport, which is
 // how the two transports stay comparable on one device during a change of this
 // size.
 std::optional<DescriptorBackend> descriptorBackendOverride() {
-    const char* value = std::getenv("FSR4_DESCRIPTOR_BACKEND");
+    const char* value = std::getenv("FSR4_VK_DESCRIPTOR_BACKEND");
+    if (!value || !*value) {
+        value = std::getenv("FSR4_DESCRIPTOR_BACKEND");
+    }
     if (!value || !*value) {
         return std::nullopt;
     }
@@ -742,7 +786,8 @@ std::optional<bool> parseDeviceClass(const char* value) {
 }
 
 std::optional<ModelChoice> parseModelChoice(const char* value) {
-    if (!value || !*value || std::strcmp(value, "auto") == 0) {
+    if (!value || !*value || std::strcmp(value, "auto") == 0 ||
+        std::strcmp(value, "safe") == 0) {
         return ModelChoice::Auto;
     }
     if (std::strcmp(value, "int8") == 0 || std::strcmp(value, "1") == 0) {
