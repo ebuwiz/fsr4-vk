@@ -539,7 +539,7 @@ void QualityContext::writeImageDescriptorBuffer(Frame& frame,
         descriptor_byte_count = descriptor_size.storage_image;
     }
 
-    vkGetDescriptorEXT(device,
+    dispatch.get_descriptor(device,
                        &descriptor_info,
                        descriptor_byte_count,
                        descriptorAddress(frame, set_index, binding_index));
@@ -574,7 +574,7 @@ void QualityContext::writeSamplerDescriptor(Frame& frame,
     descriptor_info.type = VK_DESCRIPTOR_TYPE_SAMPLER;
     descriptor_info.data.pSampler = &sampler_handle;
 
-    vkGetDescriptorEXT(device,
+    dispatch.get_descriptor(device,
                        &descriptor_info,
                        descriptor_size.sampler,
                        descriptorAddress(frame, set_index, binding_index));
@@ -590,7 +590,7 @@ void QualityContext::writeStorageBufferDescriptor(
     descriptor_info.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     descriptor_info.data.pStorageBuffer = &buffer_address_info;
 
-    vkGetDescriptorEXT(device,
+    dispatch.get_descriptor(device,
                        &descriptor_info,
                        descriptor_size.storage_buffer,
                        descriptorAddress(frame, set_index, binding_index));
@@ -620,7 +620,7 @@ void QualityContext::writeUniformBufferDescriptor(
     descriptor_info.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     descriptor_info.data.pUniformBuffer = &buffer_address_info;
 
-    vkGetDescriptorEXT(device,
+    dispatch.get_descriptor(device,
                        &descriptor_info,
                        descriptor_size.uniform_buffer,
                        descriptorAddress(frame, set_index, binding_index));
@@ -701,7 +701,7 @@ void QualityContext::writeAllStaticDescriptors() {
 }
 
 QualityContext::DescriptorGeometry
-QualityContext::createDescriptorLayouts(PFN_vkGetDeviceProcAddr get_device_proc_addr_) {
+QualityContext::createDescriptorLayouts() {
     VkSamplerCreateInfo sampler_info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     sampler_info.magFilter = VK_FILTER_LINEAR;
     sampler_info.minFilter = VK_FILTER_LINEAR;
@@ -758,23 +758,10 @@ QualityContext::createDescriptorLayouts(PFN_vkGetDeviceProcAddr get_device_proc_
     check(vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &pipeline_layout),
           "vkCreatePipelineLayout");
 
-    vkGetDescriptorEXT = reinterpret_cast<PFN_vkGetDescriptorEXT>(
-        get_device_proc_addr_(device, "vkGetDescriptorEXT"));
-    vkCmdBindDescriptorBuffersEXT = reinterpret_cast<PFN_vkCmdBindDescriptorBuffersEXT>(
-        get_device_proc_addr_(device, "vkCmdBindDescriptorBuffersEXT"));
-    vkCmdSetDescriptorBufferOffsetsEXT = reinterpret_cast<PFN_vkCmdSetDescriptorBufferOffsetsEXT>(
-        get_device_proc_addr_(device, "vkCmdSetDescriptorBufferOffsetsEXT"));
-    vkGetDescriptorSetLayoutSizeEXT = reinterpret_cast<PFN_vkGetDescriptorSetLayoutSizeEXT>(
-        get_device_proc_addr_(device, "vkGetDescriptorSetLayoutSizeEXT"));
-    vkGetDescriptorSetLayoutBindingOffsetEXT =
-        reinterpret_cast<PFN_vkGetDescriptorSetLayoutBindingOffsetEXT>(
-            get_device_proc_addr_(device, "vkGetDescriptorSetLayoutBindingOffsetEXT"));
-
-    if (!vkGetDescriptorEXT || !vkCmdBindDescriptorBuffersEXT ||
-        !vkCmdSetDescriptorBufferOffsetsEXT || !vkGetDescriptorSetLayoutSizeEXT ||
-        !vkGetDescriptorSetLayoutBindingOffsetEXT) {
-        throw std::runtime_error("descriptor buffer entry points unavailable");
-    }
+    // The five descriptor functions come from the dispatch table loaded at the
+    // top of this constructor, which resolves the same table the provider's
+    // entry-point check walked and refuses a device that cannot satisfy a row,
+    // naming that row - so this path no longer resolves anything itself.
 
     // The descriptor byte sizes arrive with the device snapshot the model choice
     // was made from, so this path no longer builds its own properties2 chain. A
@@ -809,7 +796,7 @@ QualityContext::createDescriptorLayouts(PFN_vkGetDeviceProcAddr get_device_proc_
     for (uint32_t set_index = 0; set_index < kNumDescriptorSets; set_index++) {
         VkDescriptorSetLayout layout = set_layouts[set_index];
         VkDeviceSize layout_size = 0;
-        vkGetDescriptorSetLayoutSizeEXT(device, layout, &layout_size);
+        dispatch.get_descriptor_set_layout_size(device, layout, &layout_size);
         set_strides[set_index] = descriptor_strides[set_index];
 
         if (layout_size > max_layout_size) {
@@ -817,7 +804,7 @@ QualityContext::createDescriptorLayouts(PFN_vkGetDeviceProcAddr get_device_proc_
         }
 
         VkDeviceSize binding_offset = 0;
-        vkGetDescriptorSetLayoutBindingOffsetEXT(device, layout, 0, &binding_offset);
+        dispatch.get_descriptor_set_layout_binding_offset(device, layout, 0, &binding_offset);
         set_binding_offsets[set_index] = binding_offset;
 
         const VkDeviceSize required_size =
@@ -1121,7 +1108,7 @@ void QualityContext::recordAutoExposure(VkCommandBuffer command_buffer,
     binding.address = frame.descriptor_buffer_address;
     binding.usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
                     VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
-    vkCmdBindDescriptorBuffersEXT(command_buffer, 1, &binding);
+    dispatch.cmd_bind_descriptor_buffers(command_buffer, 1, &binding);
     constexpr std::array<uint32_t, kNumDescriptorSets> buffer_indices{};
     const std::array<VkDeviceSize, kNumDescriptorSets> offsets{{
         0 * descriptor_capacity,
@@ -1131,7 +1118,7 @@ void QualityContext::recordAutoExposure(VkCommandBuffer command_buffer,
         4 * descriptor_capacity,
         5 * descriptor_capacity,
     }};
-    vkCmdSetDescriptorBufferOffsetsEXT(command_buffer,
+    dispatch.cmd_set_descriptor_buffer_offsets(command_buffer,
                                        VK_PIPELINE_BIND_POINT_COMPUTE,
                                        pipeline_layout,
                                        0,

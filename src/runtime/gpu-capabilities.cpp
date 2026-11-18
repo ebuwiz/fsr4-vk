@@ -584,35 +584,14 @@ std::string joinBlockers(const std::vector<std::string>& blockers) {
     return joined.str();
 }
 
-// The loader hands the provider one device and its resolver; a group is satisfied
-// when any of its alternatives resolves.
+// The loader hands the provider one device and its resolver; a row is satisfied
+// when either of its spellings resolves. The rows live next to the resolver the
+// runtime uses, so the provider cannot wave through a device whose runtime half
+// would later reach for a function the contract never promised - the two used to
+// keep separate name lists, this one and DeviceDispatch's literals.
 std::vector<std::string> missingEntryPoints(VkDevice device,
                                             PFN_vkGetDeviceProcAddr get_device_proc_addr) {
-    std::vector<std::string> missing;
-
-    if (!device || !get_device_proc_addr) {
-        for (const char* group : kRequiredEntryPointGroups) {
-            missing.emplace_back(group);
-        }
-        return missing;
-    }
-
-    for (const char* group : kRequiredEntryPointGroups) {
-        std::istringstream names(group);
-        std::string name;
-        bool resolved = false;
-        while (std::getline(names, name, '|')) {
-            if (get_device_proc_addr(device, name.c_str())) {
-                resolved = true;
-                break;
-            }
-        }
-        if (!resolved) {
-            missing.emplace_back(group);
-        }
-    }
-
-    return missing;
+    return fsr4vk::missingEntryPointGroups(device, get_device_proc_addr);
 }
 
 std::optional<ModelChoice> parseModelChoice(const char* value) {

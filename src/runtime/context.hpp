@@ -126,12 +126,6 @@ class QualityContext final : public fsr4_411::QualityContext {
     VkDevice device;
     fsr4vk::DeviceDispatch dispatch;
 
-    PFN_vkGetDescriptorEXT vkGetDescriptorEXT = nullptr;
-    PFN_vkCmdBindDescriptorBuffersEXT vkCmdBindDescriptorBuffersEXT = nullptr;
-    PFN_vkCmdSetDescriptorBufferOffsetsEXT vkCmdSetDescriptorBufferOffsetsEXT = nullptr;
-    PFN_vkGetDescriptorSetLayoutSizeEXT vkGetDescriptorSetLayoutSizeEXT = nullptr;
-    PFN_vkGetDescriptorSetLayoutBindingOffsetEXT vkGetDescriptorSetLayoutBindingOffsetEXT = nullptr;
-
     VkDeviceSize descriptor_capacity = 0;
     std::array<VkDeviceSize, kNumDescriptorSets> set_strides{};
     std::array<VkDeviceSize, kNumDescriptorSets> set_binding_offsets{};
@@ -431,7 +425,10 @@ private:
     ShaderDriverPolicy configureDeviceShaderPolicy();
     void configureLiveCapture();
     void configureGpuProfile();
-    DescriptorGeometry createDescriptorLayouts(PFN_vkGetDeviceProcAddr get_device_proc_addr_);
+    // The descriptor functions this needs are already in the dispatch table the
+    // runtime loaded for its own barriers and addresses, so the call takes no
+    // resolver: one owner resolves every device function.
+    DescriptorGeometry createDescriptorLayouts();
     void configureModelPipelines(const fs::path& shader_dir,
                                  const fs::path& weights_path,
                                  const ModelRuntimeOptions& runtime_options,

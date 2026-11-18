@@ -32,19 +32,11 @@ namespace fsr4vk {
 // Cooperative matrix tile shared by every FP8 model shader variant.
 constexpr uint32_t kModelMatrixExtent = 16;
 
-// Device functions the runtime resolves through the loader's device. Group
-// entries are alternatives, so "vkCmdPipelineBarrier2|vkCmdPipelineBarrier2KHR"
-// accepts either spelling.
-constexpr const char* kRequiredEntryPointGroups[] = {
-    "vkGetDescriptorEXT",
-    "vkCmdBindDescriptorBuffersEXT",
-    "vkCmdSetDescriptorBufferOffsetsEXT",
-    "vkGetDescriptorSetLayoutSizeEXT",
-    "vkGetDescriptorSetLayoutBindingOffsetEXT",
-    "vkCmdPipelineBarrier2|vkCmdPipelineBarrier2KHR",
-    "vkCmdWriteTimestamp2|vkCmdWriteTimestamp2KHR",
-    "vkGetBufferDeviceAddress|vkGetBufferDeviceAddressKHR",
-};
+// Device functions the runtime resolves through the loader's device live in
+// fsr4vk::kRequiredEntryPointGroups, which sits next to the resolver in
+// device-dispatch.hpp: the same rows have to satisfy the contract check below
+// and be bound by DeviceDispatch::load, and they used to be two lists that
+// nothing kept in step. A group is satisfied when either spelling resolves.
 
 // Model request, before any device is consulted.
 enum class ModelChoice : std::uint8_t { Auto, ForceInt8, ForceFp8 };

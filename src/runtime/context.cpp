@@ -150,6 +150,7 @@ QualityContext::QualityContext(VkPhysicalDevice physical_device_,
       model_bucket_height(fsr4::modelBucket(max_output_width, max_output_height)[1]) {
     try {
         dispatch.load(device, get_device_proc_addr_, api_version);
+        log("[entry-points] " + dispatch.describe());
         this->auto_exposure_shader_path = auto_exposure_shader_path;
         color_shader_root = runtime_options.color_shader_root;
         color_endpoints = runtime_options.color_endpoints;
@@ -170,7 +171,7 @@ QualityContext::QualityContext(VkPhysicalDevice physical_device_,
         configureLiveCapture();
         configureGpuProfile();
 
-        const auto descriptor_geometry = createDescriptorLayouts(get_device_proc_addr_);
+        const auto descriptor_geometry = createDescriptorLayouts();
         configureModelPipelines(
             shader_dir, weights_path, runtime_options, api_version, shader_policy);
 

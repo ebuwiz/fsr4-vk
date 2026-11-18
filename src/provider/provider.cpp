@@ -241,12 +241,10 @@ ffxReturnCode_t createContext(ffxContext* context,
         }
 
         // The caller creates the device; validate only the entry points used here.
+        // vkGetDescriptorEXT needs no probe of its own any more: it is a row of
+        // the table this check walks, the same table DeviceDispatch::load binds
+        // for the runtime, so asking the loader twice bought no extra information.
         validateDeviceEntryPoints(*provider);
-
-        if (!backend->getDeviceProcAddr(backend->device, "vkGetDescriptorEXT")) {
-            throw std::invalid_argument(
-                "descriptor buffer extension must be enabled on caller device");
-        }
 
         fsr4::validateDimensions(create->maxRenderSize.width,
                                  create->maxRenderSize.height,

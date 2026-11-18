@@ -92,7 +92,7 @@ void QualityContext::prepareRcas(VkCommandBuffer command_buffer,
     VkDescriptorGetInfoEXT descriptor{VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
     descriptor.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     descriptor.data.pUniformBuffer = &address;
-    vkGetDescriptorEXT(
+    dispatch.get_descriptor(
         device,
         &descriptor,
         descriptor_size.uniform_buffer,

@@ -23,12 +23,14 @@
 // cleared at the end because the devices enumerated here die with the instance.
 
 #include "runtime/gpu-capabilities.hpp"
+#include "runtime/device-dispatch.hpp"
 
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -42,6 +44,35 @@ void report(const char* label, const fsr4vk::GpuCapabilities& capabilities) {
     for (const auto& blocker : capabilities.fp8Blockers()) {
         std::cout << "  " << label << " fp8 blocker: " << blocker << '\n';
     }
+}
+
+// A resolver that never reaches a driver, used to test the entry-point contract
+// itself. The VkDevice token selects which loader is being imitated: 1 answers
+// only the KHR spellings of the promoted pairs, 2 answers everything except one
+// descriptor row. Nothing is ever called through the returned pointer, so the
+// stub cannot crash on a bogus address - it only reports whether a name exists.
+PFN_vkVoidFunction stubDeviceProcAddr(VkDevice device, const char* name) {
+    const auto token = reinterpret_cast<uintptr_t>(device);
+    if (token == 0) {
+        return nullptr;
+    }
+
+    const std::string_view requested(name);
+    const bool khr_only = token == 1;
+    const bool missing_one_row = token == 2;
+
+    if (missing_one_row && requested == "vkGetDescriptorSetLayoutSizeEXT") {
+        return nullptr;
+    }
+
+    const bool promoted_pair = requested == "vkCmdPipelineBarrier2" ||
+                               requested == "vkCmdWriteTimestamp2" ||
+                               requested == "vkGetBufferDeviceAddress";
+    if (khr_only && promoted_pair) {
+        return nullptr;
+    }
+
+    return reinterpret_cast<PFN_vkVoidFunction>(static_cast<uintptr_t>(1));
 }
 
 } // namespace
@@ -137,6 +168,80 @@ int main() {
                   << fsr4vk::canReadStorageImage(device, with_block,
                                                  VK_FORMAT_R16G16B16A16_SFLOAT)
                   << '\n';
+
+        // The provider is handed a device plus its resolver, so play that side
+        // too: a device created from this instance drives the same table the
+        // provider's check walks and DeviceDispatch binds, which is what the
+        // runtime's [entry-points] line reports on real hardware.
+        // Enabling an extension on the device is what exposes its entry points
+        // through vkGetDeviceProcAddr: with a bare create-info the harness device
+        // answered only the three promoted pairs, and DeviceDispatch refused it
+        // by naming the five descriptor rows - the loud version of the silent
+        // null-pointer path this used to leave to createDescriptorLayouts.
+        // Ask for exactly what this device reports, which is a fact the snapshot
+        // already holds; the matrix extension is absent on Intel and stays out.
+        std::vector<const char*> enable_names;
+        for (const char* name : {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
+                                 VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME}) {
+            if (with_block.hasExtension(name)) {
+                enable_names.push_back(name);
+            }
+        }
+
+        VkDeviceCreateInfo device_info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+        device_info.enabledExtensionCount = static_cast<uint32_t>(enable_names.size());
+        device_info.ppEnabledExtensionNames = enable_names.empty() ? nullptr : enable_names.data();
+
+        VkDevice vk_device = VK_NULL_HANDLE;
+        if (vkCreateDevice(device, &device_info, nullptr, &vk_device) == VK_SUCCESS) {
+            const auto missing = fsr4vk::missingEntryPoints(vk_device, vkGetDeviceProcAddr);
+            try {
+                const fsr4vk::DeviceDispatch real_dispatch(
+                    vk_device, vkGetDeviceProcAddr, with_block.properties.apiVersion);
+                std::cout << "  entry_points " << real_dispatch.describe()
+                          << " provider_missing=" << missing.size() << '\n';
+            } catch (const std::exception& error) {
+                std::cout << "  entry_points refused: " << error.what() << '\n';
+            }
+            vkDestroyDevice(vk_device, nullptr);
+        } else {
+            std::cout << "  note: this loader refuses vkCreateDevice, entry points unprobed\n";
+        }
+    }
+
+    // One table, two consumers. The provider's refusal list and the runtime's
+    // typed binding have to name the same rows, which is the whole point of
+    // moving the list next to the resolver. These stub resolvers imitate the
+    // two situations a loader on this machine may never show: a driver that
+    // implements only the KHR spellings of the promoted pairs, and a device that
+    // is one descriptor row short. Neither reaches a driver at all.
+    {
+        const auto khr_only = reinterpret_cast<VkDevice>(static_cast<uintptr_t>(1));
+        const fsr4vk::DeviceDispatch khr_dispatch(
+            khr_only, stubDeviceProcAddr, VK_API_VERSION_1_4);
+        std::cout << "  khr_only_loader " << khr_dispatch.describe()
+                  << " provider_missing="
+                  << fsr4vk::missingEntryPoints(khr_only, stubDeviceProcAddr).size()
+                  << '\n';
+    }
+
+    {
+        const auto short_row = reinterpret_cast<VkDevice>(static_cast<uintptr_t>(2));
+        const auto provider_missing =
+            fsr4vk::missingEntryPoints(short_row, stubDeviceProcAddr);
+        std::string dispatch_says;
+        try {
+            const fsr4vk::DeviceDispatch short_dispatch(
+                short_row, stubDeviceProcAddr, VK_API_VERSION_1_4);
+            dispatch_says = "resolved anyway " + short_dispatch.describe();
+        } catch (const std::exception& error) {
+            dispatch_says = error.what();
+        }
+        const bool same_row = provider_missing.size() == 1 &&
+                              dispatch_says.find(provider_missing[0]) != std::string::npos;
+        std::cout << "  one_row_short provider="
+                  << fsr4vk::joinBlockers(provider_missing) << " dispatch=" << dispatch_says
+                  << " same_row=" << same_row << '\n';
     }
 
     // The devices enumerated here die with the instance, and the cache keys

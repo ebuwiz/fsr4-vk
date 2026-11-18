@@ -218,8 +218,8 @@ void QualityContext::recordFrame(VkCommandBuffer command_buffer,
 
         .descriptor_buffer_address = frame.descriptor_buffer_address,
         .descriptor_set_capacity = descriptor_capacity,
-        .bind_descriptor_buffers = vkCmdBindDescriptorBuffersEXT,
-        .set_descriptor_buffer_offsets = vkCmdSetDescriptorBufferOffsetsEXT,
+        .bind_descriptor_buffers = dispatch.cmd_bind_descriptor_buffers,
+        .set_descriptor_buffer_offsets = dispatch.cmd_set_descriptor_buffer_offsets,
         .descriptor_buffers_bound = run_auto_exposure,
 
         .use_wmma = use_wmma,
