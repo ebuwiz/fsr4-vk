@@ -26,6 +26,13 @@ belonging to non-model kits.  Those three are the only model dispatchers in the 
 and this repository covers all three; a third DXIL program version (62000500) does
 appear, only in nameless tables reached through `base-pair` loads, and nothing in this
 repository pins or extracts it.
+
+What the tool also measured, both as negatives that narrow the same question: the 459
+record arrays' parameter groups never point into a model weight bank (0 of 58 model
+shaped tables do), so weight binding is not a way to tell one kit's table from another's
+here - an ML model's weights are bound outside its shader records; and `switches_any`
+finds 16 switches by base-register pairings, which does not include the two `rip`-relative
+indexed model switches `dispatch.py` decodes, so 18 dispatchers exist in all.
 """
 import argparse
 import bisect
@@ -33,7 +40,8 @@ import re
 from collections import Counter
 from pathlib import Path
 
-from sdk import RECORD_STRIDE, SDK
+from sdk import RECORD_STRIDE, SDK, WEIGHT_BANK
+from pe_inventory import RECORD_GROUPS
 import dispatch
 import fp8
 
@@ -113,7 +121,7 @@ def analyze(sdk, arrays, covered):
                 versions["no-dxil"] += 1
         named = sum(1 for slot in array["slots"] if slot["name"] != "<unnamed>")
         mechanisms = sorted(covered.get(array["rva"], ()))
-        rows.append({"rva": array["rva"], "count": array["count"],
+        rows.append({"rva": array["rva"], "count": array["count"], "slots": array["slots"],
                      "versions": versions, "named": named,
                      "sizes": Counter(slot["size"] // 1024 for slot in array["slots"]),
                      "mechanisms": mechanisms})
@@ -126,6 +134,49 @@ def label(row):
                                 for name, count in versions.most_common()),
                        "named" if row["named"] else "nameless"),
             "+".join(row["mechanisms"]) if row["mechanisms"] else "unreached")
+
+
+def banks(sdk):
+    """The model weight banks of both quantizations, as spans of RVAs.
+
+    A model binary's record carries the weights it multiplies with in its parameter
+    groups, which is how a table can be told to be an ML model pass without reading a
+    single instruction: an FSR 4 model record points into one of these banks, and a
+    spatial or temporal upscaler's record points into none of them.
+    """
+    found = {}
+    for family in ("fp8", "int8"):
+        for preset, offset in sdk.weight_banks(family=family).items():
+            start = sdk.image().rva(offset)
+            found[f"{family}:{preset}"] = (start, start + WEIGHT_BANK)
+    return found
+
+
+def binds(sdk, table, bank_spans):
+    """Which weight banks the records of one table point at, counted per record."""
+    tally = Counter()
+    for slot in table["slots"]:
+        record = sdk.read(slot["rva"], RECORD_STRIDE)
+        hit = None
+        for group in RECORD_GROUPS:
+            for index in (1, 2, 3, 4):
+                position = group + 8 * index
+                if position + 8 > len(record):
+                    continue
+                value = int.from_bytes(record[position:position + 8], "little")
+                if not value:
+                    continue
+                target = value - sdk.image_base
+                for label, (start, end) in bank_spans.items():
+                    if start <= target < end:
+                        hit = label
+                        break
+                if hit:
+                    break
+            if hit:
+                break
+        tally[hit or "none"] += 1
+    return tally
 
 
 def switches_any(sdk):
@@ -168,6 +219,9 @@ def main(argv=None):
                        help="tables at least this wide are model-shaped (default 8)")
     parser.add_argument("--expect-unreached", type=int, default=None,
                        help="exit non-zero unless exactly this many tables are unreached")
+    parser.add_argument("--expect-weighted", type=int, default=None,
+                       help="exit non-zero unless exactly this many model-shaped tables "
+                       "bind a model weight bank")
     args = parser.parse_args(argv)
 
     sdk = SDK(args.dll)
@@ -226,6 +280,28 @@ def main(argv=None):
         print(f"  {table['rva']:#x} records={table['count']:<4} "
               f"named={table['named']:<4} size_kb={dict(table['sizes'].most_common(3))}")
 
+    bank_spans = banks(sdk)
+    print("\nmodel weight banks located: %d" % len(bank_spans))
+    for bank, (start, end) in sorted(bank_spans.items()):
+        print("  %-16s 0x%x..0x%x" % (bank, start, end))
+
+    weighted = unweighted = 0
+    for table in tables:
+        if table["count"] < args.min_slots:
+            continue
+        bound = binds(sdk, table, bank_spans)
+        weighted += 1 if any(name != "none" for name in bound) else 0
+        unweighted += 1 if bound.get("none") == table["count"] else 0
+    print("\nmodel-shaped tables with a record parameter group pointing into a weight "
+          "bank: %d, with none: %d" % (weighted, unweighted))
+    print("  which is the measured answer for this image: the weights of an ML model are "
+          "bound to the model outside its shader records, so weight binding cannot tell "
+          "one kit's table from another's, and nothing here separates a Lite or Navi2 "
+          "table even if one existed.")
+
+    if args.expect_weighted is not None and weighted != args.expect_weighted:
+        raise SystemExit(f"expected {args.expect_weighted} weight-bound tables, "
+                         f"found {weighted}")
     if args.expect_unreached is not None and len(unreached) != args.expect_unreached:
         raise SystemExit(f"expected {args.expect_unreached} unreached tables, "
                          f"found {len(unreached)}")
