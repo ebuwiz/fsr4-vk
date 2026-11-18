@@ -507,17 +507,12 @@ fs::path ModelShaderSelector::select(const fs::path& directory,
 namespace fsr4runtime {
 
 QualityContext::ShaderDriverPolicy QualityContext::configureDeviceShaderPolicy() {
-    VkPhysicalDeviceDriverProperties driver_properties{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
-    VkPhysicalDeviceSubgroupProperties subgroup_properties{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
-    driver_properties.pNext = &subgroup_properties;
-    VkPhysicalDeviceProperties2 device_properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-    device_properties.pNext = &driver_properties;
-    vkGetPhysicalDeviceProperties2(physical_device, &device_properties);
-
-    const bool amdvlk_or_proprietary_driver = fsr4vk::isAmdvlkOrProprietaryDriver(
-        device_properties.properties.vendorID, driver_properties.driverID);
+    // The provider already probed this device to choose a model; the runtime keeps
+    // its own snapshot so the vendor, subgroup and matrix-shape questions are
+    // answered by one probe each rather than by hand-rolled property chains.
+    device_capabilities = fsr4vk::detect(physical_device);
+    const auto& properties = device_capabilities.properties;
+    const auto& driver = device_capabilities.driver;
 
     bool force_windows_amd_shaders = false;
 
@@ -530,23 +525,21 @@ QualityContext::ShaderDriverPolicy QualityContext::configureDeviceShaderPolicy()
     constexpr bool windows_shader_assets_available = true;
 #endif
     const bool windows_amd_shaders_allowed =
-        fsr4vk::allowWindowsAmdShaders(device_properties.properties.vendorID,
-                                       driver_properties.driverID,
+        fsr4vk::allowWindowsAmdShaders(properties.vendorID,
+                                       driver.driverID,
                                        force_windows_amd_shaders,
                                        windows_shader_assets_available);
-    const bool rdna2_device = fsr4vk::isAmdRdna2Device(device_properties.properties.vendorID,
-                                                       device_properties.properties.deviceID);
+    const bool rdna2_device = device_capabilities.rdna2Device();
     device_is_rdna2 = rdna2_device;
-    default_subgroup_size = subgroup_properties.subgroupSize;
+    default_subgroup_size = device_capabilities.subgroups.subgroupSize;
     uint32_t minimum = default_subgroup_size, maximum = default_subgroup_size;
-    if (device_properties.properties.apiVersion >= VK_API_VERSION_1_3) {
-        VkPhysicalDeviceSubgroupSizeControlProperties sizes{
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES};
-        VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-                                               &sizes};
-        vkGetPhysicalDeviceProperties2(physical_device, &properties);
-        minimum = sizes.minSubgroupSize;
-        maximum = sizes.maxSubgroupSize;
+    // Subgroup size control is core in 1.3 and the probe reads the structure
+    // whenever the loader understands it; a driver that left it untouched keeps
+    // the default subgroup size as the only label worth trusting.
+    if (properties.apiVersion >= VK_API_VERSION_1_3 &&
+        device_capabilities.subgroup_sizes.minSubgroupSize != 0) {
+        minimum = device_capabilities.subgroup_sizes.minSubgroupSize;
+        maximum = device_capabilities.subgroup_sizes.maxSubgroupSize;
     }
     automatic_wave_label = "Wave" + std::to_string(minimum);
     if (minimum != maximum) {
@@ -554,19 +547,27 @@ QualityContext::ShaderDriverPolicy QualityContext::configureDeviceShaderPolicy()
     }
     automatic_wave_label += " (auto)";
 
+    const bool amd_proprietary = device_capabilities.amdProprietaryDriver();
+    const std::string shape_summary =
+        device_capabilities.matrix_shapes_probed
+            ? std::to_string(device_capabilities.matrix_shapes.size())
+            : std::string("unprobed");
+
     std::ostringstream policy_message;
     policy_message << "[device-policy] device="
-                   << std::quoted(device_properties.properties.deviceName)
-                   << " vendor_id=" << fsr4log::hexValue(device_properties.properties.vendorID)
-                   << " device_id=" << fsr4log::hexValue(device_properties.properties.deviceID)
-                   << " driver_id=" << driver_properties.driverID
-                   << " driver_name=" << std::quoted(driver_properties.driverName)
-                   << " driver_info=" << std::quoted(driver_properties.driverInfo)
-                   << " amd_proprietary=" << (amdvlk_or_proprietary_driver ? "yes" : "no")
-                   << " rdna2=" << (rdna2_device ? "yes" : "no") << " windows_shaders_available="
+                   << std::quoted(properties.deviceName)
+                   << " vendor_id=" << fsr4log::hexValue(properties.vendorID)
+                   << " device_id=" << fsr4log::hexValue(properties.deviceID)
+                   << " driver_id=" << driver.driverID
+                   << " driver_name=" << std::quoted(driver.driverName)
+                   << " driver_info=" << std::quoted(driver.driverInfo)
+                   << " amd_proprietary=" << (amd_proprietary ? "yes" : "no")
+                   << " rdna2=" << (rdna2_device ? "yes" : "no")
+                   << " windows_shaders_available="
                    << (windows_shader_assets_available ? "yes" : "no")
                    << " windows_shaders_allowed=" << (windows_amd_shaders_allowed ? "yes" : "no")
-                   << " force_windows_shaders=" << (force_windows_amd_shaders ? "yes" : "no");
+                   << " force_windows_shaders=" << (force_windows_amd_shaders ? "yes" : "no")
+                   << " matrix_shapes=" << shape_summary;
     log(policy_message.str());
 
     return {windows_amd_shaders_allowed, rdna2_device};

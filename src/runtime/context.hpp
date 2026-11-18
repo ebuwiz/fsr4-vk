@@ -7,6 +7,7 @@
 #include "diagnostics/diagnostics.hpp"
 #include "models/models.hpp"
 #include "runtime/frame.hpp"
+#include "runtime/gpu-capabilities.hpp"
 #include "runtime/resources.hpp"
 #include "runtime/rcas.hpp"
 
@@ -161,6 +162,10 @@ class QualityContext final : public fsr4_411::QualityContext {
     std::vector<Image> retired_staging_outputs;
     VkFormat overlay_read_format = VK_FORMAT_UNDEFINED;
     bool overlay_read_supported = false;
+    // One probe of the physical device answers identity, drivers, subgroups and
+    // the cooperative matrix tiles; the shader policy below reads this snapshot
+    // instead of asking the same driver questions a second time.
+    fsr4vk::GpuCapabilities device_capabilities{};
     bool device_is_rdna2 = false;
     uint32_t default_subgroup_size = 0;
     std::string automatic_wave_label;
