@@ -103,6 +103,19 @@ const CreateBackendVkDesc* findVulkanBackend(const ffxApiHeader* header) {
     return nullptr;
 }
 
+// The optional instance block, in the same chain. Absent means the host cannot
+// confirm its cooperative matrix tiles, which the capability probe reports as
+// unprobed instead of guessing.
+const CreateBackendVkInstanceDesc* findBackendInstanceBlock(const ffxApiHeader* header) {
+    for (auto* current = header; current; current = current->pNext) {
+        if (current->type == kBackendVkInstanceDescType) {
+            return reinterpret_cast<const CreateBackendVkInstanceDesc*>(current);
+        }
+    }
+
+    return nullptr;
+}
+
 void validateDeviceEntryPoints(const ProviderContext& provider) {
     const auto missing = fsr4vk::missingEntryPoints(provider.device,
                                                     provider.getDeviceProcAddr);
@@ -136,9 +149,22 @@ ffxReturnCode_t createContext(ffxContext* context,
     const std::uint64_t requested_version = requestedVersionId(header);
 
     // One probe per device: model selection, the diagnostics below and the
-    // runtime's shader policy all read the same cached snapshot.
+    // runtime's shader policy all read the same cached snapshot. The instance
+    // block is optional, and a half-filled one is worth naming in the log: the
+    // host meant to confirm its tiles and did not manage it.
+    const auto* instance_block = findBackendInstanceBlock(header);
+    const fsr4vk::InstanceResolver resolver{
+        instance_block ? instance_block->instance : VK_NULL_HANDLE,
+        instance_block ? instance_block->getInstanceProcAddr : nullptr};
+
+    if (instance_block && (!instance_block->instance || !instance_block->getInstanceProcAddr)) {
+        diagnosticLine(std::string("[capabilities] host instance block incomplete: instance=") +
+                       (instance_block->instance ? "set" : "null") + ", resolver=" +
+                       (instance_block->getInstanceProcAddr ? "set" : "null"));
+    }
+
     const auto capabilities =
-        fsr4vk::detectCached(backend->physicalDevice).value_or(fsr4vk::GpuCapabilities{});
+        fsr4vk::detectCached(backend->physicalDevice, resolver).value_or(fsr4vk::GpuCapabilities{});
     diagnosticLine(std::string("[capabilities] ") + capabilities.describe());
 
     std::string selection_reason;

@@ -4,6 +4,7 @@
 
 #include "assets/assets.hpp"
 #include "models/models.hpp"
+#include "runtime/gpu-capabilities.hpp"
 #include "runtime/context.hpp"
 
 namespace fsr4fp8 {
@@ -18,7 +19,16 @@ bool hasAssets(const fs::path& root) {
 fsr4_411::QualityContextPtr createContext(const fsr4_411::ContextCreateInfo& info) {
     const auto bundle = info.asset_root / "fp8" /
                         fsr4::resolutionBucket(info.max_output_width, info.max_output_height);
-    const bool use_wmma = true;
+    // The WMMA files are the cooperative-matrix variants of the model shaders,
+    // so they are only assumed when nobody was able to ask the driver for its
+    // tiles. The provider gated FP8 selection on this same cached snapshot, so a
+    // probed device that reaches this factory does have the 16x16x16 float16
+    // and float8 shapes; an unprobed one keeps the historical behavior, which is
+    // what hosts that cannot supply the tile query still get.
+    const auto capabilities =
+        fsr4vk::detectCached(info.physical_device).value_or(fsr4vk::GpuCapabilities{});
+    const bool use_wmma =
+        capabilities.matrixShapesProbed() ? capabilities.supportsModelMatrixShapes() : true;
 
     const auto weights = info.asset_root / "fp8/models/4.1.2/weights_standard.bin";
 

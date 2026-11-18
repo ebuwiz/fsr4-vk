@@ -4,10 +4,13 @@
 
 // One physical device probed once: identity, extensions, features and the
 // cooperative matrix shapes the shipped model shaders are built around. Every
-// query here is physical-device level, so the probe never needs an instance
-// handle and never creates one of its own. A query the loader refuses leaves
-// that field unprobed rather than looking unsupported; only a probe that
-// answered can rule a model out on shape grounds.
+// query but the tile list is physical-device level and core, so no handle beyond
+// the device is needed. The tile list belongs to VK_KHR_cooperative_matrix, which
+// a loader is free not to export an entry point for, and vkGetDeviceProcAddr
+// excludes physical-device-level commands by spec, so a host that wants its tiles
+// confirmed has to hand over the instance that created the device. A query that
+// could not be reached leaves that field unprobed rather than looking unsupported;
+// only a probe that answered can rule a model out on shape grounds.
 //
 // The provider consults this snapshot before it is allowed to select a model,
 // so an unsupported FP8 request fails with a reason instead of a shader compile
@@ -46,6 +49,19 @@ constexpr const char* kRequiredEntryPointGroups[] = {
 // Model request, before any device is consulted.
 enum class ModelChoice : std::uint8_t { Auto, ForceInt8, ForceFp8 };
 
+// Which handle can answer the cooperative matrix tile query for a device. The
+// instance has to be the one that created that physical device; handing this pair
+// over is what lets a host confirm tiles on a loader such as the Mesa one, which
+// exports no extension entry points of its own.
+struct InstanceResolver {
+    VkInstance instance = VK_NULL_HANDLE;
+    PFN_vkGetInstanceProcAddr get_instance_proc_addr = nullptr;
+};
+
+// How the tile list got its answers. Only Unprobed may never be read as
+// "this device has no tiles".
+enum class MatrixProbeRoute : std::uint8_t { Unprobed, DynamicLookup, HostInstance };
+
 // FSR4_VK_MODEL values. Auto keeps the historical INT8 default and must never
 // probe for FP8 support; only an explicit request is allowed to gate on it.
 std::optional<ModelChoice> parseModelChoice(const char* value);
@@ -77,13 +93,24 @@ struct GpuCapabilities {
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR cooperative_matrix{};
 
     // Cooperative matrix shapes offered for compute workloads. Empty is
-    // ambiguous on its own, so probed records whether the query answered: a
-    // host that refused it leaves both fields untouched. A caller that owns an
-    // instance may fill them itself, as tools/cap-probe.cpp does.
+    // ambiguous on its own, so matrix_probe_route records whether a query ran
+    // and which handle answered it. A caller that owns an instance can fill the
+    // fields itself too, which is what tools/cap-probe.cpp does.
     std::vector<VkCooperativeMatrixPropertiesKHR> matrix_shapes;
-    bool matrix_shapes_probed = false;
+    MatrixProbeRoute matrix_probe_route = MatrixProbeRoute::Unprobed;
 
     bool hasExtension(const char* wanted) const;
+
+    // Whether a tile query actually answered for this device. An unprobed
+    // list is unknown, never a verdict.
+    bool matrixShapesProbed() const;
+
+    // Name of the route that answered, for the [capabilities] log line.
+    const char* matrixProbeRouteName() const;
+
+    // The tile list as the log lines print it: a count, or "unprobed".
+    std::string matrixShapeSummary() const;
+
     // Feature chain and subgroup contract the runtime always needs.
     bool supportsRuntimeContract() const;
 
@@ -122,19 +149,24 @@ private:
 
 std::string joinBlockers(const std::vector<std::string>& blockers);
 
-// Queries one physical device. Every command used here takes the physical device
-// itself, so the provider can build the snapshot from the handle the loader hands
-// it. A command the host does not export leaves its field unprobed rather than
-// looking unsupported.
-GpuCapabilities detect(VkPhysicalDevice physical_device);
+// Queries one physical device. Everything but the cooperative matrix tile list
+// takes the device itself, so the provider can read it from the handle the loader
+// hands over. The resolver is optional: without an instance the tile list stays
+// unprobed on loaders that do not export the extension's entry point, which is
+// the case for the Mesa Vulkan loader.
+GpuCapabilities detect(VkPhysicalDevice physical_device, InstanceResolver resolver = {});
 
 // The same device probed again answers from the snapshot rather than repeating
 // every query: that is how the provider choosing a model and the runtime choosing
 // shader packaging are guaranteed to agree about the hardware. The snapshot
 // arrives by value, so no caller can hold a reference into the bounded cache,
-// which evicts the oldest device. A null handle yields no value; a harness that
-// creates its own devices calls clearCapabilityCache() when it is done with them.
-std::optional<GpuCapabilities> detectCached(VkPhysicalDevice physical_device);
+// which evicts the oldest device. A cached snapshot whose tiles were never
+// probed gets re-queried once a caller supplies a usable resolver, which is what
+// lets the runtime - it has no instance of its own - still read the provider's
+// answers. A null handle yields no value; a harness that creates its own devices
+// calls clearCapabilityCache() when it is done with them.
+std::optional<GpuCapabilities> detectCached(VkPhysicalDevice physical_device,
+                                            InstanceResolver resolver = {});
 
 void clearCapabilityCache();
 

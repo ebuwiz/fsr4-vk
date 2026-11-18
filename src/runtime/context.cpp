@@ -550,10 +550,7 @@ QualityContext::ShaderDriverPolicy QualityContext::configureDeviceShaderPolicy()
     automatic_wave_label += " (auto)";
 
     const bool amd_proprietary = device_capabilities.amdProprietaryDriver();
-    const std::string shape_summary =
-        device_capabilities.matrix_shapes_probed
-            ? std::to_string(device_capabilities.matrix_shapes.size())
-            : std::string("unprobed");
+    const std::string shape_summary = device_capabilities.matrixShapeSummary();
 
     std::ostringstream policy_message;
     policy_message << "[device-policy] device="
@@ -569,7 +566,9 @@ QualityContext::ShaderDriverPolicy QualityContext::configureDeviceShaderPolicy()
                    << (windows_shader_assets_available ? "yes" : "no")
                    << " windows_shaders_allowed=" << (windows_amd_shaders_allowed ? "yes" : "no")
                    << " force_windows_shaders=" << (force_windows_amd_shaders ? "yes" : "no")
-                   << " matrix_shapes=" << shape_summary;
+                   << " matrix_shapes=" << shape_summary
+                   << " matrix_probe=" << device_capabilities.matrixProbeRouteName()
+                   << " wmma=" << (use_wmma ? "yes" : "no");
     log(policy_message.str());
 
     return {windows_amd_shaders_allowed, rdna2_device};

@@ -39,6 +39,11 @@
 namespace fsr4provider {
 
 constexpr ffxStructType_t kBackendVkDescType = 3u;
+// The instance block is a newer, optional addition to the same pNext chain: 4u
+// is free (FFX_API_DESC_TYPE_OVERRIDE_VERSION is 5u, the upscale desc is
+// 0x00010000u), so hosts that keep sending only the device block above stay
+// supported and simply leave the cooperative matrix tiles unprobed.
+constexpr ffxStructType_t kBackendVkInstanceDescType = 4u;
 
 struct CreateBackendVkDesc {
     ffxCreateContextDescHeader header;
@@ -46,6 +51,18 @@ struct CreateBackendVkDesc {
     VkPhysicalDevice physicalDevice;
 
     PFN_vkGetDeviceProcAddr getDeviceProcAddr;
+};
+
+// The instance that created physicalDevice above, plus the instance-level resolver
+// for it. That is the only spec-legal handle from which the
+// VK_KHR_cooperative_matrix tile query can be reached when the loader exports no
+// extension entry points and vkGetDeviceProcAddr refuses physical-device-level
+// commands, so hosts that want their tiles confirmed - rather than assumed - send
+// this block.
+struct CreateBackendVkInstanceDesc {
+    ffxCreateContextDescHeader header;
+    VkInstance instance;
+    PFN_vkGetInstanceProcAddr getInstanceProcAddr;
 };
 
 struct ProviderVersion {

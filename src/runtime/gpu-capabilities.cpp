@@ -47,41 +47,60 @@ std::string apiVersionName(std::uint32_t version) {
 }
 
 // The cooperative matrix shape list belongs to VK_KHR_cooperative_matrix and
-// takes the physical device itself (vulkan_core.h:13571), so no instance handle
-// is needed for the call. It is resolved at runtime instead of referenced at
-// link time because extension entry points are not guaranteed to be exported
-// by the loader the host loaded: when the symbol cannot be resolved the probe
-// records the shapes as unprobed rather than as "no shapes", and only a probe
-// that actually answered may rule a model out on tile grounds. A caller that
-// owns an instance can always fill the public fields itself, which is what
-// tools/cap-probe.cpp does to check the tiles on real hardware.
+// takes the physical device itself (vulkan_core.h:13571). *Reaching* that command
+// is the part a host may refuse: a loader is not required to export entry points
+// for extensions - the Mesa Vulkan loader exports no CooperativeMatrix symbol at
+// all, while its core vkGetPhysicalDevice* set is complete - and vkGetDeviceProcAddr
+// excludes every physical-device-level command by spec. So the routes tried here
+// are the instance the host supplied first, then the loader's exported symbol
+// through dlsym. A route that cannot be reached or that answers with an error is
+// skipped, and only a route that returned shapes sets the probe route; a probe
+// that never ran leaves the list unprobed rather than reporting "no shapes".
 std::vector<VkCooperativeMatrixPropertiesKHR> probeMatrixShapes(
-    VkPhysicalDevice physical_device, bool& probed) {
+    VkPhysicalDevice physical_device, const InstanceResolver& resolver,
+    MatrixProbeRoute& route) {
+    using ShapeQuery = PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR;
     if (!physical_device) {
         return {};
     }
 
-    const auto get_shapes = reinterpret_cast<PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR>(
-        dlsym(RTLD_DEFAULT, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR"));
-    if (!get_shapes) {
-        return {};
+    ShapeQuery host_query = nullptr;
+    if (resolver.instance && resolver.get_instance_proc_addr) {
+        host_query = reinterpret_cast<ShapeQuery>(
+            resolver.get_instance_proc_addr(resolver.instance,
+                                            "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR"));
     }
 
-    uint32_t shape_count = 0;
-    if (get_shapes(physical_device, &shape_count, nullptr) != VK_SUCCESS) {
-        return {};
+    const std::pair<MatrixProbeRoute, ShapeQuery> sources[] = {
+        {MatrixProbeRoute::HostInstance, host_query},
+        {MatrixProbeRoute::DynamicLookup,
+         reinterpret_cast<ShapeQuery>(
+             dlsym(RTLD_DEFAULT, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR"))},
+    };
+
+    for (const auto& [candidate_route, query] : sources) {
+        if (!query) {
+            continue;
+        }
+
+        uint32_t shape_count = 0;
+        if (query(physical_device, &shape_count, nullptr) != VK_SUCCESS) {
+            continue;
+        }
+
+        std::vector<VkCooperativeMatrixPropertiesKHR> shapes(
+            shape_count,
+            VkCooperativeMatrixPropertiesKHR{VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR});
+        if (query(physical_device, &shape_count, shapes.data()) != VK_SUCCESS) {
+            continue;
+        }
+
+        shapes.resize(shape_count);
+        route = candidate_route;
+        return shapes;
     }
 
-    std::vector<VkCooperativeMatrixPropertiesKHR> shapes(
-        shape_count,
-        VkCooperativeMatrixPropertiesKHR{VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR});
-    if (get_shapes(physical_device, &shape_count, shapes.data()) != VK_SUCCESS) {
-        return {};
-    }
-
-    shapes.resize(shape_count);
-    probed = true;
-    return shapes;
+    return {};
 }
 
 } // namespace
@@ -89,7 +108,7 @@ std::vector<VkCooperativeMatrixPropertiesKHR> probeMatrixShapes(
 // Reads identity, advertised extensions and the feature chain both models need.
 // No query here throws: a failed query leaves its field empty, and the
 // predicates below turn that into an explicit rejection.
-GpuCapabilities detect(VkPhysicalDevice physical_device) {
+GpuCapabilities detect(VkPhysicalDevice physical_device, InstanceResolver resolver) {
     GpuCapabilities capabilities;
 
     vkGetPhysicalDeviceProperties(physical_device, &capabilities.properties);
@@ -173,7 +192,8 @@ GpuCapabilities detect(VkPhysicalDevice physical_device) {
     capabilities.descriptor_buffer = descriptor_buffer;
     capabilities.core = features.features;
 
-    capabilities.matrix_shapes = probeMatrixShapes(physical_device, capabilities.matrix_shapes_probed);
+    capabilities.matrix_shapes =
+        probeMatrixShapes(physical_device, resolver, capabilities.matrix_probe_route);
     return capabilities;
 }
 
@@ -191,23 +211,35 @@ std::vector<std::pair<VkPhysicalDevice, GpuCapabilities>> capability_cache;
 
 } // namespace
 
-std::optional<GpuCapabilities> detectCached(VkPhysicalDevice physical_device) {
+std::optional<GpuCapabilities> detectCached(VkPhysicalDevice physical_device,
+                                            InstanceResolver resolver) {
     if (!physical_device) {
         return {};
     }
 
+    const bool resolver_usable = resolver.instance && resolver.get_instance_proc_addr;
     std::lock_guard<std::mutex> lock(capability_cache_mutex);
-    for (const auto& entry : capability_cache) {
-        if (entry.first == physical_device) {
-            return entry.second;
+    for (auto& entry : capability_cache) {
+        if (entry.first != physical_device) {
+            continue;
         }
+
+        // A snapshot is kept for the handle, but a tile list nobody could reach
+        // is not a fact about the device: when a later caller can supply an
+        // instance resolver, that entry is re-probed once so the runtime - which
+        // has no instance of its own - still reads the provider's answers.
+        if (entry.second.matrix_probe_route == MatrixProbeRoute::Unprobed && resolver_usable) {
+            entry.second = detect(physical_device, resolver);
+        }
+
+        return entry.second;
     }
 
     if (capability_cache.size() >= kCapabilityCacheLimit) {
         capability_cache.erase(capability_cache.begin());
     }
 
-    capability_cache.emplace_back(physical_device, detect(physical_device));
+    capability_cache.emplace_back(physical_device, detect(physical_device, resolver));
     return capability_cache.back().second;
 }
 
@@ -238,7 +270,7 @@ bool GpuCapabilities::supportsModelMatrixShapes() const {
     // An empty list from a host that refused the query means unknown, so the
     // extension and feature bits stay the only signal. Only a probe that
     // answered can confirm the tiles the FP8 shaders are built around.
-    if (!matrix_shapes_probed) {
+    if (!matrixShapesProbed()) {
         return false;
     }
 
@@ -373,7 +405,7 @@ std::vector<std::string> GpuCapabilities::fp8Blockers() const {
 
     // Only a probe that answered can reject a tile; an unprobed device is judged
     // on the extension and feature bits alone.
-    if (matrix_shapes_probed) {
+    if (matrixShapesProbed()) {
         if (!hasMatrixShape(VK_COMPONENT_TYPE_FLOAT16_KHR)) {
             blockers.emplace_back(missingMatrixShapeName(VK_COMPONENT_TYPE_FLOAT16_KHR));
         }
@@ -430,17 +462,43 @@ std::string GpuCapabilities::wave32BlockerText() const {
            std::to_string(subgroup_sizes.maxSubgroupSize) + " cannot pin 32-lane subgroups";
 }
 
-std::string GpuCapabilities::describe() const {
-    const std::string shape_summary =
-        matrix_shapes_probed ? std::to_string(matrix_shapes.size()) : "unprobed";
+// Whether a tile query reached the device at all. The distinction matters more
+// than the count: an empty list from a probe nobody could run says nothing about
+// the hardware, while an empty list from a probe that answered rules the model
+// out. matrix_probe_route names which case this snapshot is, so a log line can
+// tell "the driver has no tiles" from "nobody could ask the driver".
+bool GpuCapabilities::matrixShapesProbed() const {
+    return matrix_probe_route != MatrixProbeRoute::Unprobed;
+}
 
+const char* GpuCapabilities::matrixProbeRouteName() const {
+    switch (matrix_probe_route) {
+    case MatrixProbeRoute::HostInstance:
+        return "host";
+    case MatrixProbeRoute::DynamicLookup:
+        return "dlsym";
+    default:
+        return "unprobed";
+    }
+}
+
+// How the tile list reads in a log line: a count only a probe can produce, and
+// the word "unprobed" when nobody reached the query. Both the provider's
+// [capabilities] line and the runtime's [device-policy] line print this, so the
+// two places cannot drift into telling different stories about the same device.
+std::string GpuCapabilities::matrixShapeSummary() const {
+    return matrixShapesProbed() ? std::to_string(matrix_shapes.size()) : "unprobed";
+}
+
+std::string GpuCapabilities::describe() const {
     std::ostringstream line;
     line << "device=" << std::quoted(properties.deviceName) << " type=" << deviceTypeName(properties.deviceType)
          << " api=" << apiVersionName(properties.apiVersion) << " vendor_id=" << hexValue(properties.vendorID)
          << " device_id=" << hexValue(properties.deviceID) << " driver_id=" << driver.driverID
          << " driver=" << std::quoted(driver.driverName)
          << " driver_info=" << std::quoted(driver.driverInfo) << " extensions=" << extensions.size()
-         << " matrix_shapes=" << shape_summary << " subgroup_size=" << subgroups.subgroupSize
+         << " matrix_shapes=" << matrixShapeSummary() << " matrix_probe=" << matrixProbeRouteName()
+         << " subgroup_size=" << subgroups.subgroupSize
          << " subgroup_range=" << subgroup_sizes.minSubgroupSize << '-' << subgroup_sizes.maxSubgroupSize
          << " amd_proprietary=" << (amdProprietaryDriver() ? "yes" : "no")
          << " rdna2=" << (rdna2Device() ? "yes" : "no")

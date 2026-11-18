@@ -11,14 +11,16 @@
 //       tools/cap-probe.cpp src/runtime/gpu-capabilities.cpp -ldl
 //       /usr/lib/libvulkan.so.1 && /tmp/cap-probe
 //
-// The provider never receives a VkInstance, so production leaves the cooperative
-// matrix shapes unprobed and judges FP8 on the extension and feature bits alone.
-// A harness like this one owns its instance, so it can enable the extensions,
-// ask for the tiles itself and fill the public fields on the copy it owns; the
-// "with shapes" block below shows how a test does that and what changes once
-// the tiles are known. The "production" block goes through detectCached(), the
-// entry point both the provider and the runtime use, and clears the cache at
-// the end because the devices enumerated here die with the instance.
+// Production has no VkInstance of its own: the host hands the provider a device,
+// its physical device and a device-level resolver. vkGetDeviceProcAddr excludes
+// physical-device-level commands by spec, and a loader such as the Mesa one exports
+// no VK_KHR_cooperative_matrix entry point at all, so the tile query is unreachable
+// unless the host also sends the instance that created the device - the optional
+// type-4 block the provider reads in src/provider/provider.hpp. This harness plays
+// both sides: it first probes without that block (the non-cooperating host, tiles
+// unprobed) and then with it (the cooperating host, tiles confirmed), which is
+// exactly the pair of behaviors the tri-state gate has to keep apart. The cache is
+// cleared at the end because the devices enumerated here die with the instance.
 
 #include "runtime/gpu-capabilities.hpp"
 
@@ -30,32 +32,6 @@
 #include <vector>
 
 namespace {
-
-// The shape list belongs to VK_KHR_cooperative_matrix and is resolved through
-// the instance that created the device, so it is reached with GetInstanceProcAddr
-// rather than a link-time reference the host loader might not export.
-std::vector<VkCooperativeMatrixPropertiesKHR> queryShapes(VkInstance instance,
-                                                          VkPhysicalDevice device) {
-    const auto get_shapes = reinterpret_cast<PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR>(
-        vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR"));
-    if (!get_shapes) {
-        return {};
-    }
-
-    uint32_t count = 0;
-    if (get_shapes(device, &count, nullptr) != VK_SUCCESS) {
-        return {};
-    }
-
-    std::vector<VkCooperativeMatrixPropertiesKHR> shapes(
-        count, VkCooperativeMatrixPropertiesKHR{VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR});
-    if (get_shapes(device, &count, shapes.data()) != VK_SUCCESS) {
-        return {};
-    }
-
-    shapes.resize(count);
-    return shapes;
-}
 
 void report(const char* label, const fsr4vk::GpuCapabilities& capabilities) {
     std::cout << "  " << label << " int8=" << std::boolalpha << capabilities.supportsInt8Model()
@@ -108,32 +84,36 @@ int main() {
     std::vector<VkPhysicalDevice> devices(count);
     vkEnumeratePhysicalDevices(instance, &count, devices.data());
 
+    // What a cooperating host sends: the instance that created these devices plus
+    // its instance-level resolver. The provider reads the same pair from the
+    // optional type-4 block in the create-context chain.
+    const fsr4vk::InstanceResolver resolver{instance, vkGetInstanceProcAddr};
+
     for (const auto device : devices) {
-        auto capabilities = fsr4vk::detectCached(device).value_or(fsr4vk::GpuCapabilities{});
-        std::cout << capabilities.describe() << '\n';
+        const auto without_block =
+            fsr4vk::detectCached(device).value_or(fsr4vk::GpuCapabilities{});
+        std::cout << without_block.describe() << '\n';
+        report("no instance block", without_block);
 
-        // The provider's view: whatever the module answered by itself.
-        report("production", capabilities);
+        // Same handle, resolver supplied: the cache refines the unprobed snapshot
+        // instead of keeping the first answer, which is what lets the runtime -
+        // it has no instance of its own - read the tiles the provider confirmed.
+        const auto with_block =
+            fsr4vk::detectCached(device, resolver).value_or(fsr4vk::GpuCapabilities{});
+        std::cout << with_block.describe() << '\n';
+        report("with instance block", with_block);
 
-        // The provider and the runtime both enter through detectCached, so the
-        // second call has to answer from the snapshot instead of re-querying;
-        // matching describe() text is what the harness can observe. A null
-        // handle answers with no snapshot rather than an empty one.
-        const auto repeat = fsr4vk::detectCached(device);
-        std::cout << "  cached_repeat=" << std::boolalpha
-                  << (repeat.has_value() && repeat->describe() == capabilities.describe())
-                  << " wave32=" << capabilities.supportsWave32Pipelines()
+        // A later call with nothing supplied must reuse the refined snapshot,
+        // which is the sharing the provider and the runtime depend on.
+        const auto reused = fsr4vk::detectCached(device).value_or(fsr4vk::GpuCapabilities{});
+        const bool first_answered = without_block.matrixShapesProbed();
+        const bool second_answered = with_block.matrixShapesProbed();
+        std::cout << "  refined=" << (!first_answered && second_answered)
+                  << " cached_reuse=" << (reused.describe() == with_block.describe())
+                  << " wmma=" << with_block.supportsModelMatrixShapes()
+                  << " wave32=" << with_block.supportsWave32Pipelines()
                   << " null_handle_has_snapshot=" << fsr4vk::detectCached(nullptr).has_value()
                   << '\n';
-
-        // The tile list belongs to the caller that owns an instance, and the
-        // snapshot arrives as a copy, so filling it here cannot corrupt the
-        // cache the provider reads.
-        capabilities.matrix_shapes = queryShapes(instance, device);
-        capabilities.matrix_shapes_probed = !capabilities.matrix_shapes.empty();
-        std::cout << "  tiles=" << capabilities.matrix_shapes.size()
-                  << " float16_16x16x16=" << capabilities.supportsModelMatrixShapes() << '\n';
-        report("with shapes", capabilities);
     }
 
     // The devices enumerated here die with the instance, and the cache keys
