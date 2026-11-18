@@ -14,7 +14,8 @@ to select, which is the only honest way to tell "another kit's table" apart from
 "a model variant we do not extract" - the distinction the `Fsr4LiteInt8UpscalerModel`
 and `Fsr4Int8navi2UpscalerModel` class names in the same image keep colliding with.
 
-    tools/extract/modeltables.py --dll amd_fidelityfx_upscaler_dx12.dll --expect-unreached 0
+    tools/extract/modeltables.py --dll amd_fidelityfx_upscaler_dx12.dll \
+        --expect-unreached 0 --expect-weighted 0 --expect-part-shapes 2
 
 On the pinned 4.1.2.4555 image it measures: 459 record arrays, 58 of them model shaped
 (>= 8 records), and slot-verified record selections - `indexed` 324, `base-pair` 200,
@@ -23,9 +24,19 @@ sits unowned.  Accepting any register pairing, `.text` holds 16 `cmp`-guarded sw
 the two 27-case indexed switches `dispatch.py` pins, one more 27-case switch at 0x10a628
 (the FP8 matrix dispatch `fp8.py` decodes), and 13 fourteen-case-or-smaller switches
 belonging to non-model kits.  Those three are the only model dispatchers in the image,
-and this repository covers all three; a third DXIL program version (62000500) does
-appear, only in nameless tables reached through `base-pair` loads, and nothing in this
-repository pins or extracts it.
+and this repository covers all three.  A third DXIL program version (62000500) does
+appear, only in nameless tables reached by `base-pair` loads and never pinned or extracted
+here; what those tables hold is measured now rather than assumed. Every one of their 153
+records is a DXBC *pixel-shader* container, and the 58 model-shaped tables' 1275 records
+fall into exactly two part shapes: a 7-part `DXIL+HASH+ISG1+OSG1+PSV0+SFI0+STAT` (970
+records, all of it `64000500` x692 + `66000500` x278) and a 9-part shape that additionally
+carries `RTS0` (render-target assignments) and `ILDN` (inline descriptor metadata), holding
+all 153 `62000500` records plus 152 `66000500` ones and no `64000500` at all. So part shape
+tracks the compiled signature family, not the model: the FP8-era records never carry `RTS0`
+or `ILDN`, and neither shape is confined to one program version - program version and part
+shape are independent cuts, and since none of the 58 tables binds a model weight bank, no
+signature-shape or weight evidence separates a Lite or Navi2 variant from the tables this
+repository already extracts.
 
 What the tool also measured, both as negatives that narrow the same question: the 459
 record arrays' parameter groups never point into a model weight bank (0 of 58 model
@@ -107,6 +118,25 @@ def selections(sdk):
     return found
 
 
+def parts_of(sdk, rva):
+    """The part fourccs of one DXBC container, sorted into one comparable shape.
+
+    A container's part table is what declares its stage and signature: PSV0 marks a
+    pixel program, RTS0 its render-target assignments, ILDN its inline descriptor
+    metadata. Shape classifies what a record *is* far more directly than the
+    weight-binding question does - and weight binding turned out to say nothing.
+    """
+    if sdk.read(rva, 4) != b"DXBC":
+        raise ValueError(f"{rva:#x} is not a DXBC container")
+    count = sdk.uint(rva + 0x1C)
+    table = sdk.read(rva + 0x20, 4 * count)
+    tags = set()
+    for index in range(count):
+        offset = int.from_bytes(table[index * 4:index * 4 + 4], "little")
+        tags.add(sdk.read(rva + offset, 4).decode("latin-1", "replace"))
+    return "+".join(sorted(tags))
+
+
 def analyze(sdk, arrays, covered):
     """One row per table wide enough to be a model table: versions, naming, reach."""
     rows = []
@@ -114,15 +144,22 @@ def analyze(sdk, arrays, covered):
         if array["count"] < 8:
             continue
         versions = Counter()
+        combos = Counter()
         for slot in array["slots"]:
             try:
-                versions[sdk.dxil_version(slot["dxbc_rva"], slot["size"]).hex()] += 1
+                version = sdk.dxil_version(slot["dxbc_rva"], slot["size"]).hex()
             except ValueError:
-                versions["no-dxil"] += 1
+                version = "no-dxil"
+            versions[version] += 1
+            try:
+                shape = parts_of(sdk, slot["dxbc_rva"])
+            except ValueError:
+                shape = "unreadable"
+            combos[(shape, version)] += 1
         named = sum(1 for slot in array["slots"] if slot["name"] != "<unnamed>")
         mechanisms = sorted(covered.get(array["rva"], ()))
         rows.append({"rva": array["rva"], "count": array["count"], "slots": array["slots"],
-                     "versions": versions, "named": named,
+                     "versions": versions, "combos": combos, "named": named,
                      "sizes": Counter(slot["size"] // 1024 for slot in array["slots"]),
                      "mechanisms": mechanisms})
     return sorted(rows, key=lambda row: row["rva"])
@@ -222,6 +259,9 @@ def main(argv=None):
     parser.add_argument("--expect-weighted", type=int, default=None,
                        help="exit non-zero unless exactly this many model-shaped tables "
                        "bind a model weight bank")
+    parser.add_argument("--expect-part-shapes", type=int, default=None,
+                       help="exit non-zero unless the model-shaped tables hold exactly this "
+                       "many distinct DXBC part shapes")
     args = parser.parse_args(argv)
 
     sdk = SDK(args.dll)
@@ -280,6 +320,21 @@ def main(argv=None):
         print(f"  {table['rva']:#x} records={table['count']:<4} "
               f"named={table['named']:<4} size_kb={dict(table['sizes'].most_common(3))}")
 
+    shape_totals = Counter()
+    shape_versions = {}
+    for table in tables:
+        if table["count"] < args.min_slots:
+            continue
+        for (shape, version), count in table["combos"].items():
+            shape_totals[shape] += count
+            shape_versions.setdefault(shape, Counter())[version] += count
+    print("\nDXBC part shapes among model-shaped tables: %d distinct" % len(shape_totals))
+    for shape, count in shape_totals.most_common():
+        print("  %-58s %4d records  program_version: %s"
+              % (shape, count,
+                 ", ".join(f"{version} x{bound}"
+                           for version, bound in shape_versions[shape].most_common())))
+
     bank_spans = banks(sdk)
     print("\nmodel weight banks located: %d" % len(bank_spans))
     for bank, (start, end) in sorted(bank_spans.items()):
@@ -305,6 +360,9 @@ def main(argv=None):
     if args.expect_unreached is not None and len(unreached) != args.expect_unreached:
         raise SystemExit(f"expected {args.expect_unreached} unreached tables, "
                          f"found {len(unreached)}")
+    if args.expect_part_shapes is not None and len(shape_totals) != args.expect_part_shapes:
+        raise SystemExit(f"expected {args.expect_part_shapes} DXBC part shapes among model-shaped "
+                         f"tables, found {len(shape_totals)}")
     return 0
 
 

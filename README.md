@@ -120,9 +120,10 @@ The build itself verifies every embedded asset payload and alias. On top of that
   the model variant map out of the DLL and fails on any drift from
   `tools/extract/keys/4.1.2.4555.json`, so a pin cannot silently describe a different
   build than the one being extracted.
-- `python3 tools/extract/modeltables.py --dll <dll> --expect-unreached 0 --expect-weighted 0`
-  accounts for every shader record table by the pattern that selects it. Minutes to run;
-  it is the answer to "does this DLL hold model assets we do not extract".
+- `python3 tools/extract/modeltables.py --dll <dll> --expect-unreached 0 --expect-weighted 0 --expect-part-shapes 2`
+  accounts for every shader record table by the pattern that selects it, by whether any of
+  its records points into a model weight bank, and by the DXBC part shape its containers
+  carry. Minutes to run; it is the answer to "does this DLL hold model assets we do not extract".
 - Captures are compared frame by frame: `python3 tools/validate/ab-frames.py <capture_a> <capture_b>`.
   Add `--relax-variant` when the two runs differ by more than the descriptor transport,
   which is how an INT8/FP8 A/B is paired, since the two models select different wave
