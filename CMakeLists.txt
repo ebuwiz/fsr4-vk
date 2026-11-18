@@ -164,6 +164,20 @@ if(FSR4_EMBEDDED_ASSETS)
         message(FATAL_ERROR "Embedded assets currently support Windows PE and Linux ELF")
     endif()
 endif()
+option(FSR4_CAPABILITY_PROBE "Build the standalone device capability probe (POSIX hosts)" ON)
+if(FSR4_CAPABILITY_PROBE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # The probe links the capability snapshot and nothing else: no assets, no provider,
+    # no VkInstance of the runtime's own. That is what lets the model ladder and the
+    # device-class spellings in tools/cap-probe.cpp be gated on a machine that is not
+    # running a game, and it is why the same resolveModel both code paths call has to
+    # be the one helper rather than two similar ones.
+    add_executable(cap-probe tools/cap-probe.cpp src/runtime/gpu-capabilities.cpp)
+    target_include_directories(cap-probe PRIVATE src "${FSR4_GENERATED}"
+        third_party/fidelityfx-api/upscalers/include)
+    target_link_libraries(cap-probe PRIVATE Vulkan::Vulkan ${CMAKE_DL_LIBS})
+    set_target_properties(cap-probe PROPERTIES CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN YES)
+endif()
 if(MINGW)
     target_link_options(amd_fidelityfx_upscaler_vk PRIVATE -static $<$<CONFIG:Release>:-s>)
 endif()
