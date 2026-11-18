@@ -127,6 +127,29 @@ static_assert(isAmdRdna2Device(kAmdVendorId, 0x73ff));  // Navi 23
 static_assert(isAmdRdna2Device(kAmdVendorId, 0x7422));  // Navi 24
 static_assert(!isAmdRdna2Device(kAmdVendorId, 0x731f)); // Navi 10
 static_assert(!isAmdRdna2Device(kAmdVendorId, 0x744c)); // Navi 31
+
+// Whether an AMD device reports itself integrated, which is how an APU's graphics
+// block arrives (a Ryzen A1..Z2-class part shows up as INTEGRATED_GPU rather than
+// as a discrete card). This is a diagnosis for the log line, not a verdict, and
+// deliberately not folded into the RDNA2 lookup above: widening that table needs a
+// measured device ID, and the identity fields cannot substitute for one. Probing
+// it on this machine refuted the obvious route - RADV on the RX 9070 XT (deviceID
+// 0x7550) writes a deviceUUID of 00000000 03000000 0000000000000000, which carries
+// no device ID at all, while the Intel RPL-S device (vendor 0x8086, deviceID 0xa780)
+// writes 868080a7..., i.e. vendor and device IDs as two little-endian pairs. Two
+// drivers, two incompatible layouts, and neither of them is an AMD integrated
+// device, so no driver-independent rule can name an APU family this table lacks.
+inline constexpr bool isAmdIntegratedDevice(std::uint32_t vendor_id,
+                                            VkPhysicalDeviceType device_type) {
+    return vendor_id == kAmdVendorId &&
+           device_type == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+}
+
+static_assert(isAmdIntegratedDevice(kAmdVendorId, VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU));
+static_assert(!isAmdIntegratedDevice(kAmdVendorId, VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU));
+// The Intel integrated device this project has measured: integrated, but not AMD,
+// so it is not an AMD APU and must not be folded into an AMD-specific rule.
+static_assert(!isAmdIntegratedDevice(0x8086, VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU));
 static_assert(isAmdvlkOrProprietaryDriver(kAmdVendorId, VK_DRIVER_ID_AMD_PROPRIETARY));
 static_assert(isAmdvlkOrProprietaryDriver(kAmdVendorId, VK_DRIVER_ID_AMD_OPEN_SOURCE));
 static_assert(!isAmdvlkOrProprietaryDriver(kAmdVendorId, VK_DRIVER_ID_MESA_RADV));

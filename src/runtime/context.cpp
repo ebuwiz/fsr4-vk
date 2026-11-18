@@ -583,7 +583,16 @@ QualityContext::ShaderDriverPolicy QualityContext::configureDeviceShaderPolicy()
                                        driver.driverID,
                                        force_windows_amd_shaders,
                                        windows_shader_assets_available);
-    const bool rdna2_device = device_capabilities.rdna2Device();
+    // The RDNA2 packaging verdict decides the wave32 pin and the AMD shader-pack
+    // allowance. FSR4_VK_DEVICE_CLASS can pin or lift it for a device this release's
+    // ID table does not name, which is the honest way to cover an AMD APU family:
+    // the device IDs that would make it a rule have only ever been measured by their
+    // owners, so the line below prints what the device does report and the operator
+    // supplies the fact instead of the runtime inventing one.
+    const auto device_class_value = std::getenv("FSR4_VK_DEVICE_CLASS");
+    const auto pinned_rdna2 = fsr4vk::parseDeviceClass(device_class_value);
+    const bool integrated_apu = device_capabilities.amdIntegratedApu();
+    const bool rdna2_device = pinned_rdna2.value_or(device_capabilities.rdna2Device());
     device_is_rdna2 = rdna2_device;
     default_subgroup_size = device_capabilities.subgroups.subgroupSize;
     uint32_t minimum = default_subgroup_size, maximum = default_subgroup_size;
@@ -604,6 +613,18 @@ QualityContext::ShaderDriverPolicy QualityContext::configureDeviceShaderPolicy()
     const bool amd_proprietary = device_capabilities.amdProprietaryDriver();
     const std::string shape_summary = device_capabilities.matrixShapeSummary();
 
+    // What decided the RDNA2 verdict, spelled out for the log: a pin the operator
+    // asked for, a value the parser refused (naming it, so a typo is visible
+    // rather than silently ignored), or the table's own answer.
+    std::string device_class_label = "auto";
+    if (pinned_rdna2.has_value()) {
+        const std::string spelled(device_class_value);
+        device_class_label = *pinned_rdna2 ? "pinned-rdna2(" + spelled + ")"
+                                           : "pinned-not-rdna2(" + spelled + ")";
+    } else if (device_class_value && *device_class_value) {
+        device_class_label = std::string("refused(") + device_class_value + ")";
+    }
+
     std::ostringstream policy_message;
     policy_message << "[device-policy] device="
                    << std::quoted(properties.deviceName)
@@ -614,6 +635,9 @@ QualityContext::ShaderDriverPolicy QualityContext::configureDeviceShaderPolicy()
                    << " driver_info=" << std::quoted(driver.driverInfo)
                    << " amd_proprietary=" << (amd_proprietary ? "yes" : "no")
                    << " rdna2=" << (rdna2_device ? "yes" : "no")
+                   << " device_type=" << properties.deviceType
+                   << " integrated_amd=" << (integrated_apu ? "yes" : "no")
+                   << " device_class=" << device_class_label
                    << " windows_shaders_available="
                    << (windows_shader_assets_available ? "yes" : "no")
                    << " windows_shaders_allowed=" << (windows_amd_shaders_allowed ? "yes" : "no")
@@ -623,6 +647,21 @@ QualityContext::ShaderDriverPolicy QualityContext::configureDeviceShaderPolicy()
                    << " wmma=" << (use_wmma ? "yes" : "no")
                    << " descriptor_sizes=" << device_capabilities.descriptorSizeSummary();
     log(policy_message.str());
+
+    // An AMD device that reports itself integrated and whose device ID the RDNA2
+    // table does not name: very likely an APU, very likely wanting RDNA2-shaped
+    // waves, and the runtime has no measured fact to act on. Saying so, with the
+    // exact ID the table would need, is what turns this into a rule later instead
+    // of a guess now.
+    if (integrated_apu && !rdna2_device) {
+        log("[device-policy] this AMD device reports itself integrated (device_id=" +
+                fsr4log::hexValue(properties.deviceID) +
+                ") and no RDNA2 device ID matched, so RDNA2 packaging was not applied: "
+                "if this is a Ryzen-class APU, FSR4_VK_DEVICE_CLASS=rdna2 pins it, and "
+                "that device_id is the value isRdna2DeviceId needs before this becomes "
+                "a rule rather than an override.",
+            fsr4log::Level::Warning);
+    }
 
     return {windows_amd_shaders_allowed, rdna2_device};
 }

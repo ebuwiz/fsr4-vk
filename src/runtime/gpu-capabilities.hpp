@@ -172,6 +172,13 @@ struct GpuCapabilities {
     bool amdProprietaryDriver() const;
     bool rdna2Device() const;
 
+    // An AMD device that reports itself integrated, which is what an APU's graphics
+    // block looks like. Surfaced for the log line and the probe: it says "this is
+    // an AMD integrated device the RDNA2 table does not name", not "run RDNA2
+    // packaging", because the ID that would decide the second is not something the
+    // identity fields can yield (see isAmdIntegratedDevice in resources.hpp).
+    bool amdIntegratedApu() const;
+
     std::string describe() const;
 
     bool hasMatrixShape(VkComponentTypeKHR input_type) const;
@@ -265,5 +272,14 @@ struct ModelResolution {
 };
 
 ModelResolution resolveModel(const GpuCapabilities& capabilities, ModelChoice requested);
+
+// FSR4_VK_DEVICE_CLASS: the lever for a device this release's RDNA2 table does not
+// name. rdna2|apu|integrated pins RDNA2-shaped shader packaging, not-rdna2|modern
+// lifts it, and any other spelling answers nothing so the caller can print the value
+// it was handed rather than decide for the operator. The lever exists because AMD's
+// APU families are known to want wave32 packaging while their device IDs have only
+// ever been measured by their owners; [device-policy] prints what the device does
+// report - type, vendor and device ID - so the table can be widened from evidence.
+std::optional<bool> parseDeviceClass(const char* value);
 
 } // namespace fsr4vk

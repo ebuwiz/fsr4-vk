@@ -29,6 +29,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -148,6 +149,32 @@ void checkLadder(const char* case_name,
     }
 }
 
+// One device-class case: what the FSR4_VK_DEVICE_CLASS spelling decided, or that
+// an unknown spelling decided nothing. A refusal that instead picked a family is
+// the failure mode this gate exists for, because it would silently repackage an
+// operator's shaders.
+std::size_t identity_failures = 0;
+
+void checkDeviceClass(const char* spelling, bool expected_pin, bool expected_answered) {
+    const auto pinned = fsr4vk::parseDeviceClass(spelling);
+    const bool answered = pinned.has_value();
+    const bool pin_ok = answered && pinned.value() == expected_pin;
+    const bool ok = (answered == expected_answered) && (expected_answered ? pin_ok : true);
+    // A null spelling has to be named, not streamed: operator<< given a null
+    // char* leaves the stream failed, which silently swallows every later line of
+    // this probe - the missing identity checks below are that bug's shape.
+    const std::string shown(spelling ? spelling : "(unset)");
+    std::cout << "  synthetic_device_class value=" << shown
+              << (answered ? (pinned.value() ? " verdict=rdna2" : " verdict=not-rdna2")
+                           : " verdict=refused")
+              << " expected_answered=" << std::boolalpha << expected_answered
+              << " expected_pin=" << std::boolalpha << expected_pin << " ok=" << std::boolalpha
+              << ok << '\n';
+    if (!ok) {
+        ++identity_failures;
+    }
+}
+
 } // namespace
 
 int main() {
@@ -241,6 +268,26 @@ int main() {
                   << fsr4vk::canReadStorageImage(device, with_block,
                                                  VK_FORMAT_R16G16B16A16_SFLOAT)
                   << '\n';
+
+        // The identity evidence a device-class rule would need. The RDNA2 table
+        // holds measured PCI device IDs, and an AMD APU that reports itself
+        // integrated without matching one is exactly the case where the missing
+        // fact is the ID: printed here, along with what the drivers put in the
+        // deviceUUID, because the two drivers on this machine disagree about that
+        // field's layout (RADV leaves no device ID in it; Intel writes vendor and
+        // device IDs as two little-endian pairs), which is why the UUID cannot be
+        // used as a fallback for the table.
+        std::cout << "  identity device_type=" << with_block.properties.deviceType
+                  << " vendor_id=0x" << std::hex << with_block.properties.vendorID
+                  << " device_id=0x" << with_block.properties.deviceID << std::dec
+                  << " rdna2=" << (with_block.rdna2Device() ? "yes" : "no")
+                  << " integrated_amd=" << (with_block.amdIntegratedApu() ? "yes" : "no")
+                  << " deviceUUID=";
+        for (const auto byte : with_block.identity.deviceUUID) {
+            std::cout << std::hex << std::setw(2) << std::setfill('0')
+                      << static_cast<unsigned>(byte);
+        }
+        std::cout << std::dec << '\n';
 
         // Phase 9 evidence: which descriptor transports this host can actually run,
         // and the three SPIR-V capabilities the shipped modules declare now that
@@ -403,9 +450,59 @@ int main() {
         std::cout << "  synthetic_ladder failures=" << ladder_failures << '\n';
     }
 
+    // The device-class lever and the integrated-APU diagnosis, on snapshots: the
+    // spellings that pin or lift RDNA2 packaging, and the ones that must refuse
+    // rather than pick a family. Widening isRdna2DeviceId itself stays gated on
+    // measured device IDs, which is why nothing here invents one.
+    {
+        checkDeviceClass("rdna2", true, true);
+        checkDeviceClass("apu", true, true);
+        checkDeviceClass("integrated", true, true);
+        checkDeviceClass("not-rdna2", false, true);
+        checkDeviceClass("modern", false, true);
+        checkDeviceClass("Rdna2", false, false);
+        checkDeviceClass("RDNA2", false, false);
+        checkDeviceClass("", false, false);
+        checkDeviceClass(nullptr, false, false);
+
+        auto apu = syntheticHost();
+        apu.properties.vendorID = fsr4vk::kAmdVendorId;
+        apu.properties.deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+        apu.properties.deviceID = 0x0000;
+        std::cout << "  synthetic_identity integrated_amd="
+                  << (apu.amdIntegratedApu() ? "yes" : "no")
+                  << " rdna2=" << (apu.rdna2Device() ? "yes" : "no") << '\n';
+        if (!apu.amdIntegratedApu() || apu.rdna2Device()) {
+            ++identity_failures;
+        }
+
+        auto discrete = syntheticHost();
+        discrete.properties.vendorID = fsr4vk::kAmdVendorId;
+        discrete.properties.deviceID = 0x73bf;  // Navi 21, from the measured table
+        discrete.properties.deviceType = VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+        std::cout << "  synthetic_identity navi21 rdna2="
+                  << (discrete.rdna2Device() ? "yes" : "no")
+                  << " integrated_amd=" << (discrete.amdIntegratedApu() ? "yes" : "no")
+                  << '\n';
+        if (!discrete.rdna2Device() || discrete.amdIntegratedApu()) {
+            ++identity_failures;
+        }
+
+        auto intel = syntheticHost();
+        intel.properties.vendorID = 0x8086;  // the Intel RPL-S device on this machine
+        intel.properties.deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+        std::cout << "  synthetic_identity intel_integrated integrated_amd="
+                  << (intel.amdIntegratedApu() ? "yes" : "no") << '\n';
+        if (intel.amdIntegratedApu()) {
+            ++identity_failures;
+        }
+
+        std::cout << "  synthetic_identity failures=" << identity_failures << '\n';
+    }
+
     // The devices enumerated here die with the instance, and the cache keys
     // itself on those handles, so it is dropped before the instance goes away.
     fsr4vk::clearCapabilityCache();
     vkDestroyInstance(instance, nullptr);
-    return ladder_failures == 0 ? 0 : 1;
+    return ladder_failures + identity_failures == 0 ? 0 : 1;
 }

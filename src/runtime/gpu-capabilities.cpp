@@ -508,6 +508,10 @@ bool GpuCapabilities::rdna2Device() const {
     return isAmdRdna2Device(properties.vendorID, properties.deviceID);
 }
 
+bool GpuCapabilities::amdIntegratedApu() const {
+    return isAmdIntegratedDevice(properties.vendorID, properties.deviceType);
+}
+
 // Forcing a stage subgroup size is a contract with the driver, not with the
 // shader: the value has to be accepted by the subgroup size control feature and
 // sit inside the range the device reported. An unprobed snapshot has a zero
@@ -637,6 +641,7 @@ std::string GpuCapabilities::describe() const {
          << " subgroup_range=" << subgroup_sizes.minSubgroupSize << '-' << subgroup_sizes.maxSubgroupSize
          << " amd_proprietary=" << (amdProprietaryDriver() ? "yes" : "no")
          << " rdna2=" << (rdna2Device() ? "yes" : "no")
+         << " integrated_amd=" << (amdIntegratedApu() ? "yes" : "no")
          << " wave32=" << (supportsWave32Pipelines() ? "yes" : "no")
          << " runtime=" << (supportsRuntimeContract() ? "yes" : "no")
          << " int8=" << (supportsInt8Model() ? "yes" : "no")
@@ -693,6 +698,23 @@ std::optional<DescriptorBackend> descriptorBackendOverride() {
     }
     if (std::strcmp(value, "descriptor-buffer") == 0 || std::strcmp(value, "buffers") == 0) {
         return DescriptorBackend::DescriptorBuffers;
+    }
+    return std::nullopt;
+}
+
+// FSR4_VK_DEVICE_CLASS, parsed by exact spelling like the transport override: an
+// unrecognised value answers nothing, so the caller prints what it was handed
+// rather than quietly deciding the device's family for the operator.
+std::optional<bool> parseDeviceClass(const char* value) {
+    if (!value || !*value) {
+        return std::nullopt;
+    }
+    if (std::strcmp(value, "rdna2") == 0 || std::strcmp(value, "apu") == 0 ||
+        std::strcmp(value, "integrated") == 0) {
+        return true;
+    }
+    if (std::strcmp(value, "not-rdna2") == 0 || std::strcmp(value, "modern") == 0) {
+        return false;
     }
     return std::nullopt;
 }
