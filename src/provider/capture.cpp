@@ -88,8 +88,11 @@ bool colorCaptureMemoryType(ProviderContext& provider,
                             std::uint32_t type_bits,
                             std::uint32_t& index,
                             bool& coherent) {
-    VkPhysicalDeviceMemoryProperties props{};
-    vkGetPhysicalDeviceMemoryProperties(provider.physicalDevice, &props);
+    // The provider copied the memory-type table from its capability probe, so
+    // the capture path reads that instead of querying the device: a live device
+    // cannot change the table. An empty table (probe never ran) simply finds no
+    // host-visible type, which leaves capture disabled rather than failing.
+    const auto& props = provider.memory;
 
     for (std::uint32_t pass = 0; pass < 2; ++pass) {
         for (std::uint32_t i = 0; i < props.memoryTypeCount; ++i) {

@@ -198,7 +198,7 @@ void QualityContext::allocateModelBuffers(const fs::path& weights_path,
                                           uint32_t max_output_width,
                                           uint32_t max_output_height) {
     scratch_buffer = createBuffer(
-        physical_device,
+        device_capabilities.memory,
         device,
         fsr4::scratchCapacity(max_output_width, max_output_height),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
@@ -208,7 +208,7 @@ void QualityContext::allocateModelBuffers(const fs::path& weights_path,
 
     const auto weight_bytes = readBytes(weights_path);
     weight_buffer = createBuffer(
-        physical_device,
+        device_capabilities.memory,
         device,
         std::max<VkDeviceSize>(weight_bytes.size(), 256),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
@@ -222,7 +222,7 @@ void QualityContext::allocateModelBuffers(const fs::path& weights_path,
         const auto ultraperformance_weight_bytes =
             readBytes(runtime_options.ultraperformance_model_data_path);
         ultraperformance_weight_buffer = createBuffer(
-            physical_device,
+            device_capabilities.memory,
             device,
             std::max<VkDeviceSize>(ultraperformance_weight_bytes.size(), 256),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
@@ -272,28 +272,28 @@ void QualityContext::allocateFrameResources(const DescriptorGeometry& geometry) 
 
     for (auto& frame : frames) {
         frame.constants = createBuffer(
-            physical_device,
+            device_capabilities.memory,
             device,
             kConstantBufSize,
             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
             true);
         frame.model_constants = createBuffer(
-            physical_device,
+            device_capabilities.memory,
             device,
             kConstantBufSize,
             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
             true);
         frame.exposure_upload = createBuffer(
-            physical_device,
+            device_capabilities.memory,
             device,
             8,
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
         frame.descriptor_buffer =
-            createBuffer(physical_device,
+            createBuffer(device_capabilities.memory,
                          device,
                          descriptor_capacity * kNumDescriptorSets,
                          VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
@@ -368,31 +368,31 @@ void QualityContext::allocateInternalImages(uint32_t max_input_width,
 
     images.resize(auto_exposure_enabled ? image_slot::exposure_mips + 1
                                         : image_slot::fallback_mask + 1);
-    images[image_slot::history] = createImage(physical_device,
+    images[image_slot::history] = createImage(device_capabilities.memory,
                                               device,
                                               padded_output_width,
                                               padded_output_height,
                                               VK_FORMAT_R16G16B16A16_SFLOAT,
                                               image_usage_flags);
-    images[image_slot::reprojected] = createImage(physical_device,
+    images[image_slot::reprojected] = createImage(device_capabilities.memory,
                                                   device,
                                                   padded_output_width,
                                                   padded_output_height,
                                                   VK_FORMAT_R16G16B16A16_SFLOAT,
                                                   image_usage_flags);
-    images[image_slot::recurrent] = createImage(physical_device,
+    images[image_slot::recurrent] = createImage(device_capabilities.memory,
                                                 device,
                                                 padded_output_width,
                                                 padded_output_height,
                                                 VK_FORMAT_R8G8B8A8_UNORM,
                                                 image_usage_flags);
-    images[image_slot::wmma_scratch0] = createImage(physical_device,
+    images[image_slot::wmma_scratch0] = createImage(device_capabilities.memory,
                                                     device,
                                                     padded_output_width,
                                                     padded_output_height,
                                                     VK_FORMAT_R16G16B16A16_SFLOAT,
                                                     image_usage_flags);
-    images[image_slot::wmma_scratch1] = createImage(physical_device,
+    images[image_slot::wmma_scratch1] = createImage(device_capabilities.memory,
                                                     device,
                                                     padded_output_width,
                                                     padded_output_height,
@@ -400,14 +400,17 @@ void QualityContext::allocateInternalImages(uint32_t max_input_width,
                                                     image_usage_flags);
     // Prepass reads current and previous exposure from this 2x1 image.
     images[image_slot::exposure] =
-        createImage(physical_device, device, 2, 1, VK_FORMAT_R32_SFLOAT, image_usage_flags);
+        createImage(device_capabilities.memory, device, 2, 1, VK_FORMAT_R32_SFLOAT,
+                    image_usage_flags);
     images[image_slot::fallback_mask] =
-        createImage(physical_device, device, 1, 1, VK_FORMAT_R8_UNORM, image_usage_flags);
+        createImage(device_capabilities.memory, device, 1, 1, VK_FORMAT_R8_UNORM,
+                    image_usage_flags);
 
     if (auto_exposure_enabled) {
         images[image_slot::exposure_counter] =
-            createImage(physical_device, device, 1, 1, VK_FORMAT_R32_UINT, image_usage_flags);
-        images[image_slot::exposure_mips] = createImage(physical_device,
+            createImage(device_capabilities.memory, device, 1, 1, VK_FORMAT_R32_UINT,
+                        image_usage_flags);
+        images[image_slot::exposure_mips] = createImage(device_capabilities.memory,
                                                         device,
                                                         fsr4::divideUp(max_input_width, 16),
                                                         fsr4::divideUp(max_input_height, 16),

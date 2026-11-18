@@ -52,7 +52,7 @@ void QualityContext::prepareRcas(VkCommandBuffer command_buffer,
     frame.rcas_dispatch = {fsr4::divideUp(output.width, cached.output_tile.width),
                            fsr4::divideUp(output.height, cached.output_tile.height)};
     if (!rcas_input.image) {
-        rcas_input = createImage(physical_device,
+        rcas_input = createImage(device_capabilities.memory,
                                  device,
                                  fsr4::roundUp(max_output_width, 16),
                                  fsr4::roundUp(max_output_height, 16),

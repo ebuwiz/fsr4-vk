@@ -207,12 +207,15 @@ std::vector<uint32_t> readSpirv(const fs::path& path);
 
 std::vector<uint32_t> readModelSpirv(const fs::path& path, uint32_t api_version);
 
-uint32_t findMemoryType(VkPhysicalDevice physical_device,
+// The memory-type table is part of the per-device capability snapshot, so these
+// allocation helpers take it by reference instead of a device handle they would
+// have to query again on every buffer and image.
+uint32_t findMemoryType(const VkPhysicalDeviceMemoryProperties& memory,
                         uint32_t allowed_type_bits,
                         VkMemoryPropertyFlags required_properties,
                         VkMemoryPropertyFlags preferred_properties = 0);
 
-Buffer createBuffer(VkPhysicalDevice physical_device,
+Buffer createBuffer(const VkPhysicalDeviceMemoryProperties& memory,
                     VkDevice device,
                     VkDeviceSize size,
                     VkBufferUsageFlags usage,
@@ -220,7 +223,7 @@ Buffer createBuffer(VkPhysicalDevice physical_device,
                     bool enable_device_address = false,
                     VkMemoryPropertyFlags preferred_properties = 0);
 
-Image createImage(VkPhysicalDevice physical_device,
+Image createImage(const VkPhysicalDeviceMemoryProperties& memory,
                   VkDevice device,
                   uint32_t width,
                   uint32_t height,

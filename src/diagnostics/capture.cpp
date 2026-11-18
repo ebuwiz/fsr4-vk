@@ -189,7 +189,7 @@ void QualityContext::liveCaptureImage(VkCommandBuffer command_buffer,
     item.bytes = bytes;
 
     item.staging =
-        createBuffer(physical_device,
+        createBuffer(device_capabilities.memory,
                      device,
                      bytes,
                      VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -260,7 +260,7 @@ void QualityContext::liveCaptureBuffer(VkCommandBuffer command_buffer,
     item.bytes = buffer.size;
 
     item.staging =
-        createBuffer(physical_device,
+        createBuffer(device_capabilities.memory,
                      device,
                      buffer.size,
                      VK_BUFFER_USAGE_TRANSFER_DST_BIT,

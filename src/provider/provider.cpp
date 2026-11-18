@@ -186,6 +186,7 @@ ffxReturnCode_t createContext(ffxContext* context,
     provider->device = backend->device;
     provider->physicalDevice = backend->physicalDevice;
     provider->getDeviceProcAddr = backend->getDeviceProcAddr;
+    provider->memory = capabilities.memory;
 
     provider->flags = create->flags;
     provider->maxRenderSize = create->maxRenderSize;

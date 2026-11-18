@@ -93,7 +93,7 @@ void QualityContext::recordOverlay(VkCommandBuffer command_buffer,
                                    const fsr4_411::OverlayOptions& options) {
     if (!overlay_font.buffer) {
         overlay_font = createBuffer(
-            physical_device,
+            device_capabilities.memory,
             device,
             sizeof(kOverlayFontPixels),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,

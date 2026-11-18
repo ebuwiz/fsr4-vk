@@ -73,6 +73,12 @@ struct GpuCapabilities {
     VkPhysicalDeviceDriverProperties driver{};
 
     // Properties ----------------------------------------------------------
+    // The memory-type table cannot change while the device handle is alive, so
+    // it belongs to the snapshot: the buffer and image allocation paths read this
+    // copy instead of asking the driver once per allocation. vkGetPhysicalDevice
+    // MemoryProperties is core, so unlike the cooperative matrix tiles it is always
+    // reachable from the device handle alone.
+    VkPhysicalDeviceMemoryProperties memory{};
     VkPhysicalDeviceSubgroupProperties subgroups{};
     VkPhysicalDeviceSubgroupSizeControlProperties subgroup_sizes{};
     VkPhysicalDeviceFloatControlsProperties float_controls{};

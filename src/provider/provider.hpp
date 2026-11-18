@@ -149,6 +149,11 @@ struct ProviderContext {
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     PFN_vkGetDeviceProcAddr getDeviceProcAddr = nullptr;
 
+    // Copied from the single capability probe this context creation runs, so the
+    // capture path below never asks the driver for a device fact the provider
+    // already holds. A live device cannot change the memory-type table.
+    VkPhysicalDeviceMemoryProperties memory{};
+
     std::uint32_t apiVersion = VK_API_VERSION_1_1;
     std::uint32_t flags = 0;
 

@@ -53,19 +53,16 @@ std::vector<uint32_t> readModelSpirv(const fs::path& path, uint32_t api_version)
     return words;
 }
 
-uint32_t findMemoryType(VkPhysicalDevice physical_device,
+uint32_t findMemoryType(const VkPhysicalDeviceMemoryProperties& memory,
                         uint32_t allowed_type_bits,
                         VkMemoryPropertyFlags required_properties,
                         VkMemoryPropertyFlags preferred_properties) {
-    VkPhysicalDeviceMemoryProperties properties{};
-    vkGetPhysicalDeviceMemoryProperties(physical_device, &properties);
-
     uint32_t fallback_index = std::numeric_limits<uint32_t>::max();
 
-    for (uint32_t index = 0; index < properties.memoryTypeCount; ++index) {
+    for (uint32_t index = 0; index < memory.memoryTypeCount; ++index) {
         const bool type_is_allowed = (allowed_type_bits & (1u << index)) != 0;
         const VkMemoryPropertyFlags available_properties =
-            properties.memoryTypes[index].propertyFlags;
+            memory.memoryTypes[index].propertyFlags;
         const bool has_required_properties =
             (available_properties & required_properties) == required_properties;
 
@@ -92,7 +89,7 @@ uint32_t findMemoryType(VkPhysicalDevice physical_device,
     throw std::runtime_error("no compatible Vulkan memory type");
 }
 
-Buffer createBuffer(VkPhysicalDevice physical_device,
+Buffer createBuffer(const VkPhysicalDeviceMemoryProperties& memory,
                     VkDevice device,
                     VkDeviceSize size,
                     VkBufferUsageFlags usage,
@@ -119,17 +116,16 @@ Buffer createBuffer(VkPhysicalDevice physical_device,
         VkMemoryAllocateInfo allocation_info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
         allocation_info.pNext = enable_device_address ? &allocation_flags : nullptr;
         allocation_info.allocationSize = requirements.size;
-        allocation_info.memoryTypeIndex = findMemoryType(
-            physical_device, requirements.memoryTypeBits, properties, preferred_properties);
+        allocation_info.memoryTypeIndex =
+            findMemoryType(memory, requirements.memoryTypeBits, properties, preferred_properties);
 
-        VkPhysicalDeviceMemoryProperties memory_properties{};
-        vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
-
+        // The chosen index and its flags come from the one snapshot copy this
+        // call was handed, where the lookup used to ask the driver a second time
+        // within the same function.
         result.memory_type_index = allocation_info.memoryTypeIndex;
         result.memory_property_flags =
-            memory_properties.memoryTypes[allocation_info.memoryTypeIndex].propertyFlags;
-        result.memory_heap_index =
-            memory_properties.memoryTypes[allocation_info.memoryTypeIndex].heapIndex;
+            memory.memoryTypes[allocation_info.memoryTypeIndex].propertyFlags;
+        result.memory_heap_index = memory.memoryTypes[allocation_info.memoryTypeIndex].heapIndex;
 
         check(vkAllocateMemory(device, &allocation_info, nullptr, &result.memory),
               "vkAllocateMemory(buffer)");
@@ -158,7 +154,7 @@ Buffer createBuffer(VkPhysicalDevice physical_device,
     }
 }
 
-Image createImage(VkPhysicalDevice physical_device,
+Image createImage(const VkPhysicalDeviceMemoryProperties& memory,
                   VkDevice device,
                   uint32_t width,
                   uint32_t height,
@@ -191,7 +187,7 @@ Image createImage(VkPhysicalDevice physical_device,
         VkMemoryAllocateInfo allocation_info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
         allocation_info.allocationSize = requirements.size;
         allocation_info.memoryTypeIndex = findMemoryType(
-            physical_device, requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            memory, requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
         check(vkAllocateMemory(device, &allocation_info, nullptr, &result.memory),
               "vkAllocateMemory(image)");
@@ -956,7 +952,7 @@ Image QualityContext::prepareExactAutoExposureColor(VkCommandBuffer command_buff
 
         AutoExposureColorEntry entry{};
 
-        entry.image = createImage(physical_device,
+        entry.image = createImage(device_capabilities.memory,
                                   device,
                                   active_width,
                                   active_height,
@@ -1236,7 +1232,7 @@ Image QualityContext::resampleDisplayMotionVectors(VkCommandBuffer command_buffe
             destroyImage(device, render_motion);
         }
 
-        render_motion = createImage(physical_device,
+        render_motion = createImage(device_capabilities.memory,
                                     device,
                                     capacity_width,
                                     capacity_height,

@@ -111,7 +111,11 @@ std::vector<VkCooperativeMatrixPropertiesKHR> probeMatrixShapes(
 GpuCapabilities detect(VkPhysicalDevice physical_device, InstanceResolver resolver) {
     GpuCapabilities capabilities;
 
+    // Both of these are core device queries: the identity block drives the
+    // vendor profile and the memory-type table drives every allocation the
+    // runtime makes, so neither may be left unprobed.
     vkGetPhysicalDeviceProperties(physical_device, &capabilities.properties);
+    vkGetPhysicalDeviceMemoryProperties(physical_device, &capabilities.memory);
 
     capabilities.identity =
         VkPhysicalDeviceIDProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
@@ -498,6 +502,7 @@ std::string GpuCapabilities::describe() const {
          << " driver=" << std::quoted(driver.driverName)
          << " driver_info=" << std::quoted(driver.driverInfo) << " extensions=" << extensions.size()
          << " matrix_shapes=" << matrixShapeSummary() << " matrix_probe=" << matrixProbeRouteName()
+         << " memory_types=" << memory.memoryTypeCount
          << " subgroup_size=" << subgroups.subgroupSize
          << " subgroup_range=" << subgroup_sizes.minSubgroupSize << '-' << subgroup_sizes.maxSubgroupSize
          << " amd_proprietary=" << (amdProprietaryDriver() ? "yes" : "no")

@@ -566,7 +566,7 @@ Image QualityContext::resolveDepthInput(VkCommandBuffer command_buffer,
             destroyImage(device, fallback_depth);
         }
 
-        fallback_depth = createImage(physical_device,
+        fallback_depth = createImage(device_capabilities.memory,
                                      device,
                                      capacity_width,
                                      capacity_height,
@@ -723,7 +723,7 @@ void QualityContext::prepareStagingOutput(VkCommandBuffer command_buffer,
                                           bool use_staging_output) {
     if (use_staging_output && (!staging_output.image || staging_output.format != output.format)) {
         auto replacement =
-            createImage(physical_device,
+            createImage(device_capabilities.memory,
                         device,
                         fsr4::roundUp(max_output_width, 8),
                         fsr4::roundUp(max_output_height, 8),
