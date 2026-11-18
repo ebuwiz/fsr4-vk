@@ -168,6 +168,8 @@ class QualityContext final : public fsr4_411::QualityContext {
     fsr4vk::GpuCapabilities device_capabilities{};
     bool device_is_rdna2 = false;
     uint32_t default_subgroup_size = 0;
+    // The wave32 pin is diagnosed once per context, not once per pipeline.
+    bool wave32_diagnostic_logged = false;
     std::string automatic_wave_label;
     std::string model_wave_label;
     Buffer overlay_font{};

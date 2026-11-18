@@ -507,10 +507,12 @@ fs::path ModelShaderSelector::select(const fs::path& directory,
 namespace fsr4runtime {
 
 QualityContext::ShaderDriverPolicy QualityContext::configureDeviceShaderPolicy() {
-    // The provider already probed this device to choose a model; the runtime keeps
-    // its own snapshot so the vendor, subgroup and matrix-shape questions are
-    // answered by one probe each rather than by hand-rolled property chains.
-    device_capabilities = fsr4vk::detect(physical_device);
+    // The provider already probed this device to choose a model; the runtime
+    // reads that cached snapshot so the vendor, subgroup and matrix-shape
+    // questions are answered once per device rather than once per concern.
+    if (auto snapshot = fsr4vk::detectCached(physical_device)) {
+        device_capabilities = *snapshot;
+    }
     const auto& properties = device_capabilities.properties;
     const auto& driver = device_capabilities.driver;
 
@@ -642,6 +644,23 @@ VkPipeline QualityContext::createComputePipeline(const std::vector<uint32_t>& co
     module_info.pCode = code.data();
     VkShaderModule module{};
     check(vkCreateShaderModule(device, &module_info, nullptr, &module), "compute shader module");
+    // The shipped shaders ask for full 32-lane subgroups and the stage below pins
+    // that size, which the driver only accepts when it reports subgroup size
+    // control and a range containing 32. Naming both inputs beats a pipeline
+    // creation failure with no reason attached; the provider already refuses such
+    // devices, so this line only fires when the runtime is used without that gate.
+    if (wave32 && !device_capabilities.supportsRequiredSubgroupSize(32) &&
+        !wave32_diagnostic_logged) {
+        wave32_diagnostic_logged = true;
+        std::ostringstream pinned;
+        pinned << "[wave32] pinned 32-lane subgroups need reported range and size control ("
+                << device_capabilities.subgroup_sizes.minSubgroupSize << '-'
+                << device_capabilities.subgroup_sizes.maxSubgroupSize
+                << " with size control "
+                << (device_capabilities.subgroup_size_control.subgroupSizeControl ? "yes" : "no")
+                << "); pipeline creation is expected to fail";
+        log(pinned.str());
+    }
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo subgroup{
         VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
     subgroup.requiredSubgroupSize = 32;

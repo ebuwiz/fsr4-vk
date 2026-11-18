@@ -9,6 +9,7 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <iomanip>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -176,6 +177,45 @@ GpuCapabilities detect(VkPhysicalDevice physical_device) {
     return capabilities;
 }
 
+// Snapshots are keyed by the handle the caller passes, so the provider choosing
+// a model and the runtime choosing shader packaging cannot disagree about what
+// the device reported, and the queries run once per device rather than once per
+// concern. The cache is bounded, evicts the oldest device and hands out copies,
+// so a handle the caller destroyed can never leave a dangling snapshot behind;
+// a harness that creates its own devices clears the cache explicitly.
+namespace {
+
+constexpr std::size_t kCapabilityCacheLimit = 16;
+std::mutex capability_cache_mutex;
+std::vector<std::pair<VkPhysicalDevice, GpuCapabilities>> capability_cache;
+
+} // namespace
+
+std::optional<GpuCapabilities> detectCached(VkPhysicalDevice physical_device) {
+    if (!physical_device) {
+        return {};
+    }
+
+    std::lock_guard<std::mutex> lock(capability_cache_mutex);
+    for (const auto& entry : capability_cache) {
+        if (entry.first == physical_device) {
+            return entry.second;
+        }
+    }
+
+    if (capability_cache.size() >= kCapabilityCacheLimit) {
+        capability_cache.erase(capability_cache.begin());
+    }
+
+    capability_cache.emplace_back(physical_device, detect(physical_device));
+    return capability_cache.back().second;
+}
+
+void clearCapabilityCache() {
+    std::lock_guard<std::mutex> lock(capability_cache_mutex);
+    capability_cache.clear();
+}
+
 bool GpuCapabilities::hasExtension(const char* wanted) const {
     return std::any_of(extensions.begin(),
                        extensions.end(),
@@ -275,6 +315,13 @@ std::vector<std::string> GpuCapabilities::int8Blockers() const {
         blockers.emplace_back("quad subgroup operations are missing");
     }
 
+    // The passes around the model itself pin 32-lane subgroups in every preset,
+    // so a reported range that excludes 32 rules the runtime out entirely. A
+    // range the probe never reported is unknown, not a reason to refuse.
+    if (!supportsWave32Pipelines()) {
+        blockers.emplace_back(wave32BlockerText());
+    }
+
     return blockers;
 }
 
@@ -318,9 +365,8 @@ std::vector<std::string> GpuCapabilities::fp8Blockers() const {
     if (!float_controls.shaderDenormPreserveFloat16) {
         blockers.emplace_back("float16 denormals are not preserved");
     }
-    if (subgroup_sizes.minSubgroupSize > 32 || subgroup_sizes.maxSubgroupSize < 32) {
-        blockers.emplace_back("subgroup size 32 cannot be requested");
-    }
+    // The 32-lane range check arrives from int8Blockers(), which this list starts
+    // from, so the pinned stage sizes are only judged once per rejection.
     if (!(subgroup_sizes.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT)) {
         blockers.emplace_back("explicit subgroup sizes are unavailable in compute");
     }
@@ -351,6 +397,39 @@ bool GpuCapabilities::rdna2Device() const {
     return isAmdRdna2Device(properties.vendorID, properties.deviceID);
 }
 
+// Forcing a stage subgroup size is a contract with the driver, not with the
+// shader: the value has to be accepted by the subgroup size control feature and
+// sit inside the range the device reported. An unprobed snapshot has a zero
+// range, so it refuses every size rather than pretending 32 lanes are legal.
+bool GpuCapabilities::supportsRequiredSubgroupSize(std::uint32_t wanted) const {
+    if (!subgroup_size_control.subgroupSizeControl) {
+        return false;
+    }
+    if (subgroup_sizes.minSubgroupSize == 0 || subgroup_sizes.maxSubgroupSize == 0) {
+        return false;
+    }
+
+    return wanted >= subgroup_sizes.minSubgroupSize && wanted <= subgroup_sizes.maxSubgroupSize;
+}
+
+// The passes around the model itself pin their stage subgroup size to 32 in
+// every preset, so the reported range decides whether the runtime can build
+// pipelines at all. This predicate deliberately ignores the feature bits, which
+// the blocker lists already report on their own, so one missing capability
+// never produces two reasons.
+bool GpuCapabilities::supportsWave32Pipelines() const {
+    if (subgroup_sizes.minSubgroupSize == 0 || subgroup_sizes.maxSubgroupSize == 0) {
+        return true;
+    }
+
+    return 32 >= subgroup_sizes.minSubgroupSize && 32 <= subgroup_sizes.maxSubgroupSize;
+}
+
+std::string GpuCapabilities::wave32BlockerText() const {
+    return "device subgroup range " + std::to_string(subgroup_sizes.minSubgroupSize) + '-' +
+           std::to_string(subgroup_sizes.maxSubgroupSize) + " cannot pin 32-lane subgroups";
+}
+
 std::string GpuCapabilities::describe() const {
     const std::string shape_summary =
         matrix_shapes_probed ? std::to_string(matrix_shapes.size()) : "unprobed";
@@ -365,6 +444,7 @@ std::string GpuCapabilities::describe() const {
          << " subgroup_range=" << subgroup_sizes.minSubgroupSize << '-' << subgroup_sizes.maxSubgroupSize
          << " amd_proprietary=" << (amdProprietaryDriver() ? "yes" : "no")
          << " rdna2=" << (rdna2Device() ? "yes" : "no")
+         << " wave32=" << (supportsWave32Pipelines() ? "yes" : "no")
          << " runtime=" << (supportsRuntimeContract() ? "yes" : "no")
          << " int8=" << (supportsInt8Model() ? "yes" : "no")
          << " fp8=" << (supportsFp8Model() ? "yes" : "no");

@@ -7,15 +7,18 @@
 // see, which is how the gates in src/runtime/gpu-capabilities.hpp get checked
 // on real hardware without loading the provider.
 //
-//   g++ -std=c++20 -I src -I third_party/Vulkan-Headers/include -o /tmp/cap-probe \
-//       tools/cap-probe.cpp src/runtime/gpu-capabilities.cpp -ldl \
+//   g++ -std=c++23 -I src -I third_party/Vulkan-Headers/include -o /tmp/cap-probe
+//       tools/cap-probe.cpp src/runtime/gpu-capabilities.cpp -ldl
 //       /usr/lib/libvulkan.so.1 && /tmp/cap-probe
 //
 // The provider never receives a VkInstance, so production leaves the cooperative
 // matrix shapes unprobed and judges FP8 on the extension and feature bits alone.
 // A harness like this one owns its instance, so it can enable the extensions,
-// ask for the tiles itself and fill the public fields; the "with shapes" block
-// below shows how a test does that and what changes once the tiles are known.
+// ask for the tiles itself and fill the public fields on the copy it owns; the
+// "with shapes" block below shows how a test does that and what changes once
+// the tiles are known. The "production" block goes through detectCached(), the
+// entry point both the provider and the runtime use, and clears the cache at
+// the end because the devices enumerated here die with the instance.
 
 #include "runtime/gpu-capabilities.hpp"
 
@@ -106,13 +109,26 @@ int main() {
     vkEnumeratePhysicalDevices(instance, &count, devices.data());
 
     for (const auto device : devices) {
-        auto capabilities = fsr4vk::detect(device);
+        auto capabilities = fsr4vk::detectCached(device).value_or(fsr4vk::GpuCapabilities{});
         std::cout << capabilities.describe() << '\n';
 
         // The provider's view: whatever the module answered by itself.
         report("production", capabilities);
 
-        // The harness view: fill the tile list, then re-run the same predicates.
+        // The provider and the runtime both enter through detectCached, so the
+        // second call has to answer from the snapshot instead of re-querying;
+        // matching describe() text is what the harness can observe. A null
+        // handle answers with no snapshot rather than an empty one.
+        const auto repeat = fsr4vk::detectCached(device);
+        std::cout << "  cached_repeat=" << std::boolalpha
+                  << (repeat.has_value() && repeat->describe() == capabilities.describe())
+                  << " wave32=" << capabilities.supportsWave32Pipelines()
+                  << " null_handle_has_snapshot=" << fsr4vk::detectCached(nullptr).has_value()
+                  << '\n';
+
+        // The tile list belongs to the caller that owns an instance, and the
+        // snapshot arrives as a copy, so filling it here cannot corrupt the
+        // cache the provider reads.
         capabilities.matrix_shapes = queryShapes(instance, device);
         capabilities.matrix_shapes_probed = !capabilities.matrix_shapes.empty();
         std::cout << "  tiles=" << capabilities.matrix_shapes.size()
@@ -120,6 +136,9 @@ int main() {
         report("with shapes", capabilities);
     }
 
+    // The devices enumerated here die with the instance, and the cache keys
+    // itself on those handles, so it is dropped before the instance goes away.
+    fsr4vk::clearCapabilityCache();
     vkDestroyInstance(instance, nullptr);
     return 0;
 }

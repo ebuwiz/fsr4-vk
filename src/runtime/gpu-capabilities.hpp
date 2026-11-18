@@ -90,6 +90,14 @@ struct GpuCapabilities {
     // Cooperative matrix tiles the FP8 model shaders are built around.
     bool supportsModelMatrixShapes() const;
 
+    // Whether the device accepts a pinned stage subgroup size, which the
+    // runtime needs before it forces a wave32 pipeline.
+    bool supportsRequiredSubgroupSize(std::uint32_t wanted) const;
+
+    // Whether the reported subgroup range can hold the 32 lanes the shipped
+    // shaders pin. Unknown ranges answer yes: only a probe can refuse.
+    bool supportsWave32Pipelines() const;
+
     // Full INT8 and FP8 model contracts.
     bool supportsInt8Model() const;
     bool supportsFp8Model() const;
@@ -109,6 +117,7 @@ struct GpuCapabilities {
 private:
     const char* matrixInputName(VkComponentTypeKHR type) const;
     std::string missingMatrixShapeName(VkComponentTypeKHR type) const;
+    std::string wave32BlockerText() const;
 };
 
 std::string joinBlockers(const std::vector<std::string>& blockers);
@@ -118,6 +127,16 @@ std::string joinBlockers(const std::vector<std::string>& blockers);
 // it. A command the host does not export leaves its field unprobed rather than
 // looking unsupported.
 GpuCapabilities detect(VkPhysicalDevice physical_device);
+
+// The same device probed again answers from the snapshot rather than repeating
+// every query: that is how the provider choosing a model and the runtime choosing
+// shader packaging are guaranteed to agree about the hardware. The snapshot
+// arrives by value, so no caller can hold a reference into the bounded cache,
+// which evicts the oldest device. A null handle yields no value; a harness that
+// creates its own devices calls clearCapabilityCache() when it is done with them.
+std::optional<GpuCapabilities> detectCached(VkPhysicalDevice physical_device);
+
+void clearCapabilityCache();
 
 // Entry points missing from the device the loader handed over.
 std::vector<std::string> missingEntryPoints(VkDevice device,

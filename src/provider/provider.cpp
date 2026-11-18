@@ -135,8 +135,10 @@ ffxReturnCode_t createContext(ffxContext* context,
 
     const std::uint64_t requested_version = requestedVersionId(header);
 
-    // Probe once: model selection and the diagnostics below share this snapshot.
-    const auto capabilities = fsr4vk::detect(backend->physicalDevice);
+    // One probe per device: model selection, the diagnostics below and the
+    // runtime's shader policy all read the same cached snapshot.
+    const auto capabilities =
+        fsr4vk::detectCached(backend->physicalDevice).value_or(fsr4vk::GpuCapabilities{});
     diagnosticLine(std::string("[capabilities] ") + capabilities.describe());
 
     std::string selection_reason;
