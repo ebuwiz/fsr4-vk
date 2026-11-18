@@ -13,6 +13,9 @@ day.  A table that none of the three reaches is a table this repository has no w
 to select, which is the only honest way to tell "another kit's table" apart from
 "a model variant we do not extract" - the distinction the `Fsr4LiteInt8UpscalerModel`
 and `Fsr4Int8navi2UpscalerModel` class names in the same image keep colliding with.
+`modelclasses.py` settles that naming question separately: those names turn out to be
+provider variants, and no RTTI name in the image has an inbound pointer, so the class
+names can neither add nor remove a table and are not a selection handle either.
 
     tools/extract/modeltables.py --dll amd_fidelityfx_upscaler_dx12.dll \
         --expect-unreached 0 --expect-weighted 0 --expect-part-shapes 2
