@@ -17,6 +17,8 @@ This project is not affiliated with or endorsed by AMD.
 Get `Samples/Upscalers/FidelityFX_FSR/dx12/x64/Release/amd_fidelityfx_upscaler_dx12.dll` from
 [AMD's FidelityFX SDK 2.4.0](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/tag/v2.4.0).
 The tools require 4.1.2.4555 and verify the DLL hash automatically.
+A third-party mirror works too, because the hash is checked either way:
+https://www.dllme.com/dll/files/amd_fidelityfx_upscaler_dx12/c9b73b38f9f2744c7096de53429db6eb
 
 ```sh
 git submodule update --init --recursive
