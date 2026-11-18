@@ -9,14 +9,22 @@ Two runs of a game are not the same sequence of frames, so an A/B of the two
 descriptor transports cannot assume a run's frame N lines up with the other run's
 frame N. Each capture therefore records what a frame *is* - input_fingerprint over
 the app's own colour, depth, motion, exposure and mask images plus the runtime's
-incoming history, recurrent, reprojected and scratch state - and what its transport
+incoming history, recurrent, reprojected and scratch state - and what this run
 produced - output_fingerprint over postpass_out. This tool pairs frames on the
-input side only, checks the two sides really used different transports, then
-compares the captured output payloads byte for byte.
+input side only, checks the two sides really differ in something worth testing,
+then compares the captured output payloads byte for byte.
+
+The same pairing serves a second A/B, which is what the model ladder needs: INT8
+against FP8 on one device. That comparison cannot hold use_wmma constant, because
+the two models select different wave sizes, so --relax-variant drops the shader-
+pack choice from the pairing key and reports both sides' model and transport instead.
+Leaving the flag out keeps the strict key, which is what a transport A/B wants:
+there the pack choice really is fixed, and pairing two runs that differ in more than
+the transport would blame the transport for a difference it did not cause.
 
 Exit codes: 0 every pair identical, 1 some pair differs, 2 nothing could be paired,
 which means the runs never saw the same input frame and the comparison proves
-nothing rather than that the transports agree.
+nothing rather than that the two sides agree.
 """
 import argparse
 import json
@@ -24,22 +32,40 @@ import sys
 from pathlib import Path
 
 
-def frames(root):
+def frames(root, relax_variant=False):
     index = {}
     for path in sorted(root.rglob('ab-hashes.json')):
         ab = json.loads(path.read_text())
         manifest = json.loads((path.parent / 'manifest.json').read_text())
         key = (ab['input_fingerprint'],
                manifest['constants'].get('constants_fingerprint'),
-               manifest['use_wmma'],
                manifest['run_auto_exposure'],
                manifest['use_staging_output'])
+        if not relax_variant:
+            # The shader-pack choice is part of frame identity for a transport A/B:
+            # both sides must have built the same variants, or a pixel difference
+            # could not be blamed on the transport.
+            key += (manifest['use_wmma'],)
         index.setdefault(key, []).append((path.parent, ab, manifest))
     return index
 
 
 def payload_files(directory, ab, prefix):
     return [directory / row['path'] for row in ab['files'] if row['path'].startswith(prefix)]
+
+
+# Captures written before the model was recorded still have to be comparable, so a
+# missing label reads as 'unlabelled' rather than crashing the tool; two unlabelled
+# sides then agree, which is honest - nothing about the model can be claimed.
+def model_of(ab):
+    return ab.get('model', 'unlabelled')
+
+
+# 'unlabelled' is the absence of a fact, not a value: a capture from before the
+# model was recorded must not turn into a claimed model difference, so an unknown
+# on either side never counts as a variable under test.
+def differs(first, second):
+    return first != second and 'unlabelled' not in (first, second)
 
 
 def compare_outputs(frame_a, frame_b, ab_a, ab_b):
@@ -72,25 +98,35 @@ def main():
     parser.add_argument('capture_b', type=Path, help='second live capture root')
     parser.add_argument('--all-pairs', action='store_true',
                         help='print every pair, not only the ones that differ')
+    parser.add_argument('--relax-variant', action='store_true',
+                        help='pair frames across shader-pack choices as well as '
+                             'across transports, which is how an INT8/FP8 A/B is '
+                             'compared; the pack choice is then reported, not held '
+                             'equal')
     arguments = parser.parse_args()
 
     for root in (arguments.capture_a, arguments.capture_b):
         if not root.is_dir():
             raise SystemExit(f'not a capture directory: {root}')
 
-    left = frames(arguments.capture_a)
-    right = frames(arguments.capture_b)
+    left = frames(arguments.capture_a, arguments.relax_variant)
+    right = frames(arguments.capture_b, arguments.relax_variant)
     shared = [key for key in left if key in right]
 
     transports_a = {ab['transport'] for entries in left.values() for _, ab, _ in entries}
     transports_b = {ab['transport'] for entries in right.values() for _, ab, _ in entries}
+    models_a = {model_of(ab) for entries in left.values() for _, ab, _ in entries}
+    models_b = {model_of(ab) for entries in right.values() for _, ab, _ in entries}
 
     print(f'captures a={len(left)} b={len(right)} paired={len(shared)} '
-          f'transports_a={",".join(sorted(transports_a))} transports_b={",".join(sorted(transports_b))}')
+          f'models_a={",".join(sorted(models_a))} models_b={",".join(sorted(models_b))} '
+          f'transports_a={",".join(sorted(transports_a))} '
+          f'transports_b={",".join(sorted(transports_b))}'
+          + (' pack_choice=relaxed' if arguments.relax_variant else ''))
 
     if not shared:
         print('no pair could be formed: the two runs never received byte-identical '
-              'input frames, so this comparison says nothing about the transports')
+              'input frames, so this comparison says nothing about the change under test')
         return 2
 
     identical = 0
@@ -104,9 +140,22 @@ def main():
         frame_a, ab_a, _ = entry_a
         frame_b, ab_b, _ = entry_b
 
-        if ab_a['transport'] == ab_b['transport']:
-            print(f'frame={ab_a["frame"]} vs frame={ab_b["frame"]} transport={ab_a["transport"]} '
-                  'warning=same transport on both sides')
+        # What the pair is actually testing. A pair whose transport, model and
+        # pack choice all match compares a run against itself: the pixels agreeing
+        # is worth printing, but it is not evidence about any change, and the
+        # earlier version of this tool warned about the transport alone, which
+        # hid a vacuous INT8/INT8 pair once a model A/B became possible.
+        variables = [name
+                     for name, (first, second) in (
+                         ('transport', (ab_a['transport'], ab_b['transport'])),
+                         ('model', (model_of(ab_a), model_of(ab_b))),
+                         ('pack', (entry_a[2]['use_wmma'], entry_b[2]['use_wmma'])),
+                     )
+                     if differs(first, second)]
+        print(f'frame={ab_a["frame"]} vs frame={ab_b["frame"]} '
+              f'{model_of(ab_a)}/{ab_a["transport"]} vs {model_of(ab_b)}/{ab_b["transport"]} '
+              f'testing={",".join(variables) if variables else "nothing"}'
+              + (' warning=nothing differs on this pair' if not variables else ''))
 
         # Pixels are judged on the payload bytes, never on the fingerprints: the
         # fingerprints exist to pair frames, and a run whose payload file was short-

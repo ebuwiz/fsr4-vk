@@ -90,6 +90,16 @@ const char* QualityContext::liveCapturePointName(CapturePoint point) {
     return "unknown";
 }
 
+// Which model this capture belongs to, spelled the way the A/B tool compares it.
+// The runtime already carries this as the one flag that selects the model's
+// shader roots, pass table and weight binding, so the label cannot drift away
+// from what actually ran: a capture that says int8 was produced by the int8
+// model, and tools/validate/ab-frames.py can then tell a model A/B apart from a
+// vacuous pair of two runs of the same model.
+const char* QualityContext::liveCaptureModelName() {
+    return use_int8_dispatch ? "int8" : "fp8";
+}
+
 void QualityContext::liveCaptureWrite(const fs::path& path,
                                       const void* data,
                                       size_t bytes) noexcept {
@@ -171,6 +181,7 @@ void QualityContext::liveCaptureManifest(const Image& color,
 
         out << "{\n"
             << "  \"frame\": " << frame_count << ",\n"
+            << "  \"model\": \"" << liveCaptureModelName() << "\",\n"
             << "  \"use_wmma\": " << (use_wmma ? "true" : "false") << ",\n"
             << "  \"run_auto_exposure\": " << (run_auto_exposure ? "true" : "false") << ",\n"
             << "  \"use_staging_output\": " << (use_staging_output ? "true" : "false") << ",\n"
@@ -418,6 +429,7 @@ void QualityContext::liveCaptureFlush() noexcept {
         ab << "{\n"
            << "  \"frame\": " << live_capture_target_frame << ",\n"
            << "  \"transport\": \"" << fsr4vk::descriptorBackendName(descriptor_backend) << "\",\n"
+           << "  \"model\": \"" << liveCaptureModelName() << "\",\n"
            << "  \"files\": [\n";
         for (size_t index = 0; index < fingerprints.size(); ++index) {
             const auto& row = fingerprints[index];
@@ -438,6 +450,8 @@ void QualityContext::liveCaptureFlush() noexcept {
 
         log("[411-capture] COMPLETE frame=" + std::to_string(live_capture_target_frame) +
             " dir=" + live_capture_frame_dir.string() + " files=" + std::to_string(count) +
+            " model=" + liveCaptureModelName() +
+            " transport=" + fsr4vk::descriptorBackendName(descriptor_backend) +
             " input=" + hexFingerprint(input_fingerprint) +
             " output=" + hexFingerprint(output_fingerprint));
 

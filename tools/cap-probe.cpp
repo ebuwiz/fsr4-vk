@@ -27,6 +27,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <string>
@@ -44,6 +45,15 @@ void report(const char* label, const fsr4vk::GpuCapabilities& capabilities) {
     for (const auto& blocker : capabilities.fp8Blockers()) {
         std::cout << "  " << label << " fp8 blocker: " << blocker << '\n';
     }
+
+    // The rung the provider would pick, printed next to the blocker lists because
+    // the two only mean something together: a device that answers int8=false is
+    // either a fallback to fp8 or a refusal, and which one it is decides whether
+    // the app gets an upscaler at all.
+    const auto resolved = fsr4vk::resolveModel(capabilities, fsr4vk::ModelChoice::Auto);
+    std::cout << "  " << label << " auto_ladder="
+              << (resolved.chosen ? fsr4vk::modelName(*resolved.chosen) : "none")
+              << " reason=" << resolved.reason << '\n';
 }
 
 // A resolver that never reaches a driver, used to test the entry-point contract
@@ -73,6 +83,69 @@ PFN_vkVoidFunction stubDeviceProcAddr(VkDevice device, const char* name) {
     }
 
     return reinterpret_cast<PFN_vkVoidFunction>(static_cast<uintptr_t>(1));
+}
+
+// A snapshot that satisfies every line the shared runtime contract and both model
+// contracts check, so the only thing left to vary is the rung under test. Fabricated
+// rather than probed: a device that refuses INT8's own SPIR-V capabilities is what
+// the ladder exists for, and this machine has none, so the ladder has to be checked
+// without waiting for that hardware.
+fsr4vk::GpuCapabilities syntheticHost() {
+    fsr4vk::GpuCapabilities host{};
+
+    host.properties.apiVersion = VK_API_VERSION_1_3;
+    host.core.shaderInt16 = VK_TRUE;
+    host.core.shaderStorageImageReadWithoutFormat = VK_TRUE;
+    host.core.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+    host.float16_int8.shaderFloat16 = VK_TRUE;
+    host.float16_int8.shaderInt8 = VK_TRUE;
+    host.storage8.storageBuffer8BitAccess = VK_TRUE;
+    host.buffer_device_address.bufferDeviceAddress = VK_TRUE;
+    host.descriptor_indexing.runtimeDescriptorArray = VK_TRUE;
+    host.subgroups.supportedStages = VK_SHADER_STAGE_COMPUTE_BIT;
+    host.subgroups.supportedOperations = VK_SUBGROUP_FEATURE_QUAD_BIT;
+    host.subgroup_size_control.subgroupSizeControl = VK_TRUE;
+    host.subgroup_size_control.computeFullSubgroups = VK_TRUE;
+    host.memory_model.vulkanMemoryModel = VK_TRUE;
+    host.cooperative.cooperativeMatrixSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT;
+    host.float_controls.shaderDenormPreserveFloat16 = VK_TRUE;
+    host.subgroup_sizes.requiredSubgroupSizeStages = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    // The two lines that are the INT8 model's own SPIR-V contract.
+    host.vulkan13.shaderIntegerDotProduct = VK_TRUE;
+    host.compute_derivatives.computeDerivativeGroupLinear = VK_TRUE;
+
+    // And the FP8 model's: extension names plus the feature bits they promote.
+    host.shader_float8.shaderFloat8 = VK_TRUE;
+    host.shader_float8.shaderFloat8CooperativeMatrix = VK_TRUE;
+    host.cooperative_matrix.cooperativeMatrix = VK_TRUE;
+    host.extensions = {{VK_EXT_SHADER_FLOAT8_EXTENSION_NAME, 1},
+                       {VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, 1}};
+    // matrix_probe_route stays Unprobed on purpose: an unprobed device is judged
+    // on extension and feature bits alone, so nothing here can look FP8-capable
+    // for a reason this fixture did not set.
+    return host;
+}
+
+// One ladder case: the rung the shared resolver would pick, and a substring its
+// reason has to carry. A disagreement counts against the probe's exit code, because
+// picking the wrong rung silently is worse than a device that refuses loudly.
+std::size_t ladder_failures = 0;
+
+void checkLadder(const char* case_name,
+                 const fsr4vk::ModelResolution& resolved,
+                 const std::string& expected_model,
+                 const std::string& expected_reason) {
+    const std::string actual =
+        resolved.chosen ? fsr4vk::modelName(*resolved.chosen) : "none";
+    const bool model_ok = actual == expected_model;
+    const bool reason_ok = resolved.reason.find(expected_reason) != std::string::npos;
+    std::cout << "  synthetic_ladder case=" << case_name << " verdict=" << actual
+              << " expected=" << expected_model << " ok=" << std::boolalpha
+              << (model_ok && reason_ok) << " reason=" << resolved.reason << '\n';
+    if (!model_ok || !reason_ok) {
+        ++ladder_failures;
+    }
 }
 
 } // namespace
@@ -286,9 +359,53 @@ int main() {
         }
     }
 
+    // The model ladder, checked on snapshots this machine cannot be expected to
+    // have: a host that runs INT8, a host whose driver refuses INT8's own SPIR-V
+    // contract (what a low-entry AMD APU looks like), and a host that refuses both.
+    // Before this phase the second one produced no upscaler at all, so the case
+    // that matters most is the one that needs no hardware to notice.
+    {
+        const auto both_ok = syntheticHost();
+        checkLadder("both_ok_auto",
+                    fsr4vk::resolveModel(both_ok, fsr4vk::ModelChoice::Auto), "int8",
+                    "int8 contract satisfied");
+        checkLadder("both_ok_explicit_fp8",
+                    fsr4vk::resolveModel(both_ok, fsr4vk::ModelChoice::ForceFp8), "fp8",
+                    "fp8 contract satisfied");
+
+        auto int8_refused = syntheticHost();
+        int8_refused.vulkan13.shaderIntegerDotProduct = VK_FALSE;
+        checkLadder("dot_product_missing_auto",
+                    fsr4vk::resolveModel(int8_refused, fsr4vk::ModelChoice::Auto), "fp8",
+                    "falling back to fp8");
+        checkLadder("dot_product_missing_explicit_int8",
+                    fsr4vk::resolveModel(int8_refused, fsr4vk::ModelChoice::ForceInt8), "none",
+                    "the request is strict");
+        checkLadder("dot_product_missing_explicit_fp8",
+                    fsr4vk::resolveModel(int8_refused, fsr4vk::ModelChoice::ForceFp8), "fp8",
+                    "fp8 contract satisfied");
+
+        auto derivative_missing = syntheticHost();
+        derivative_missing.compute_derivatives.computeDerivativeGroupLinear = VK_FALSE;
+        checkLadder("derivative_group_missing_auto",
+                    fsr4vk::resolveModel(derivative_missing, fsr4vk::ModelChoice::Auto), "fp8",
+                    "computeDerivativeGroupLinear");
+
+        auto neither_runs = syntheticHost();
+        neither_runs.vulkan13.shaderIntegerDotProduct = VK_FALSE;
+        neither_runs.shader_float8.shaderFloat8 = VK_FALSE;
+        checkLadder("neither_runs_auto",
+                    fsr4vk::resolveModel(neither_runs, fsr4vk::ModelChoice::Auto), "none",
+                    "neither model runs");
+        checkLadder("neither_runs_lists_both_rungs",
+                    fsr4vk::resolveModel(neither_runs, fsr4vk::ModelChoice::Auto), "none",
+                    "fp8 blocked (");
+        std::cout << "  synthetic_ladder failures=" << ladder_failures << '\n';
+    }
+
     // The devices enumerated here die with the instance, and the cache keys
     // itself on those handles, so it is dropped before the instance goes away.
     fsr4vk::clearCapabilityCache();
     vkDestroyInstance(instance, nullptr);
-    return 0;
+    return ladder_failures == 0 ? 0 : 1;
 }

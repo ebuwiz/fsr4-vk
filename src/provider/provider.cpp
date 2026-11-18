@@ -390,21 +390,23 @@ const ProviderVersion* selectVersion(std::uint64_t id,
         model = *parsed;
     }
 
-    // Auto keeps the historical INT8 default: INT8 is the cheaper contract, and
-    // selecting FP8 implicitly would change what existing deployments run.
-    const bool force_fp8 = model == fsr4vk::ModelChoice::ForceFp8;
-    const auto* version = force_fp8 ? &kProviderVersions[1] : &kProviderVersions[0];
+    // Auto walks the ladder INT8 -> FP8 through fsr4vk::resolveModel, the same
+    // helper tools/cap-probe.cpp reports, so the two cannot disagree about what
+    // a device runs. INT8 stays the first rung: nothing that runs INT8 today
+    // changes model. FP8 is reached only where the driver *refuses* INT8's own
+    // SPIR-V capabilities - which is what a low-entry AMD APU does - and a device
+    // that refuses both is refused here with both blocker lists rather than
+    // dropping the upscaler on the first dispatch.
+    const auto resolution = fsr4vk::resolveModel(capabilities, model);
 
-    // Auto still has to satisfy the model it falls back to, so a device that
-    // cannot run INT8 reports its blockers instead of failing on first dispatch.
-    const auto blockers = force_fp8 ? capabilities.fp8Blockers() : capabilities.int8Blockers();
-    if (!blockers.empty()) {
-        selection_reason = "device cannot run " + std::string(version->name) + ": " +
-                           fsr4vk::joinBlockers(blockers);
+    if (!resolution.chosen) {
+        selection_reason = resolution.reason;
         return nullptr;
     }
 
-    selection_reason = std::string("device satisfies the ") + version->name + " contract";
+    const bool chosen_fp8 = *resolution.chosen == fsr4vk::ModelChoice::ForceFp8;
+    const auto* version = chosen_fp8 ? &kProviderVersions[1] : &kProviderVersions[0];
+    selection_reason = resolution.reason;
     return version;
 }
 } // namespace fsr4provider
@@ -860,7 +862,9 @@ ffxReturnCode_t dispatch(ffxContext* context, const ffxDispatchDescHeader* heade
                                       uint32_t depth_usage = 0,
                                       VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
         const uint32_t required_usage =
-            state == FFX_API_RESOURCE_STATE_UNORDERED_ACCESS ? FFX_API_RESOURCE_USAGE_UAV : 0u;
+            state == FFX_API_RESOURCE_STATE_UNORDERED_ACCESS
+                ? static_cast<uint32_t>(FFX_API_RESOURCE_USAGE_UAV)
+                : 0u;
         const uint32_t actual_depth_usage =
             api_resource.description.usage &
             (FFX_API_RESOURCE_USAGE_DEPTHTARGET | FFX_API_RESOURCE_USAGE_STENCILTARGET);

@@ -364,6 +364,7 @@ class QualityContext final : public fsr4_411::QualityContext {
 
     static uint32_t bytesPerPixel(VkFormat format);
     static const char* liveCapturePointName(CapturePoint point);
+    const char* liveCaptureModelName();
     void liveCaptureWrite(const fs::path& path, const void* data, size_t bytes) noexcept;
     void liveCaptureImageMeta(const fs::path& path,
                               const char* role,

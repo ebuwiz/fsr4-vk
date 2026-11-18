@@ -54,8 +54,9 @@ struct InstanceResolver {
 // "this device has no tiles".
 enum class MatrixProbeRoute : std::uint8_t { Unprobed, DynamicLookup, HostInstance };
 
-// FSR4_VK_MODEL values. Auto keeps the historical INT8 default and must never
-// probe for FP8 support; only an explicit request is allowed to gate on it.
+// FSR4_VK_MODEL values. Auto keeps INT8 as its first rung, so a deployment that
+// runs INT8 today keeps running it; only an explicit request is answered strictly,
+// never swapped for another model behind the caller's back (see resolveModel).
 std::optional<ModelChoice> parseModelChoice(const char* value);
 
 struct GpuCapabilities {
@@ -248,5 +249,21 @@ DescriptorBackend selectDescriptorBackend(const GpuCapabilities& capabilities);
 std::optional<DescriptorBackend> descriptorBackendOverride();
 
 const char* modelName(ModelChoice choice);
+
+// What the provider will run on one device, and why. INT8 is the first rung of
+// the ladder because it is the cheaper contract and the one every deployment
+// already runs; FP8 arrives only when the device *refuses* INT8's own SPIR-V
+// capabilities (integer dot product, linear derivative groups), not because it
+// looked faster. Refusing both is reported with both blocker lists, since
+// "cannot run INT8" and "cannot run either" are different diagnoses and the
+// second one is what a low-entry AMD APU tends to look like. Neither list is a
+// driver query: both read the snapshot the provider is already holding, so
+// walking the ladder costs nothing an explicit request would not have paid.
+struct ModelResolution {
+    std::optional<ModelChoice> chosen;
+    std::string reason;
+};
+
+ModelResolution resolveModel(const GpuCapabilities& capabilities, ModelChoice requested);
 
 } // namespace fsr4vk

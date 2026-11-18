@@ -721,6 +721,48 @@ const char* modelName(ModelChoice choice) {
     }
 }
 
+// The ladder the provider and tools/cap-probe.cpp share. Reading both blocker
+// lists here rather than one at the call site is deliberate: a caller that
+// consulted only INT8 could not tell "fall back" from "give up", which is exactly
+// the distinction a weak device's log line has to carry.
+ModelResolution resolveModel(const GpuCapabilities& capabilities, ModelChoice requested) {
+    const auto int8_blockers = capabilities.int8Blockers();
+    const auto fp8_blockers = capabilities.fp8Blockers();
+
+    if (requested == ModelChoice::ForceInt8) {
+        if (int8_blockers.empty()) {
+            return {ModelChoice::ForceInt8, "int8 contract satisfied"};
+        }
+        return {std::nullopt,
+                "FSR4_VK_MODEL=int8 refused by this device: " +
+                    joinBlockers(int8_blockers) +
+                    "; fp8 was not considered, the request is strict"};
+    }
+
+    if (requested == ModelChoice::ForceFp8) {
+        if (fp8_blockers.empty()) {
+            return {ModelChoice::ForceFp8, "fp8 contract satisfied"};
+        }
+        return {std::nullopt,
+                "FSR4_VK_MODEL=fp8 refused by this device: " +
+                    joinBlockers(fp8_blockers) +
+                    "; int8 was not considered, the request is strict"};
+    }
+
+    // Auto. INT8 first, unchanged for every device that can run it.
+    if (int8_blockers.empty()) {
+        return {ModelChoice::ForceInt8, "auto: int8 contract satisfied"};
+    }
+    if (fp8_blockers.empty()) {
+        return {ModelChoice::ForceFp8,
+                "auto: falling back to fp8 because int8 is refused: " +
+                    joinBlockers(int8_blockers)};
+    }
+    return {std::nullopt,
+            "neither model runs: int8 blocked (" + joinBlockers(int8_blockers) +
+            ") fp8 blocked (" + joinBlockers(fp8_blockers) + ")"};
+}
+
 } // fsr4vk
 
 
