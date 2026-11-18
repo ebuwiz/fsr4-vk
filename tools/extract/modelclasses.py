@@ -189,10 +189,11 @@ def installers(sdk, runs):
     return hits
 
 
-# One word at a time, anchored on a variant token; scanning every printable run in a
-# 60 MiB image would take minutes to find the few dozen hits this pattern has. The
-# tokens are the ones an FFX provider key would use: the two disputed variants, both
-# quantizations, the four FSR algorithms and the upscale verb of the FSR3 provider.
+# One word at a time, anchored on a variant token rather than scanning every printable
+# run in a 60 MiB image: this pattern hits 1616 strings on the pinned image, of which
+# five have an inbound pointer. The tokens are the ones an FFX provider key would use -
+# the two disputed variants, both quantizations, the four FSR algorithms and the upscale
+# verb of the FSR3 provider - so a miss here would be a spelling the SDK does not use.
 VOCABULARY = re.compile(rb"(?i)[A-Za-z0-9_.:@-]{0,64}(navi2|lite|int8|fp8|float8|"
                        rb"fsr[1234]|upscal)[A-Za-z0-9_.:@-]{0,64}")
 
