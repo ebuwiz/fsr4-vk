@@ -94,8 +94,8 @@ struct GpuCapabilities {
 
     // Cooperative matrix shapes offered for compute workloads. Empty is
     // ambiguous on its own, so matrix_probe_route records whether a query ran
-    // and which handle answered it. A caller that owns an instance can fill the
-    // fields itself too, which is what tools/cap-probe.cpp does.
+    // and which handle answered it. tools/cap-probe.cpp reaches that list the
+    // same way a cooperating host does: through its own instance resolver.
     std::vector<VkCooperativeMatrixPropertiesKHR> matrix_shapes;
     MatrixProbeRoute matrix_probe_route = MatrixProbeRoute::Unprobed;
 
