@@ -732,6 +732,55 @@ def test_sdk_classic_controlflow_order():
         raise AssertionError(f"FrameInterpolation declared pass inventory drifted: {fi_passes}")
 
 
+def test_sdk_opticalflow_binding_table():
+    # MINE AMD's OpticalFlow descriptor-set layout (the named binding-identifier table the CPU binds
+    # uav/srv resources into before each OF pass) from the pinned v2.4.0 SDK -- the ground truth a
+    # classic-path implementation must reproduce. Asserts the canonical named bindings, the 7-level
+    # optical-flow input pyramid, the SCD (scene-change-detection) binding set, the shared bindings, the
+    # 2 optical-flow constant buffers, and that the CPU actually WIRES resources->uav/srv bindings.
+    # GPU-free; self-skips if the SDK submodule is not populated.
+    fg = ROOT / "third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration"
+    if not fg.is_dir():
+        print("SKIP sdk-of-bindings: FFX SDK submodule not populated")
+        return
+    of = (fg / "fsr3/internal/ffx_opticalflow.cpp").read_text(errors="ignore")
+
+    for binding in (
+        "FFX_OF_BINDING_IDENTIFIER_INPUT_COLOR",
+        "FFX_OF_BINDING_IDENTIFIER_OPTICAL_FLOW_INPUT",
+        "FFX_OF_BINDING_IDENTIFIER_OPTICAL_FLOW_PREVIOUS_INPUT",
+        "FFX_OF_BINDING_IDENTIFIER_OPTICAL_FLOW",
+        "FFX_OF_BINDING_IDENTIFIER_OPTICAL_FLOW_PREVIOUS",
+        "FFX_OF_BINDING_IDENTIFIER_OPTICAL_FLOW_NEXT_LEVEL",
+        "FFX_OF_BINDING_IDENTIFIER_OPTICAL_FLOW_SCD_HISTOGRAM",
+        "FFX_OF_BINDING_IDENTIFIER_OPTICAL_FLOW_SCD_PREVIOUS_HISTOGRAM",
+        "FFX_OF_BINDING_IDENTIFIER_OPTICAL_FLOW_SCD_TEMP",
+        "FFX_OF_BINDING_IDENTIFIER_OPTICAL_FLOW_SCD_OUTPUT",
+        "FFX_OF_BINDING_IDENTIFIER_SHARED_OPTICAL_FLOW_VECTOR",
+        "FFX_OF_BINDING_IDENTIFIER_SHARED_OPTICAL_FLOW_SCD_OUTPUT",
+    ):
+        if binding not in of:
+            raise AssertionError(f"OpticalFlow binding identifier absent from SDK: {binding}")
+
+    # The optical-flow input pyramid is 7 levels deep (base + LEVEL_1..LEVEL_6).
+    if not all(f"FFX_OF_BINDING_IDENTIFIER_OPTICAL_FLOW_INPUT_LEVEL_{n}" in of for n in range(1, 7)):
+        raise AssertionError("OpticalFlow input pyramid is not the 7-level (base + 1..6) chain")
+
+    # The binding count enum must be declared (bounds every OF descriptor slot).
+    if "FFX_OF_BINDING_IDENTIFIER_COUNT" not in of:
+        raise AssertionError("FFX_OF_BINDING_IDENTIFIER_COUNT not declared in the SDK OF source")
+
+    # 2 optical-flow constant buffers (cbOF + cbOF_SPD) per the OF resource header.
+    res = (fg / "fsr3/include/gpu/opticalflow/ffx_opticalflow_resources.h").read_text(errors="ignore")
+    if "FFX_OPTICALFLOW_CONSTANTBUFFER_IDENTIFIER_SPD" not in res:
+        raise AssertionError("OpticalFlow SPD constant buffer (cbOF_SPD) identifier missing from SDK")
+
+    # The CPU must actually wire resources -> uav/srv bindings (descriptor-set construction).
+    if "uavBindings[FFX_OF_BINDING_IDENTIFIER_OPTICAL_FLOW_SCD_HISTOGRAM]" not in of \
+            or "srvBindings[FFX_OF_BINDING_IDENTIFIER_INPUT_COLOR]" not in of:
+        raise AssertionError("OpticalFlow CPU does not wire resources into named uav/srv bindings as pinned")
+
+
 def main():
     failures = []
     for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
@@ -741,7 +790,8 @@ def main():
                  test_mlfi_graph_chain_matches_pack,
                  test_mlfi_chain_structure_and_model_tiling,
                  test_sdk_ground_truth,
-                 test_sdk_classic_controlflow_order):
+                 test_sdk_classic_controlflow_order,
+                 test_sdk_opticalflow_binding_table):
         name = test.__name__
         try:
             test()

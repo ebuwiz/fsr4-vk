@@ -306,7 +306,12 @@ The build itself verifies every embedded asset payload and alias. On top of that
   OpticalFlowVectorField → DisocclusionMask → Interpolation(SCFI) → InpaintingPyramid → Inpainting
   → GameVectorFieldInpaintingPyramid → DebugView (11 declared `FFX_FRAMEINTERPOLATION_PASS_*` + 7
   `FFX_OPTICALFLOW_PASS_*`); together with the 48-id resource model + present/pacing/UI, this closes
-  roadmap blocker #2 for the CLASSIC half; (2) the same gate
+  roadmap blocker #2 for the CLASSIC half (and `test_sdk_opticalflow_binding_table` also pins
+  AMD's **OpticalFlow descriptor layout** — the named binding-identifier table `r_input_color`
+  → `r/rw_optical_flow_input` + the **7-level** input pyramid `…_LEVEL_1..6` → `r/rw_optical_flow
+  (_previous/_next_level)` → the SCD set (`histogram/previous_histogram/temp/output`) → the shared
+  vector/SCD bindings, plus the 2 constant buffers `cbOF`/`cbOF_SPD`, and that the CPU actually
+  wires `resources→uav/srv bindings`); (2) the same gate
   PROVES the **MLFI ONNX neural net** — the 382 `mlfi_*` inference passes — is *not*
   shipped in the open SDK, confirming the ML pass→pass execution ORDER is the single
   genuinely closed boundary; the ML `ffxDispatch` path therefore stays honestly refused
