@@ -11,7 +11,7 @@ The whole project is built on **measured ground truth, never inference**. Read t
 
 - **Pin the inputs.** Both source DLLs are pinned by SHA-256 - upscaler 4.1.2.4555 (`aad4...`) and Frame Generation 4.0.2.4555 (`e684...77bb6`) - and every extraction tool **fails on drift** rather than skipping a mismatch. AMD's open **FidelityFX SDK 2.4.0** (`third_party/fidelityfx-sdk`) is vendored as **CPU control-flow ground truth**: the *classic* interpolation pass order, resource tables, present/pacing/UI and descriptor layouts are **MINED from that readable source** and pinned by gates - not guessed out of the DLL.
 - **Two independent providers.** The upscaler is **complete + validated**. The Frame Generation provider is the ABI + capability contract + host-integration surface + reconstructed pass-plan substrate, and it **honestly refuses the not-yet-validated algorithm** instead of fabricating a blend or a made-up optical-flow stand-in. The two `.so` outputs must never share assets, model logic or runtime resources.
-- **Verify before claiming.** GPU-free gates run on any host (`bash tools/build/check.sh`, `ctest`, and the 26 FG gates in `tools/validate/frame-generation/tests.py`); device gates **auto-skip with exit 77**, so a GPU-less CI host stays green instead of failing. A red run is a real regression, not a missing GPU.
+- **Verify before claiming.** GPU-free gates run on any host (`bash tools/build/check.sh`, `ctest`, and the 28 FG gates in `tools/validate/frame-generation/tests.py`); device gates **auto-skip with exit 77**, so a GPU-less CI host stays green instead of failing. A red run is a real regression, not a missing GPU.
 - **Treat transport as a measured constraint.** Conventional `VkDescriptorSet` fails 2684 of 2692 FG sets because FG bindings are `VK_WHOLE_ARRAY` runtime arrays; the host runtime **must** use `VK_EXT_descriptor_buffer` (all 1208 FG bindings serialize with 0 failures). No FG shader has a cross-kind slot, so plain derived `VkPipelineLayout`s suffice - pipeline creation for all 474 compute modules is **solved**.
 - **Respect the closed boundary.** The 382 `mlfi_*` ML pass->pass execution ORDER is **not statically derivable** from the shipped SPIR-V (bindless pointers), and the ONNX neural net is **absent from the open SDK**; pixel parity needs AMD reference captures. The provider stays refused there *by design*, now with source-level evidence rather than only a shader-side `edges=0` proof.
 
@@ -19,7 +19,7 @@ The whole project is built on **measured ground truth, never inference**. Read t
 
 - **Upscaler `amd_fidelityfx_upscaler_vk.so` - runs.** Records every FSR4 pass onto the host's `VkCommandBuffer` and self-sequences the barriers; full `ffxQuery`/create/dispatch contract answered; validated **byte-identical across both descriptor transports** (`descriptor-smoke`).
 - **Frame Generation `amd_fidelityfx_framegeneration_vk.so` - the boundary runs, the algorithm refuses.**
-  - *Runs (returns its documented code):* `ffxCreateContext` (capability contract + version advertisement + `fg4`-namespaced pipeline cache + warm reload); `ffxConfigure` capturing the full host contract; the **enforced** contract surface - all 7 create flags interpreted, mandatory Configure->Prepare->generate order, **version-negotiation refusal** of a non-classic `ffxOverrideVersion`, `PrepareV2` (`0x0c`) and `GetGPUMemoryUsageV2` (`0x0b`) recognized, `numGeneratedFrames == 0` **cancel** -> `OK`; the offline tooling (inventory / convert / reverse / plan / vk-identity) and the 26-gate python suite; `framegeneration-plan-test` + `framegeneration-check-test` (GPU-free) and `framegeneration-exec` (`--compile-pack`, `--descriptor-buffer-parity`, `--write-descriptors`, `--expect-plan`) + `framegeneration-probe` (device).
+  - *Runs (returns its documented code):* `ffxCreateContext` (capability contract + version advertisement + `fg4`-namespaced pipeline cache + warm reload); `ffxConfigure` capturing the full host contract; the **enforced** contract surface - all 7 create flags interpreted, mandatory Configure->Prepare->generate order, **version-negotiation refusal** of a non-classic `ffxOverrideVersion`, `PrepareV2` (`0x0c`) and `GetGPUMemoryUsageV2` (`0x0b`) recognized, `numGeneratedFrames == 0` **cancel** -> `OK`; the offline tooling (inventory / convert / reverse / plan / vk-identity / capture-rig) and the 28-gate python suite; `framegeneration-plan-test` + `framegeneration-check-test` (GPU-free) and `framegeneration-exec` (`--compile-pack`, `--descriptor-buffer-parity`, `--write-descriptors`, `--expect-plan`) + `framegeneration-probe` (device).
   - *Honestly refused (`FFX_API_RETURN_ERROR_RUNTIME_ERROR`):* `ffxDispatch(Prepare | PrepareV2 | generate 1..3)` - the interpolation / ML / present runtime - and `ffxQuery(GetGPUMemoryUsage V1/V2)` while the provider owns no allocated targets. The present-callback descriptor returns `NO_PROVIDER`.
 - **See `## Next steps`** for what turns these honest refusals into a running FG runtime.
 
@@ -457,7 +457,7 @@ The build itself verifies every embedded asset payload and alias. On top of that
   by returning `OK` (nothing to fabricate) while still refusing `1..3` with `RUNTIME_ERROR`. Every change is
   **additive** to branches the on‑device ladder never enters (no override, `numGeneratedFrames = 1`, present‑
   callback), so the documented return‑code ladder is preserved by construction. Machine‑checked by the new
-  gate `test_sdk_fg_host_contract_enforcement` (GPU‑free, pack‑free), bringing the FG gate count to **26**.
+  gate `test_sdk_fg_host_contract_enforcement` (GPU‑free, pack‑free), bringing the FG gate count to **28**.
 - `bash tools/build/linux.sh` now ends by running `tools/build/check.sh`, a
   post-build validation gate in which every check asserts exit 0 (a red run is a
   real regression — invalid SPIR-V, a dropped asset payload, or a broken Frame
@@ -818,6 +818,17 @@ The two remaining FG blockers - the 382-pass ML execution ORDER and output-pixel
 - **What it does NOT give statically:** the `_vk` shader **bytes** are one compressed proprietary blob (no plaintext SPIR-V, no standard zstd/lz4 frames - the lone `18 4D 2E` marker decodes to a nonsense 3.7 GB size, so it is not a real zstd frame), and `passNNN` are **container labels, not the ML execution order** (already proven non-derivable). Identity is confirmed; the schedule still must be observed.
 - **To recover the ML order + pixel parity:** build the `vk` sample (MIT), select the **ML FG variant** (not classic FSR3) on a device AMD's FG actually runs (RX 9000 / cooperative-matrix capable), and intercept the Vulkan compute the DLL issues - a thin `libvulkan.so` shim or the validation layer logging each `vkCmdDispatch*` -> (threadgroup dims, bound-pipeline SPIR-V hash, resolved descriptors) emitted in our existing `modules.tsv`/plan schema, so the captured order diffs straight against `framegeneration-exec --expect-plan`; read back the output textures for A/B via `tools/validate/ab-frames.py`.
 - **Deps to stage in `dlls/`:** running the VK path needs `_loader_vk` (pinned `38a56a01...`) + `_upscaler_vk` (pinned `4a7e895a...`) alongside the already-present `amd_fidelityfx_framegeneration_vk.dll`. The DX12 alternative - capturing the pinned `_dx12` DLL (`e684...77bb6`) under Wine + vkd3d-proton - keeps the traced Vulkan calls aligned with the shader set you already extracted.
+
+- **Now scaffolded, not just described (gates 27-28).** `tools/capture/frame-generation/stage-vk-dlls.py`
+  stages the loader + upscaler + framegeneration `_vk` DLLs from the SDK `signedbin` into a runtime dir, verifying
+  each against its pinned SHA (`d002 / 4a7e / 38a5`) and refusing a non-pinned version, so a capture rig never
+  silently mixes versions; `tools/capture/frame-generation/capture-diff.py` diffs an intercepted `vkCmdDispatch`
+  trace against the pack PLAN by SPIR-V digest - per-module first-seen position + call count, `extra` (a dispatch
+  not in the plan) and `missing` (a plan module the capture did not exercise) - and NEVER derives the order itself.
+  Both are pinned GPU-free by `test_stage_vk_dll_pins_reference_rig` (check + apply to a temp dir) and
+  `test_capture_diff_order_reader_roundtrip` (`--selftest` round-trips the whole plan + flags an injected unknown
+  digest). The ONLY hand-written piece left is the `libvulkan.so` / validation-layer shim that EMITS the capture
+  file these two tools read.
 
 ## Next steps
 
