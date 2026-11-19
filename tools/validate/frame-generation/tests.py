@@ -906,6 +906,44 @@ def test_sdk_framegeneration_api_contract():
         raise AssertionError("provider generate check no longer pins the 1..3 generated-frame contract")
 
 
+def test_sdk_present_pacing_threading():
+    # MINE the present/pacing THREADING substrate from AMD's Vulkan swapchain source -- the exact
+    # semaphore/queue/worker choreography a classic-4x Present() would implement. Pins: the 8-signal
+    # acquire buffer ceiling, the game/interpolation/composition/replacement-buffer/ frame-rendered
+    # semaphore family, the dedicated presenter thread (spawn/kill + handle), the game<->present
+    # queue-FAMILY ownership transfer backed by family-indexed command-buffer pools, the MIXED timeline
+    # + binary semaphore choreography, and the swapchain-REPLACEMENT entry points (acquireNextImage/
+    # getSwapchainImages/queuePresent). This is SUBSTRATE (ground truth for the next implementation step)
+    # -- it does NOT run or claim any present behaviour. GPU-free; self-skips when the SDK is absent.
+    vk = ROOT / "third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk"
+    if not vk.is_dir():
+        print("SKIP sdk-present-threading: FFX SDK submodule not populated")
+        return
+    blob = ""
+    for f in ("FrameInterpolationSwapchainVK.h", "FrameInterpolationSwapchainVK.cpp",
+              "FrameInterpolationSwapchainVK_Helpers.h", "FrameInterpolationSwapchainVK_Helpers.cpp"):
+        p = vk / f
+        if p.is_file():
+            blob += p.read_text(errors="ignore")
+    if not blob:
+        raise AssertionError("no Vulkan swapchain source found under fsr3/vk")
+
+    if not re.search(r"MAX_ACQUIRE_SEMAPHORE_COUNT\s+8\b", blob):
+        raise AssertionError("acquire-semaphore buffer ceiling != 8 in the pinned SDK present source")
+    for tok in ("gameSemaphore", "interpolationSemaphore", "compositionSemaphore",
+                "replacementBufferSemaphore", "frameRenderedSemaphores",
+                "spawnPresenterThread", "killPresenterThread", "presenterThreadHandle",
+                "queueFamilyOwnershipTransferGameToPresent", "SubmissionSemaphores",
+                "acquireNextImage", "getSwapchainImages", "queuePresent", "familyIndex"):
+        if tok not in blob:
+            raise AssertionError(f"present/pacing threading token missing from SDK source: {tok}")
+    # Mixed timeline + binary choreography must both be present (pacing uses timeline values,
+    # per-buffer frame-rendered tracking uses binary semaphores).
+    if not ("VK_SEMAPHORE_TYPE_TIMELINE" in blob and "VkTimelineSemaphoreSubmitInfo" in blob
+            and "vkGetSemaphoreCounterValue" in blob and "frameRenderedSemaphores" in blob):
+        raise AssertionError("present/pacing mixed timeline+binary semaphore choreography drifted")
+
+
 def main():
     failures = []
     for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
@@ -920,7 +958,8 @@ def main():
                  test_sdk_shared_fsr3_fg_resources,
                  test_sdk_spd_inpainting_pyramid_setup,
                  test_sdk_present_swapchain_contract,
-                 test_sdk_framegeneration_api_contract):
+                 test_sdk_framegeneration_api_contract,
+                 test_sdk_present_pacing_threading):
         name = test.__name__
         try:
             test()

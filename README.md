@@ -327,7 +327,18 @@ The build itself verifies every embedded asset payload and alias. On top of that
   the `UNDEFINED→VK_IMAGE_LAYOUT_PRESENT_SRC_KHR` transition, the `…UI_COMPOSITION_FLAG_USE_PREMUL_ALPHA`
   flag, the `ffxRegisterFrameinterpolationUiResourceVK` / `ffxGetMaximumFrameLatencyVK` / `ffxSetFrameGenerationConfigToSwapchainVK`
   APIs, and the UI‑composition(+premul) / debug‑pacing present VS/PS programs — the exact `Present` behaviour
-  the classic path must reproduce (previously only a "no provider" return code was knowable); (2) the same gate
+  the classic path must reproduce (previously only a "no provider" return code was knowable); and
+  **`test_sdk_present_pacing_threading`** mines the present/pacing **threading substrate** — the
+  8‑signal acquire‑buffer ceiling (`MAX_ACQUIRE_SEMAPHORE_COUNT 8`), the game / interpolation /
+  composition / replacement‑buffer / `frameRenderedSemaphores[]` semaphore family, a dedicated
+  **presenter thread** (`spawnPresenterThread`/`killPresenterThread` + handle), the game↔present
+  **queue‑family ownership transfer** over family‑indexed command‑buffer pools, and the **mixed
+  timeline+binary** choreography (`VK_SEMAPHORE_TYPE_TIMELINE` + `VkTimelineSemaphoreSubmitInfo` +
+  `vkGetSemaphoreCounterValue` for pacing, binary `frameRenderedSemaphores` per buffer). All of the
+  SDK mining above is **substrate only**: the provider still refuses `ffxDispatch`/`ffxQuery` (no
+  fabricated frames); wiring these mined pieces into a real **classic‑only 4×** runtime is the next
+  implementation step, and it stays gated on AMD reference captures for validation, with the 382
+  MLFI passes and any >4× still refused; (2) the same gate
   PROVES the **MLFI ONNX neural net** — the 382 `mlfi_*` inference passes — is *not*
   shipped in the open SDK, confirming the ML pass→pass execution ORDER is the single
   genuinely closed boundary; the ML `ffxDispatch` path therefore stays honestly refused
