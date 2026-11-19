@@ -985,6 +985,54 @@ def test_sdk_swapchain_replacement_provider():
         raise AssertionError("FFX_FRAMEGENERATION_ENABLE_ASYNC_WORKLOAD_SUPPORT opt-in flag absent from SDK")
 
 
+def test_sdk_interpolation_api_contract():
+    # Pin the AMD "Frame Generation (interpolation)" API doc the user supplied against the 2.4.0 header our
+    # provider compiles against, so the CONTRACT our ffxCreateContext/Configure/Query/Dispatch must honour
+    # is machine-checked ground truth (NOT the pixel/ML reference -- those stay out). Pins: the 7
+    # FFX_FRAMEGENERATION_ENABLE_* create flags, the version-link desc + FFX_FRAMEGENERATION_VERSION, the
+    # PrepareV2 path + the deprecated unused_reset it replaces, both GetGPUMemoryUsage V1 + V2, the
+    # Hudless create block, the UI-composition flags (premul + internal double-buffering), the four
+    # DRAW_DEBUG_* view flags, FLAG_NO_SWAPCHAIN_CONTEXT_NOTIFY, and the configure fields generationRect
+    # / HUDLessColor / onlyPresentGenerated. GPU-free; self-skips if the SDK is not populated.
+    hdr = ROOT / "third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h"
+    if not hdr.is_file():
+        print("SKIP sdk-interp-api: FFX SDK FG header not present")
+        return
+    t = hdr.read_text(errors="ignore")
+    for tok in (
+        # 7 create flags + the shared version negotiation.
+        "FFX_FRAMEGENERATION_ENABLE_ASYNC_WORKLOAD_SUPPORT",
+        "FFX_FRAMEGENERATION_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS",
+        "FFX_FRAMEGENERATION_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION",
+        "FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED",
+        "FFX_FRAMEGENERATION_ENABLE_DEPTH_INFINITE",
+        "FFX_FRAMEGENERATION_ENABLE_HIGH_DYNAMIC_RANGE",
+        "FFX_FRAMEGENERATION_ENABLE_DEBUG_CHECKING",
+        "FFX_FRAMEGENERATION_VERSION", "CreateContextDescFrameGenerationVersion",
+        # Prepare V2 (reset effective) supersedes the deprecated Prepare/unused_reset.
+        "DispatchDescFrameGenerationPrepareV2", "unused_reset",
+        # Memory usage: post-context (V1) AND the pre-context/NULL-context V2 with ffxOverrideVersion.
+        "QueryDescFrameGenerationGetGPUMemoryUsage", "QueryDescFrameGenerationGetGPUMemoryUsageV2",
+        # Optional HUD-less create block + UI-composition lifetime/blend flags.
+        "CreateContextDescFrameGenerationHudless",
+        "FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_USE_PREMUL_ALPHA",
+        "FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_ENABLE_INTERNAL_UI_DOUBLE_BUFFERING",
+        # Debug-view flags (tear lines / reset indicators / view / pacing lines) + no-swapchain notify.
+        "FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_TEAR_LINES",
+        "FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_RESET_INDICATORS",
+        "FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_VIEW",
+        "FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_PACING_LINES",
+        "FFX_FRAMEGENERATION_FLAG_NO_SWAPCHAIN_CONTEXT_NOTIFY",
+        # Configure fields the doc pins (frameID +1, letterbox rect, hudless surface, generated-only).
+        "generationRect", "HUDLessColor", "onlyPresentGenerated",
+    ):
+        if tok not in t:
+            raise AssertionError(f"documented interpolation-API token missing from 2.4.0 header: {tok}")
+    # PrepareCameraInfo is deprecated in favour of embedding camera data in PrepareV2.
+    if "DispatchDescFrameGenerationPrepareCameraInfo" not in t:
+        raise AssertionError("PrepareCameraInfo (deprecated) desc not found as pinned")
+
+
 def main():
     failures = []
     for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
@@ -1001,7 +1049,8 @@ def main():
                  test_sdk_present_swapchain_contract,
                  test_sdk_framegeneration_api_contract,
                  test_sdk_present_pacing_threading,
-                 test_sdk_swapchain_replacement_provider):
+                 test_sdk_swapchain_replacement_provider,
+                 test_sdk_interpolation_api_contract):
         name = test.__name__
         try:
             test()

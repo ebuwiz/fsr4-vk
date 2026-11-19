@@ -373,6 +373,25 @@ The build itself verifies every embedded asset payload and alias. On top of that
   step is this **Swapchain provider** (a `VkSwapchainKHR` replacement + 2 threads + UI composition +
   pacing), which is now honest to build; the still‑closed parts remain the **ML order/weights** and
   any **>4×** (which the `outputs[4]` contract forbids).
+- **The AMD *interpolation*‑API doc is now grounded too** (`test_sdk_interpolation_api_contract`), and
+  it is the **contract** reference — not a pixel/ML reference. It confirms the API is *"common across
+  all versions… algorithm differences on version‑specific pages,"* so it does **not** supply the 382‑pass
+  ML order or output‑pixel parity (both still out). It pins the contract our provider must honour, of
+  which these are **already honored** (`src/framegeneration/{provider,framegeneration-checks}.cpp/.hpp`):
+  `ENABLE_DEBUG_CHECKING`, `ENABLE_DEPTH_INFINITE`, `generationRect` (non‑negative + `0`=whole‑frame
+  sentinel), `HUDLessColor`, `onlyPresentGenerated`, `frameID`, `RegisterDistortionFieldResource`,
+  `QueryDescFrameGenerationGetGPUMemoryUsage`. And these contract items are **still to wire** (honest
+  gaps this doc surfaces, all implementable from the header without the ML): linking
+  `ffxCreateContextDescFrameGenerationVersion` (`FFX_FRAMEGENERATION_VERSION`) in `pNext` at create;
+  accepting the **`PrepareV2`** path (and emitting the `unused_reset`→`reset` deprecation + honoring
+  `reset` ≡ non‑contiguous `frameID`); interpreting the other create flags
+  (`…DISPLAY_RESOLUTION_MOTION_VECTORS`, `…MOTION_VECTORS_JITTER_CANCELLATION`, `…DEPTH_INVERTED`,
+  `…HIGH_DYNAMIC_RANGE`, `…ASYNC_WORKLOAD_SUPPORT`); answering the **pre‑context** `…GetGPUMemoryUsageV2`
+  (NULL‑context) query; the letterbox rule that `generationRect.width/height` must equal the upscale
+  output size (only `left/top` may vary); the 3 UI paths + `RegisterUiResource…VK` and the
+  `ENABLE_INTERNAL_UI_DOUBLE_BUFFERING` resource‑lifetime rule; the `WaitForPresentsVK` teardown flush
+  before context destroy; and the documented **mutex‑guard** list (the FG+SwapChain contexts are not
+  thread‑safe).
 - **Why `ffxDispatch` / `ffxQuery` return an error today — by design, not a defect.** Until the
   Frame Generation compute (classic optical‑flow + dilate **and** the 382 ML inference passes)
   **and** the present/pacing runtime are implemented *and* image‑quality‑validated against AMD
