@@ -39,6 +39,8 @@ DLL = next(
     ROOT / "dlls/amd_fidelityfx_framegeneration_dx12.dll",
 )
 EXPECTED_SHA = "e6843252f58b0341a0d80f6a20bc0d840643ee95bc48c22cac08745344577bb6"
+EXPECTED_MODEL_SIZE = 9437184  # 0x900000: the FG 4.0.2 ML model blob length (0xF00000..0x1800000 in the DLL)
+EXPECTED_MODEL_SHA = "6345f9ef4bbead6a942a7379d17caeaaf01d6142aa3dccae4695e56f68627dbe"
 PROVIDER_SO = ROOT / "build/linux/amd_fidelityfx_framegeneration_vk.so"
 EXEC_EXE = ROOT / "build/linux/framegeneration-exec"
 FFX_EXPORTS = {"ffxCreateContext", "ffxDestroyContext", "ffxConfigure", "ffxQuery", "ffxDispatch"}
@@ -464,12 +466,73 @@ def test_layout_census_analyzer():
         raise AssertionError("expected 3 distinct descriptor slots, got " + str(census["binding_slots"]))
 
 
+def test_mlfi_graph_chain_matches_pack():
+    # The Frame Generation reverse-engineering report (`mlfi-graph.json`, produced from the pinned
+    # DLL) must agree, shader-for-shader and byte-for-byte, with the SHIPPED pack (modules.tsv) and
+    # with the extracted model blob -- a three-way identity gate: DLL-RE artifact <-> pack <-> model
+    # bytes -- and the cooperative-matrix count it carries must equal the SPIR-V census (156). This
+    # grounds the 191+191 ML chain and its per-pass shader identity WITHOUT asserting any execution
+    # order or enabling dispatch. GPU-free (reads only generated pack files); self-skips when the
+    # pack/graph has not been produced on this checkout.
+    graph_path = PACK / "mlfi-graph.json"
+    modules_path = PACK / "modules.tsv"
+    if not (graph_path.is_file() and modules_path.is_file()):
+        print("SKIP mlfi-chain: FG graph/pack not generated")
+        return
+    graph = json.loads(graph_path.read_text())
+    chains = graph.get("chains") or {}
+    if sorted(chains) != ["4k", "8k"]:
+        raise AssertionError(f"ML chains != 4k/8k: {sorted(chains)}")
+    for tier, passes in chains.items():
+        if len(passes) != 191:
+            raise AssertionError(f"{tier} chain is not a complete 191-pass sequence: {len(passes)}")
+    # modules.tsv: name stage entry w0,w1,w2 spirv_sha256 -- index the neural (mlfi) entries.
+    pack_by_entry = {}
+    for ln in modules_path.read_text().splitlines()[1:]:
+        c = ln.split("\t")
+        if len(c) >= 5 and c[1] == "compute-neural":
+            pack_by_entry[c[2]] = (c[0], c[4])
+    if len(pack_by_entry) != 382:
+        raise AssertionError(f"pack neural entries != 382: {len(pack_by_entry)}")
+    coop_entries = set()
+    for tier in ("4k", "8k"):
+        for index, e in enumerate(chains[tier]):
+            expected_entry = "mlfi_%s_pass%d" % (tier, index)
+            entry = e.get("entry")
+            if entry != expected_entry:
+                raise AssertionError(f"{tier}[{index}] entry != {expected_entry} (got {entry})")
+            packrow = pack_by_entry.get(entry)
+            if packrow is None:
+                raise AssertionError(f"graph pass {entry} has no matching pack neural module")
+            if e.get("module") != packrow[0]:
+                raise AssertionError(
+                    f"module-hash drift for {entry}: graph {e.get('module')} vs pack {packrow[0]}")
+            if e.get("spirv_sha256") != packrow[1]:
+                raise AssertionError(f"SPIR-V digest drift for {entry}: {entry}")
+            if e.get("cooperative_matrix"):
+                coop_entries.add(entry)
+    if len(coop_entries) != 156:
+        raise AssertionError(f"graph cooperative-matrix modules != 156: {len(coop_entries)}")
+    model = graph.get("model") or {}
+    if model.get("size") != EXPECTED_MODEL_SIZE:
+        raise AssertionError(f"model size {model.get('size')} != {EXPECTED_MODEL_SIZE}")
+    if model.get("sha256") != EXPECTED_MODEL_SHA:
+        raise AssertionError("graph model sha256 != the pinned FG 4.0.2 model identity")
+    model_bytes = PACK / "mlfi-model.bin"
+    if model_bytes.is_file():
+        raw = model_bytes.read_bytes()
+        if (len(raw) != EXPECTED_MODEL_SIZE or
+                hashlib.sha256(raw).hexdigest() != EXPECTED_MODEL_SHA):
+            raise AssertionError("on-disk mlfi-model.bin != the DLL-extracted model blob (identity)")
+
+
 def main():
     failures = []
     for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
                  test_dedup_and_census, test_abi_exports, test_pipeline_cache_namespace_isolation,
                  test_pack_manifest_shape, test_framegeneration_exec_selftest,
-                 test_descriptor_slot_resolver, test_layout_census_analyzer):
+                 test_descriptor_slot_resolver, test_layout_census_analyzer,
+                 test_mlfi_graph_chain_matches_pack):
         name = test.__name__
         try:
             test()

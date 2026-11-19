@@ -232,7 +232,11 @@ The build itself verifies every embedded asset payload and alias. On top of that
   (the INT8 → FP8 ladder + every device-class spelling + RDNA2 identity edges),
   `descriptor-smoke-transports-byte-identical` (conventional descriptor-set ↔ `VK_EXT_descriptor_buffer`
   byte-identity through the real shaders), `frame-generation-validators`
-  (`tools/validate/frame-generation/tests.py`: FG ABI + honest refusal),
+  (`tools/validate/frame-generation/tests.py`: FG ABI, honest refusal, the DLL-inventory dedup + stage census, the pipeline-cache namespace
+    isolation, and the FG model/graph/pipelines three-way identity gate — `test_mlfi_graph_chain_matches_pack`
+    proves the 4k+8k 191-pass ML chains' per-pass shader identity (module hash + SPIR-V digest) matches
+    the shipped `modules.tsv`, that the graph's cooperative-matrix count equals the SPIR-V census (156),
+    and that the 9,437,184-byte `mlfi-model.bin` bytes hash to the DLL-extracted model SHA — all GPU-free),
   `framegeneration-check-order-camera` (`framegeneration-check-test`: the GPU-free
   Frame Generation mandatory-order + camera-info + create/generate predicates), and
   `framegeneration-compile-parity-474` (`framegeneration-exec --compile-pack
