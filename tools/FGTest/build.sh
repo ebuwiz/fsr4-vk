@@ -15,7 +15,7 @@ g++ -std=c++20 -Wall -o "$BUILD/FGTest" "$HERE/main.cpp" \
     -I"$REPO/third_party/fidelityfx-api/framegeneration/include" \
     -I"$REPO/third_party/fidelityfx-api/upscalers/include" \
     -I"$REPO/third_party/Vulkan-Headers/include" \
-    -lvulkan -ldl
+    -lvulkan -ldl -lglfw
 echo "built $BUILD/FGTest"
 
 # 3) run headless against the built providers (pass their real paths); frames land in $BUILD
@@ -27,3 +27,16 @@ export FSR4_VK_ASSET_ROOT="$REPO/assets/pack-unified"
     "$REPO/build/linux/amd_fidelityfx_upscaler_vk.so" \
     "$REPO/build/linux/amd_fidelityfx_framegeneration_vk.so" \
     "$BUILD/triangle.vert.spv" "$BUILD/triangle.frag.spv"
+
+# To SEE it in a real window (Wayland/X11) instead of offscreen PPMs, run with --window [SECONDS]:
+#   "$BUILD/FGTest" <upscaler.so> <framegeneration.so> <vert.spv> <frag.spv> --window=15
+# It opens a 960x540 animated-triangle window and logs one line per presented frame:
+#   frame N: present=base(WxH) t=..s  interpolated=0 generated=0  [FG: REFUSED]
+# (interpolated/generated are 0 because AMD's provider refuses FG generate here and the FSR pixel-dispatch
+#  is not hand-run; the window shows the NATIVE animated host. Nothing is faked.)
+if [ "${FGTEST_WINDOW:-0}" = "1" ]; then
+    "$BUILD/FGTest" \
+        "$REPO/build/linux/amd_fidelityfx_upscaler_vk.so" \
+        "$REPO/build/linux/amd_fidelityfx_framegeneration_vk.so" \
+        "$BUILD/triangle.vert.spv" "$BUILD/triangle.frag.spv" --window="${FGTEST_SECONDS:-15}"
+fi

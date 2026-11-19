@@ -14,6 +14,29 @@ Requires the repo's built providers (`build/linux/amd_fidelityfx_{upscaler,frame
 `glslc`, `g++` (C++20), libvulkan, and a Vulkan device. Shaders (triangle.vert/frag) are compiled to SPIR‑V
 by `build.sh`. PPM frames land in `tools/FGTest/build/`.
 
+## Visible window (Wayland/X11) — optional
+
+FGTest is headless by default. To actually WATCH the moving triangle in a window,
+add `--window` (optionally a duration). It links GLFW (`-lglfw`) and presents
+the SAME renderer through core Vulkan WSI (GLFW window surface → swapchain →
+present), logging one line per presented base frame:
+
+```sh
+# after `bash tools/FGTest/build.sh` has produced the .so's + triangle.*.spv:
+FSR4_VK_ASSET_ROOT=assets/pack-unified \
+DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/1000 \
+build/FGTest "$REPO/build/linux/amd_fidelityfx_upscaler_vk.so" \
+         "$REPO/build/linux/amd_fidelityfx_framegeneration_vk.so" \
+         build/triangle.vert.spv build/triangle.frag.spv --window=10
+```
+
+Each frame prints `frame N: present=base(WxH) t=..s interpolated=0 generated=0 [FG: REFUSED]`.
+`interpolated`/`generated` stay 0 because AMD's provider refuses FG `generate` here (it
+will not fake frames) and the FSR pixel-dispatch is not hand-run; the window shows the
+NATIVE animated host at the compositor's frame rate. If the machine's Vulkan loader does
+not expose a window surface (e.g. headless CI) it prints `NO_SURFACE` and exits cleanly
+rather than fabricating anything.
+
 ## What it demonstrates (measured on AMD Radeon RX 9070 XT / Mesa RADV GFX1201)
 
 - **Moving triangle host: RUNS.** 6/6 offscreen frames render non‑black and differ (rotation + translation)

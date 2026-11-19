@@ -36,6 +36,15 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include <chrono>
+#include <thread>
+
+// GLFW is used ONLY by the optional --window present mode. It is included after
+// <vulkan/vulkan.h> (GLFW_INCLUDE_VULKAN makes GLFW reuse that header rather than
+// pull in its own); the pinned Vulkan-Headers here already define VkSurfaceKHR and
+// the swapchain/present core symbols, so this compiles on this host.
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
 
 static constexpr uint32_t kWidth = 480;
 static constexpr uint32_t kHeight = 270;
@@ -96,6 +105,16 @@ struct VkApp {
     VkPipelineLayout pipeLayout{VK_NULL_HANDLE};
     VkPipeline pipeline{VK_NULL_HANDLE};
     VkCommandPool cmdPool{VK_NULL_HANDLE};
+    // --- present (--window) members; unused in the headless path ---
+    VkSurfaceKHR surface{VK_NULL_HANDLE};
+    VkSwapchainKHR swap{VK_NULL_HANDLE};
+    VkFormat presentFmt{VK_FORMAT_B8G8R8A8_UNORM};
+    VkExtent2D surfExtent{};
+    VkPipeline presentPipeline{VK_NULL_HANDLE};
+    std::vector<VkImage> scColor, scDepth;
+    std::vector<VkImageView> scColorView, scDepthView;
+    std::vector<VkDeviceMemory> scDepthMem;
+    uint32_t imageCount{0};
     uint32_t memTypeCoherent(uint32_t bits, VkMemoryPropertyFlags props);
 };
 static uint32_t memIndex(VkApp& a, uint32_t bits, VkMemoryPropertyFlags props) {
@@ -176,11 +195,19 @@ static bool hasExt(VkPhysicalDevice p, const char* name) {
     for (auto& e : t) if (!std::strcmp(e.extensionName, name)) return true;
     return false;
 }
-static bool initVulkan(VkApp& a) {
+static bool initVulkan(VkApp& a, bool windowMode) {
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO, nullptr, "FGTest", 0, "FGTest", 0,
                           VK_MAKE_API_VERSION(0, 4, 0, 2)};
     VkInstanceCreateInfo ii{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ii.pApplicationInfo = &app;
+    std::vector<const char*> instExts;
+    if (windowMode) {
+        uint32_t n = 0;
+        const char** g = glfwGetRequiredInstanceExtensions(&n);
+        if (g) instExts.assign(g, g + n);  // window-surface ext GLFW needs at instance level
+    }
+    ii.enabledExtensionCount = (uint32_t)instExts.size();
+    ii.ppEnabledExtensionNames = instExts.empty() ? nullptr : instExts.data();
     if (vkCreateInstance(&ii, nullptr, &a.instance) != VK_SUCCESS) return false;
     uint32_t pc = 0; vkEnumeratePhysicalDevices(a.instance, &pc, nullptr);
     std::vector<VkPhysicalDevice> ps(pc);
@@ -323,9 +350,9 @@ static void setupDescriptors(VkApp& a) {
         vkUpdateDescriptorSets(a.device, 1, &w, 0, nullptr);
     }
 }
-static void setupPipeline(VkApp& a, VkShaderModule vs, VkShaderModule fs) {
+static void setupPipeline(VkApp& a, VkShaderModule vs, VkShaderModule fs, VkFormat cfmt, VkPipeline& outPipe) {
     VkPipelineLayoutCreateInfo li{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &a.setLayout};
-    vkCreatePipelineLayout(a.device, &li, nullptr, &a.pipeLayout);
+    if (!a.pipeLayout) vkCreatePipelineLayout(a.device, &li, nullptr, &a.pipeLayout);
     VkVertexInputBindingDescription vb{.binding = 0, .stride = sizeof(float) * 6, .inputRate = VK_VERTEX_INPUT_RATE_VERTEX};
     VkVertexInputAttributeDescription va[2] = {
         {.location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = 0},
@@ -352,12 +379,12 @@ static void setupPipeline(VkApp& a, VkShaderModule vs, VkShaderModule fs) {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vs, "main", nullptr},
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fs, "main", nullptr}};
     VkPipelineRenderingCreateInfo rr{.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .colorAttachmentCount = 1,
-        .pColorAttachmentFormats = &a.colorFmt, .depthAttachmentFormat = a.depthFmt};
+        .pColorAttachmentFormats = &cfmt, .depthAttachmentFormat = a.depthFmt};
     VkGraphicsPipelineCreateInfo gci{.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &rr, .stageCount = 2,
         .pStages = st, .pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vp,
         .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cb, .pDynamicState = &ds,
         .layout = a.pipeLayout};
-    vkCreateGraphicsPipelines(a.device, VK_NULL_HANDLE, 1, &gci, nullptr, &a.pipeline);
+    vkCreateGraphicsPipelines(a.device, VK_NULL_HANDLE, 1, &gci, nullptr, &outPipe);
     vkDestroyShaderModule(a.device, vs, nullptr);
     vkDestroyShaderModule(a.device, fs, nullptr);
 }
@@ -567,31 +594,50 @@ static void driveFrameGeneration(Provider& p, VkApp& a) {
     }
 }
 
+// ============================================================================
+// OPTIONAL VISIBLE WINDOW (--window): presents the SAME animated-triangle host
+// to a real Wayland/X11 window through core Vulkan WSI (GLFW window surface ->
+// VkSurfaceKHR -> swapchain -> present). HONEST about Frame Generation: AMD's
+// provider refuses ffxDispatch(generate) here (RUNTIME_ERROR, "refusing to fake
+// frame generation") and the FSR pixel-dispatch is not hand-rolled, so NO
+// interpolated/generated frames are fabricated. The log reports the real base
+// present plus interpolated=0 / generated=0 with the refusal reason.
+static uint32_t findDeviceMemoryType(VkApp& a, VkMemoryRequirements req, VkMemoryPropertyFlags want) {
+    VkPhysicalDeviceMemoryProperties mp{};
+    vkGetPhysicalDeviceMemoryProperties(a.physical, &mp);
+    for (uint32_t i = 0; i < mp.memoryTypeCount; ++i)
+        if ((req.memoryTypeBits & (1u << i)) &&
+            (mp.memoryTypes[i].propertyFlags & want) == want) return i;
+    return 0xFFFFFFFFu;
+}
+static void runPresent(VkApp& a, VkShaderModule vs, VkShaderModule fs, int seconds, GLFWwindow* w);
+
 int main(int argc, char** argv) {
+    bool windowMode = false; int windowSec = 10;
+    std::vector<std::string> pos;
+    for (int i = 1; i < argc; ++i) {
+        std::string s = argv[i];
+        if (s == "--window") { windowMode = true; continue; }
+        if (s.rfind("--window=", 0) == 0) { windowMode = true; windowSec = std::stoi(s.substr(9)); continue; }
+        pos.push_back(s);
+    }
     const char* env = std::getenv("FSR4_FGTEST_OUTDIR");
     std::string outDir = env ? env : ".";
-    std::string upSo = argc > 1 ? argv[1] : (outDir + "/amd_fidelityfx_upscaler_vk.so");
-    std::string fgSo = argc > 2 ? argv[2] : (outDir + "/amd_fidelityfx_framegeneration_vk.so");
-    std::string vertSpv = argc > 3 ? argv[3] : (outDir + "/triangle.vert.spv");
-    std::string fragSpv = argc > 4 ? argv[4] : (outDir + "/triangle.frag.spv");
+    auto P = [&](size_t k, const std::string& d) { return pos.size() > k ? pos[k] : d; };
+    std::string upSo    = P(0, outDir + "/amd_fidelityfx_upscaler_vk.so");
+    std::string fgSo    = P(1, outDir + "/amd_fidelityfx_framegeneration_vk.so");
+    std::string vertSpv = P(2, outDir + "/triangle.vert.spv");
+    std::string fragSpv = P(3, outDir + "/triangle.frag.spv");
 
-    VkApp a;
-    if (!initVulkan(a)) { std::printf("NO_DEVICE: could not create a Vulkan device\n"); return 77; }
-    VkShaderModule vs = mkShader(a, vertSpv), fs = mkShader(a, fragSpv);
-    if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE) { std::printf("NO_SHADERS: SPIR-V missing (run build.sh)\n"); return 2; }
-    setupGeom(a); setupUbo(a); setupDescriptors(a); setupPipeline(a, vs, fs);
-
-    std::printf("=== MOVING TRIANGLE: rendering %u offscreen frames (%ux%u) ===\n", kFrames, kWidth, kHeight);
-    std::vector<unsigned char> host;
-    int written = 0;
-    for (uint32_t f = 0; f < kFrames; ++f) {
-        renderFrame(a, f, host);
-        bool nonblack = false;
-        for (size_t i = 0; i + 2 < host.size(); i += 4)
-            if (host[i] || host[i + 1] || host[i + 2]) { nonblack = true; break; }
-        if (nonblack) { writePPM(outDir + "/frame_" + std::to_string(f) + ".ppm", kWidth, kHeight, host.data()); ++written; }
+    if (windowMode) {
+        if (!glfwInit()) { std::printf("NO_WINDOW: glfwInit failed (no Wayland/X11 compositor?)\n"); return 77; }
+        if (!glfwVulkanSupported()) { std::printf("NO_WINDOW: GLFW has no Vulkan support\n"); glfwTerminate(); return 77; }
     }
-    std::printf("  frames rendered non-black: %d/%u (moving triangle drawn offscreen)\n", written, kFrames);
+    VkApp a;
+    if (!initVulkan(a, windowMode)) { std::printf("NO_DEVICE: could not create a Vulkan device\n"); if (windowMode) glfwTerminate(); return 77; }
+    VkShaderModule vs = mkShader(a, vertSpv), fs = mkShader(a, fragSpv);
+    if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE) { std::printf("NO_SHADERS: SPIR-V missing (run build.sh)\n"); if (windowMode) glfwTerminate(); return 2; }
+    setupGeom(a); setupUbo(a); setupDescriptors(a); setupPipeline(a, vs, fs, a.colorFmt, a.pipeline);
 
     Provider up, fg;
     if (loadProvider(up, upSo)) driveUpscaler(up, a);
@@ -599,10 +645,157 @@ int main(int argc, char** argv) {
     if (loadProvider(fg, fgSo)) driveFrameGeneration(fg, a);
     else std::printf("\n  frame-generation provider .so not loaded: %s\n", fgSo.c_str());
 
-    std::printf("\n=== RESULT ===\n  triangle host render: %s | FSR upscaler + FG: driven via the real FFX API (see codes)\n",
-                written > 0 ? "RUN" : "NO-FRAME");
+    int written = 0;
+    if (windowMode) {
+        std::printf("\n=== MOVING TRIANGLE: opening a VISIBLE window (%ux%u) for %d s ===\n", kWidth, kHeight, windowSec);
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+        GLFWwindow* win = glfwCreateWindow(960, 540, "fsr4-vk: FSR/FG animated host", nullptr, nullptr);
+        if (!win) { std::printf("NO_WINDOW: glfwCreateWindow failed (Wayland/X11?)\n"); glfwTerminate(); return 77; }
+        runPresent(a, vs, fs, windowSec, win);
+        glfwDestroyWindow(win); glfwTerminate();
+        written = 1;  // the graphics host ran (presented to a real window)
+    } else {
+        std::printf("=== MOVING TRIANGLE: rendering %u offscreen frames (%ux%u) ===\n", kFrames, kWidth, kHeight);
+        std::vector<unsigned char> host;
+        for (uint32_t f = 0; f < kFrames; ++f) {
+            renderFrame(a, f, host);
+            bool nonblack = false;
+            for (size_t i = 0; i + 2 < host.size(); i += 4)
+                if (host[i] || host[i + 1] || host[i + 2]) { nonblack = true; break; }
+            if (nonblack) { writePPM(outDir + "/frame_" + std::to_string(f) + ".ppm", kWidth, kHeight, host.data()); ++written; }
+        }
+        std::printf("  frames rendered non-black: %d/%u (moving triangle drawn offscreen)\n", written, kFrames);
+    }
+    std::printf("\n=== RESULT ===\n  triangle host render: %s | FSR upscaler + FG: driven via the real FFX API (see codes)%s\n",
+                written > 0 ? "RUN" : "NO-FRAME", windowMode ? "  [windowed present]" : "");
     return 0;
 }
+
+static void runPresent(VkApp& a, VkShaderModule vs, VkShaderModule fs, int seconds, GLFWwindow* w) {
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+    if (glfwCreateWindowSurface(a.instance, w, nullptr, &surface) != VK_SUCCESS || !surface) {
+        std::printf("NO_SURFACE: glfwCreateWindowSurface failed (no Wayland/X11 WSI?)\n"); return; }
+    a.surface = surface;
+    VkSurfaceCapabilitiesKHR cap{};
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(a.physical, surface, &cap) != VK_SUCCESS || !cap.supportedUsageFlags) {
+        std::printf("NO_CAPS: surface unsupported\n"); return; }
+    VkExtent2D ext = cap.currentExtent;
+    if (ext.width == 0xFFFFFFFFu) { ext.width = 960; ext.height = 540; }
+    if (ext.width > cap.maxImageExtent.width) ext.width = cap.maxImageExtent.width;
+    if (ext.height > cap.maxImageExtent.height) ext.height = cap.maxImageExtent.height;
+    a.surfExtent = ext;
+    uint32_t nf = 0; vkGetPhysicalDeviceSurfaceFormatsKHR(a.physical, surface, &nf, nullptr);
+    std::vector<VkSurfaceFormatKHR> fmts(nf);
+    if (nf) vkGetPhysicalDeviceSurfaceFormatsKHR(a.physical, surface, &nf, fmts.data());
+    VkSurfaceFormatKHR sf{VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+    if (nf == 1 && fmts[0].format == VK_FORMAT_UNDEFINED) sf = fmts[0];
+    else if (nf) sf = fmts[0];
+    a.presentFmt = sf.format;
+    uint32_t icount = cap.minImageCount < 2u ? 2u : cap.minImageCount; if (icount > 3u) icount = 3u;
+    a.imageCount = icount;
+    VkSwapchainCreateInfoKHR sci{}; sci.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    sci.surface = surface; sci.minImageCount = icount; sci.imageFormat = sf.format; sci.imageColorSpace = sf.colorSpace;
+    sci.imageExtent = ext; sci.imageArrayLayers = 1; sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    sci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR; sci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    sci.clipped = VK_TRUE; sci.oldSwapchain = VK_NULL_HANDLE;
+    if (vkCreateSwapchainKHR(a.device, &sci, nullptr, &a.swap) != VK_SUCCESS || !a.swap) {
+        std::printf("NO_SWAPCHAIN: vkCreateSwapchainKHR failed\n"); return; }
+    uint32_t nn = 0; vkGetSwapchainImagesKHR(a.device, a.swap, &nn, nullptr);
+    std::vector<VkImage> imgs(nn); if (nn) vkGetSwapchainImagesKHR(a.device, a.swap, &nn, imgs.data());
+    a.scColor = imgs; a.scColorView.resize(nn); a.scDepth.resize(nn); a.scDepthView.resize(nn); a.scDepthMem.resize(nn);
+    for (uint32_t i = 0; i < nn; ++i) {
+        VkImageViewCreateInfo ci{}; ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO; ci.image = imgs[i];
+        ci.viewType = VK_IMAGE_VIEW_TYPE_2D; ci.format = sf.format; ci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCreateImageView(a.device, &ci, nullptr, &a.scColorView[i]);
+        VkImageCreateInfo di{}; di.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO; di.imageType = VK_IMAGE_TYPE_2D;
+        di.format = VK_FORMAT_D32_SFLOAT; di.extent = {ext.width, ext.height, 1}; di.mipLevels = 1; di.arrayLayers = 1;
+        di.samples = VK_SAMPLE_COUNT_1_BIT; di.usage = VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        di.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        vkCreateImage(a.device, &di, nullptr, &a.scDepth[i]);
+        VkMemoryRequirements mr{}; vkGetImageMemoryRequirements(a.device, a.scDepth[i], &mr);
+        uint32_t mi = findDeviceMemoryType(a, mr, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, mr.size, mi};
+        vkAllocateMemory(a.device, &ai, nullptr, &a.scDepthMem[i]);
+        vkBindImageMemory(a.device, a.scDepth[i], a.scDepthMem[i], 0);
+        VkImageViewCreateInfo dv{}; dv.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO; dv.image = a.scDepth[i];
+        dv.viewType = VK_IMAGE_VIEW_TYPE_2D; dv.format = VK_FORMAT_D32_SFLOAT; dv.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+        vkCreateImageView(a.device, &dv, nullptr, &a.scDepthView[i]);
+    }
+    setupPipeline(a, vs, fs, a.presentFmt, a.presentPipeline);
+    if (!a.presentPipeline) { std::printf("NO_PRESENT_PIPELINE\n"); return; }
+    std::vector<VkFence> fences(nn, VK_NULL_HANDLE);
+    for (uint32_t i = 0; i < nn; ++i) { VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, VK_FENCE_CREATE_SIGNALED_BIT}; vkCreateFence(a.device, &fi, nullptr, &fences[i]); }
+    VkPhysicalDeviceProperties p{}; vkGetPhysicalDeviceProperties(a.physical, &p);
+    std::printf("\n=== WINDOWED PRESENT (--window): FSR + FG animated host ===\n");
+    std::printf("  device: %s | surface %ux%u fmt=%d present=FIFO swapchain=%u\n", p.deviceName, ext.width, ext.height, (int)sf.format, nn);
+    std::printf("  NOTE: FG generate = RUNTIME_ERROR (refuses to fake frames) and FSR pixel-dispatch not hand-run\n");
+    std::printf("        here -> interpolated=0 generated=0; the window shows the NATIVE animated host.\n");
+    auto t0 = std::chrono::steady_clock::now();
+    uint32_t frame = 0;
+    while (true) {
+        auto now = std::chrono::steady_clock::now();
+        double el = std::chrono::duration<double>(now - t0).count();
+        if (el >= (double)seconds) break;
+        glfwPollEvents();
+        uint32_t i = 0; VkSemaphore acq{VK_NULL_HANDLE};
+        VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        vkCreateSemaphore(a.device, &si, nullptr, &acq);
+        vkAcquireNextImageKHR(a.device, a.swap, UINT64_MAX, acq, VK_NULL_HANDLE, &i);
+        uint32_t cyc = i % kFrames;
+        float phase = (float)el * 2.0f;
+        Mat4 model = mul(translate(0.55f * std::sinf(phase), 0.25f * std::cosf(phase * 0.8f), 0.0f), rotateZ(phase * 0.7f));
+        Mat4 proj = ortho(-1.6f, 1.6f, -0.9f, 0.9f, -1.0f, 1.0f); Mat4 view; ShaderData d;
+        putMat(d.projection, proj); putMat(d.model, model); putMat(d.view, view);
+        std::memcpy(a.uboMap[cyc], &d, sizeof(d));
+        VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, a.cmdPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
+        VkCommandBuffer cc{VK_NULL_HANDLE}; vkAllocateCommandBuffers(a.device, &cai, &cc);
+        vkWaitForFences(a.device, 1, &fences[i], VK_TRUE, UINT64_MAX); vkResetFences(a.device, 1, &fences[i]);
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, 0, nullptr};
+        vkBeginCommandBuffer(cc, &bi);
+        VkClearValue cval; cval.color = {0.10f, 0.10f, 0.20f, 1.0f};
+        VkClearValue dval; dval.depthStencil = {1.0f, 0};
+        VkRenderingAttachmentInfo colorA{}; colorA.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO; colorA.imageView = a.scColorView[i];
+        colorA.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; colorA.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; colorA.storeOp = VK_ATTACHMENT_STORE_OP_STORE; colorA.clearValue = cval;
+        VkRenderingAttachmentInfo depthA{}; depthA.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO; depthA.imageView = a.scDepthView[i];
+        depthA.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL; depthA.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; depthA.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; depthA.clearValue = dval;
+        VkRenderingInfo ri{}; ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO; ri.renderArea = { {0, 0}, ext };
+        ri.layerCount = 1; ri.colorAttachmentCount = 1; ri.pColorAttachments = &colorA; ri.pDepthAttachment = &depthA;
+        vkCmdBeginRendering(cc, &ri);
+        VkViewport vpt{0.0f, 0.0f, (float)ext.width, (float)ext.height, 0.0f, 1.0f}; vkCmdSetViewport(cc, 0, 1, &vpt);
+        VkRect2D sc{ {0, 0}, ext }; vkCmdSetScissor(cc, 0, 1, &sc);
+        vkCmdBindDescriptorSets(cc, VK_PIPELINE_BIND_POINT_GRAPHICS, a.pipeLayout, 0, 1, &a.descSet[cyc], 0, nullptr);
+        vkCmdBindPipeline(cc, VK_PIPELINE_BIND_POINT_GRAPHICS, a.presentPipeline);
+        VkDeviceSize off[1] = {0}; vkCmdBindVertexBuffers(cc, 0, 1, &a.vertexBuf, off);
+        vkCmdBindIndexBuffer(cc, a.indexBuf, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cc, gIndexCount, 1, 0, 0, 0);
+        vkCmdEndRendering(cc);
+        vkEndCommandBuffer(cc);
+        VkSubmitInfo sub{}; sub.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO; sub.commandBufferCount = 1; sub.pCommandBuffers = &cc;
+        vkQueueSubmit(a.queue, 1, &sub, fences[i]);
+        VkPresentInfoKHR pi{}; pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR; pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &acq;
+        pi.swapchainCount = 1; pi.pSwapchains = &a.swap; pi.pImageIndices = &i;
+        vkQueuePresentKHR(a.queue, &pi);
+        vkDestroySemaphore(a.device, acq, nullptr);
+        vkFreeCommandBuffers(a.device, a.cmdPool, 1, &cc);
+        std::printf("  frame %4u: present=base(%ux%u) t=%.2fs  interpolated=0 generated=0  [FG: REFUSED]\n", frame, ext.width, ext.height, el);
+        ++frame;
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+    std::printf("\n  WINDOW SUMMARY: base frames presented=%u  interpolated inserted=0  generated=0\n", frame);
+    std::printf("    (FG generate refused on this device -> no real interpolated/generated frames; upscaler pixel-\n");
+    std::printf("     dispatch not hand-run here. All measured, never faked.)\n");
+    for (uint32_t i = 0; i < nn; ++i) {
+        vkDestroyFence(a.device, fences[i], nullptr);
+        vkDestroyImageView(a.device, a.scColorView[i], nullptr);
+        vkDestroyImageView(a.device, a.scDepthView[i], nullptr);
+        vkDestroyImage(a.device, a.scDepth[i], nullptr);
+        vkFreeMemory(a.device, a.scDepthMem[i], nullptr);
+    }
+    vkDestroySwapchainKHR(a.device, a.swap, nullptr); a.swap = VK_NULL_HANDLE;
+    vkDestroySurfaceKHR(a.instance, a.surface, nullptr); a.surface = VK_NULL_HANDLE;
+}
+
 
 
 
