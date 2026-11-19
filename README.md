@@ -339,6 +339,23 @@ The build itself verifies every embedded asset payload and alias. On top of that
   (for example one lacking `VK_KHR_cooperative_matrix`) is *skipped* by
   `framegeneration-probe` (exit 77) rather than failed — this reflects the feature's
   supported-hardware boundary, not a gap in the provider.
+- **Why `ffxDispatch` / `ffxQuery` return an error today — by design, not a defect.** Until the
+  Frame Generation compute (classic optical‑flow + dilate **and** the 382 ML inference passes)
+  **and** the present/pacing runtime are implemented *and* image‑quality‑validated against AMD
+  reference captures, the provider returns `FFX_API_RETURN_ERROR_RUNTIME_ERROR` (the GPU‑memory‑usage
+  query stays honest) instead of fabricating frames — so a perfectly‑wired host **still** sees an
+  error, which is the truthful result. The **API shape is already correct**: `ffxConfigure` requires the
+  app `swapChain` + `presentCallback` + `frameGenerationCallback` (enforced by
+  `ffgcheck::configureDescOk`) and `ffxDispatch(Frame Generation)` validates `numGeneratedFrames ∈ 1..3`
+  (enforced by `ffgcheck::generateDescOk`), with the present callback carrying
+  `isGeneratedFrame` / `currentBackBuffer` / `currentUI` / `outputSwapChainBuffer`. That is AMD's
+  **frame‑generation swapchain‑replacement** model: FG drives presentation + pacing on **its own two
+  CPU threads** and hands the app a per‑frame present callback — i.e. exactly the contract
+  Hookshot already uses against the AMD DLL, **not a different one**. So there is no separate API to
+  design for Hookshot; the unsolved work is the (large) present/pacing + interpolation runtime
+  **behind** that contract. **Ceiling:** this FG 4.0.2 API tops out at `outputs[4]` → **4×**
+  (≤3 interpolated frames, `frameID` advancing by exactly 1); "8×" is beyond FG 4.0.2 and is correctly
+  refused, not a hook we are missing. This is pinned by `test_sdk_framegeneration_api_contract`.
 - `bash tools/build/linux.sh` now ends by running `tools/build/check.sh`, a
   post-build validation gate in which every check asserts exit 0 (a red run is a
   real regression — invalid SPIR-V, a dropped asset payload, or a broken Frame

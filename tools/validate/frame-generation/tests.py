@@ -879,6 +879,33 @@ def test_sdk_present_swapchain_contract():
         raise AssertionError(f"SDK VK debug-pacing present programs < 2: {dbg}")
 
 
+def test_sdk_framegeneration_api_contract():
+    # Pin the public FG host-integration contract our provider is written against (the SAME shape Hookshot
+    # drives the AMD DLL with) from the vendored ffx_frame_generation.h: the present callback carries
+    # currentBackBuffer/currentUI/outputSwapChainBuffer + an isGeneratedFrame flag; ffxConfigure
+    # requires presentCallback (+ user ctx) AND frameGenerationCallback (+ user ctx) + the app swapChain;
+    # and the dispatch caps generation at outputs[4]/numGeneratedFrames -> AT MOST 4 presented frames
+    # (<=3 interpolated -> a 4x ceiling). This grounds roadmap "not-a-small-patch" reality: the API SHAPE
+    # is fixed + already mirrored by ffgcheck::configureDescOk / generateDescOk; what remains is the
+    # (large) present/pacing + interpolation runtime, NOT a different API. GPU-free; self-skips if absent.
+    hdr = ROOT / "third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h"
+    if not hdr.is_file():
+        print("SKIP sdk-api-contract: fidelityfx-api FG header not present")
+        return
+    t = hdr.read_text(errors="ignore")
+    for tok in ("struct FfxApiResource outputs[4];", "uint32_t              numGeneratedFrames;",
+                "FfxApiPresentCallbackFunc presentCallback;", "void* presentCallbackUserContext;",
+                "FfxApiFrameGenerationDispatchFunc frameGenerationCallback;", "void* frameGenerationCallbackUserContext;",
+                "struct FfxApiResource currentBackBuffer;", "struct FfxApiResource currentUI;",
+                "struct FfxApiResource outputSwapChainBuffer;", "bool isGeneratedFrame;"):
+        if tok not in t:
+            raise AssertionError(f"FG API contract token drifted in vendored header: {tok}")
+    # Our provider's own check must stay pinned to the 1..3 generated-frame range the header implies.
+    chk = ROOT / "src/framegeneration/framegeneration-checks.hpp"
+    if "numGeneratedFrames must be 1..3" not in chk.read_text(errors="ignore"):
+        raise AssertionError("provider generate check no longer pins the 1..3 generated-frame contract")
+
+
 def main():
     failures = []
     for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
@@ -892,7 +919,8 @@ def main():
                  test_sdk_opticalflow_binding_table,
                  test_sdk_shared_fsr3_fg_resources,
                  test_sdk_spd_inpainting_pyramid_setup,
-                 test_sdk_present_swapchain_contract):
+                 test_sdk_present_swapchain_contract,
+                 test_sdk_framegeneration_api_contract):
         name = test.__name__
         try:
             test()
