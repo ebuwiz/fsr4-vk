@@ -1235,6 +1235,39 @@ def test_stage_vk_dll_pins_reference_rig():
                 raise AssertionError(f"staged {name} missing or hash mismatch")
 
 
+def test_capture_ledger_unit_runs():
+    # The capture shim's Vulkan-free bookkeeping (capture-ledger.hpp) is unit-tested GPU-free: build + run
+    # capture-ledger-test.cpp (links NO Vulkan, NO assets lib) and assert it attributes each dispatch to the bound
+    # pipeline's SPIR-V file, IGNORES dispatches on an unbound command buffer / unregistered pipeline, keeps repeats,
+    # and marks indirect (empty-dims) dispatches -> '-' in the emitted TSV. Proves the shim core the on-device
+    # capture will rely on. Self-skips if the test source is absent.
+    src = ROOT / "tools/capture/frame-generation/capture-ledger-test.cpp"
+    if not src.is_file():
+        print("SKIP capture-ledger: source absent"); return
+    with tempfile.TemporaryDirectory() as td:
+        exe = Path(td) / "capture-ledger-test"
+        b = run(["g++", "-std=c++20", src, "-o", exe])
+        if b.returncode != 0:
+            raise AssertionError("capture-ledger-test build failed: " + (b.stdout + b.stderr))
+        r = run([exe])
+        if r.returncode != 0 or "capture-ledger unit OK" not in r.stdout:
+            raise AssertionError("capture-ledger unit did not pass: " + (r.stdout + r.stderr))
+
+
+def test_capture_shim_builds_against_vulkan_headers():
+    # The LD_PRELOAD capture shim (capture-shim.cpp) must COMPILE against the pinned Vulkan-Headers (the same
+    # fork the providers use, whose VkShaderModuleCreateInfo field is pCode). GPU-free compile check of the real
+    # entry-point wrappers (vkCreateShaderModule dumps SPIR-V; vkCreateComputePipelines links pipeline->module file;
+    # vkCmdBindPipeline + vkCmdDispatch/Base/Indirect record order). Self-skips if the shim or headers are absent.
+    shim = ROOT / "tools/capture/frame-generation/capture-shim.cpp"
+    vk = ROOT / "third_party/Vulkan-Headers/include"
+    if not (shim.is_file() and (vk / "vulkan" / "vulkan.h").is_file()):
+        print("SKIP capture-shim build: shim or Vulkan-Headers absent"); return
+    b = run(["g++", "-std=c++20", "-fsyntax-only", "-I", vk, shim])
+    if b.returncode != 0:
+        raise AssertionError("capture-shim does not compile: " + (b.stdout + b.stderr))
+
+
 def main():
     failures = []
     for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
@@ -1258,7 +1291,9 @@ def main():
                  test_sdk_fg_host_contract_enforcement,
                  test_vk_dll_shader_identity,
                  test_capture_diff_order_reader_roundtrip,
-                 test_stage_vk_dll_pins_reference_rig):
+                 test_stage_vk_dll_pins_reference_rig,
+                 test_capture_ledger_unit_runs,
+                 test_capture_shim_builds_against_vulkan_headers):
         name = test.__name__
         try:
             test()
