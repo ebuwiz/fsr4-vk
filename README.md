@@ -265,6 +265,16 @@ The build itself verifies every embedded asset payload and alias. On top of that
    does not meet the contract (e.g. one lacking `VK_KHR_cooperative_matrix`), so a provider routing/refusal
    drift fails the gate on a suitable AMD device while a device-less host stays green via exit 77.
    Measured on the AMD Radeon RX 9070 XT: every stage returned its documented code.
+  - `FG cooperative-dataflow boundary probe` (`tools/extract/frame-generation/dataflow.py`, run by
+    `check.sh` when the FG pack exists): a GPU-free audit over all 156 ML cooperative passes that
+    proves the resource SLOTS are statically visible (every coop pass declares weights @ `set 1`
+    StorageBuffer + activation @ `set 4` StorageBuffer + CBV @ `set 5` Uniform, at `binding 0`) while each
+    `OpCooperativeMatrixLoad/StoreKHR` operand pointer is a BINDLESS, dynamically computed buffer address.
+    So ZERO pass→pass dataflow edges — and hence the ML execution ORDER — are derivable from the shipped
+    SPIR-V alone. It pins `resolved=0`/`edges=0` as a drift gate: if a future pack/toolchain ever makes
+    the order statically derivable it FAILS loudly (then dispatch work could proceed); until then it is
+    EVIDENCE that `ffxDispatch` remains honestly refused pending the DLL's CPU-side descriptor writes plus
+    a DX12 reference capture — a measured boundary, not an oversight.
   The device-dependent entries auto-skip on exit code **77** — the tools' own "no suitable
   AMD device" signal — so `ctest` stays green on a GPU-less CI host instead of failing. Verified
   on the target device: **9/9 passed**.

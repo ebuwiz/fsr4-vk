@@ -1,0 +1,819 @@
+./src/diagnostics/logging.cpp:279:                           reinterpret_cast<LPCWSTR>(&ffxCreateContext),
+./src/provider/capture.cpp:684:                                    const ffxDispatchDescUpscale& d,
+./src/provider/provider.cpp:59:                           reinterpret_cast<LPCWSTR>(&ffxCreateContext),
+./src/provider/provider.cpp:135:                              ffxCreateContextDescHeader* header,
+./src/provider/provider.cpp:182:    const auto* create = reinterpret_cast<const ffxCreateContextDescUpscale*>(header);
+./src/provider/provider.cpp:386:ffxReturnCode_t configure(ffxContext* context, const ffxConfigureDescHeader* header) {
+./src/provider/provider.cpp:472:ffxReturnCode_t queryUpscale(ffxContext* context, ffxQueryDescHeader* header) {
+./src/provider/provider.cpp:475:        auto* query = reinterpret_cast<ffxQueryGetProviderVersion*>(header);
+./src/provider/provider.cpp:487:        auto* query = reinterpret_cast<ffxQueryDescUpscaleGetUpscaleRatioFromQualityMode*>(header);
+./src/provider/provider.cpp:499:            reinterpret_cast<ffxQueryDescUpscaleGetRenderResolutionFromQualityMode*>(header);
+./src/provider/provider.cpp:513:        auto* query = reinterpret_cast<ffxQueryDescUpscaleGetJitterPhaseCount*>(header);
+./src/provider/provider.cpp:524:        auto* query = reinterpret_cast<ffxQueryDescUpscaleGetJitterOffset*>(header);
+./src/provider/provider.cpp:536:        auto* query = reinterpret_cast<ffxQueryDescUpscaleGetResourceRequirements*>(header);
+./src/provider/provider.cpp:550:        auto* query = reinterpret_cast<ffxQueryDescUpscaleGetGPUMemoryUsage*>(header);
+./src/provider/provider.cpp:565:        auto* query = reinterpret_cast<ffxQueryDescUpscaleGetGPUMemoryUsageV2*>(header);
+./src/provider/provider.cpp:585:ffxReturnCode_t query(ffxContext* context, ffxQueryDescHeader* header) {
+./src/provider/provider.cpp:591:        auto* query = reinterpret_cast<ffxQueryDescGetVersions*>(header);
+./src/provider/provider.cpp:725:                                           const ffxDispatchDescUpscale& dispatch,
+./src/provider/provider.cpp:863:ffxReturnCode_t dispatch(ffxContext* context, const ffxDispatchDescHeader* header) {
+./src/provider/provider.cpp:876:    const auto& dispatch_description = *reinterpret_cast<const ffxDispatchDescUpscale*>(header);
+./src/provider/provider.cpp:1260:extern "C" FFX_API_ENTRY ffxReturnCode_t ffxCreateContext(ffxContext* context,
+./src/provider/provider.cpp:1261:                                                          ffxCreateContextDescHeader* header,
+./src/provider/provider.cpp:1267:ffxDestroyContext(ffxContext* context, const ffxAllocationCallbacks* callbacks) {
+./src/provider/provider.cpp:1271:extern "C" FFX_API_ENTRY ffxReturnCode_t ffxConfigure(ffxContext* context,
+./src/provider/provider.cpp:1272:                                                      const ffxConfigureDescHeader* header) {
+./src/provider/provider.cpp:1276:extern "C" FFX_API_ENTRY ffxReturnCode_t ffxQuery(ffxContext* context, ffxQueryDescHeader* header) {
+./src/provider/provider.cpp:1280:extern "C" FFX_API_ENTRY ffxReturnCode_t ffxDispatch(ffxContext* context,
+./src/provider/provider.cpp:1281:                                                     const ffxDispatchDescHeader* header) {
+./src/provider/provider.hpp:49:    ffxCreateContextDescHeader header;
+./src/provider/provider.hpp:63:    ffxCreateContextDescHeader header;
+./src/provider/provider.hpp:205:                                    const ffxDispatchDescUpscale& desc,
+./src/provider/provider.hpp:229:                              ffxCreateContextDescHeader* header,
+./src/provider/provider.hpp:232:ffxReturnCode_t configure(ffxContext* context, const ffxConfigureDescHeader* header);
+./src/provider/provider.hpp:233:ffxReturnCode_t query(ffxContext* context, ffxQueryDescHeader* header);
+./src/provider/provider.hpp:234:ffxReturnCode_t dispatch(ffxContext* context, const ffxDispatchDescHeader* header);
+./src/provider/upscaler-checks.hpp:35:// frameTimeDelta come from ffxDispatchDescUpscale. Returns exactly the warnings
+./src/provider/upscaler-queries.hpp:8:// pure functions a host calls through ffxQuery before dispatch: quality -> ratio,
+./src/provider/upscaler-queries.hpp:82:// The upscaler provider's OWN GPU memory usage (ffxQueryDescUpscaleGetGPUmemoryUsage{,V2}).
+./src/framegeneration/framegeneration.hpp:11:// (ffxCreateContext/DestroyContext/Configure/Query/Dispatch), verified against the
+./src/framegeneration/framegeneration.hpp:48:// host's ffxCreateContext(ffxCreateContextDescFrameGeneration) (type 0x00020001)
+./src/framegeneration/framegeneration.hpp:78:// The Vulkan backend block a host attaches to ffxCreateContext. The field layout
+./src/framegeneration/provider.cpp:17:// implemented or image-quality-validated, so ffxDispatch refuses with a precise
+./src/framegeneration/provider.cpp:29:// device, measured checked=474 missing=0 mismatch=0). ffxDispatch(Prepare|Frame
+./src/framegeneration/provider.cpp:64:    bool frameGenerationEnabled = true;   // from ffxConfigureDescFrameGeneration
+./src/framegeneration/provider.cpp:65:    bool allowAsyncWorkloads = false;     // from ffxConfigureDescFrameGeneration
+./src/framegeneration/provider.cpp:67:    // The host-integration contract captured at ffxConfigure (ffxConfigureDescFrameGeneration):
+./src/framegeneration/provider.cpp:226:ffxReturnCode_t createContext(ffxContext* context, ffxCreateContextDescHeader* header,
+./src/framegeneration/provider.cpp:241:    // The create descriptor is the SDK's ffxCreateContextDescFrameGeneration, so validate
+./src/framegeneration/provider.cpp:244:    if (!ffgcheck::createDescOk(reinterpret_cast<const ffxCreateContextDescFrameGeneration*>(
+./src/framegeneration/provider.cpp:247:        logLine("create refused: invalid ffxCreateContextDescFrameGeneration arguments");
+./src/framegeneration/provider.cpp:265:    const ffxCreateContextDescFrameGenerationHudless* hudless = nullptr;
+./src/framegeneration/provider.cpp:268:            hudless = reinterpret_cast<const ffxCreateContextDescFrameGenerationHudless*>(cur);
+./src/framegeneration/provider.cpp:314:            reinterpret_cast<const ffxCreateContextDescFrameGeneration*>(header);
+./src/framegeneration/provider.cpp:374:                          const ffxConfigureDescHeader* header) {
+./src/framegeneration/provider.cpp:382:    // (ffxConfigureDescFrameGeneration, type 0x00020002) carries the swap-chain, the
+./src/framegeneration/provider.cpp:393:                reinterpret_cast<const ffxConfigureDescFrameGeneration*>(current);
+./src/framegeneration/provider.cpp:422:                reinterpret_cast<const ffxConfigureDescFrameGenerationRegisterDistortionFieldResource*>(
+./src/framegeneration/provider.cpp:442:ffxReturnCode_t query(ffxContext* context, ffxQueryDescHeader* header) {
+./src/framegeneration/provider.cpp:448:            auto* version = reinterpret_cast<ffxQueryGetProviderVersion*>(current);
+./src/framegeneration/provider.cpp:458:            auto* versions = reinterpret_cast<ffxQueryDescGetVersions*>(current);
+./src/framegeneration/provider.cpp:478:            // The SDK exposes GPU memory usage for this effect (ffxQueryDescFrameGenerationGetGPUMemoryUsage,
+./src/framegeneration/provider.cpp:491:ffxReturnCode_t dispatch(ffxContext* context, const ffxDispatchDescHeader* header) {
+./src/framegeneration/provider.cpp:497:    // ffxDispatchDescFrameGenerationPrepare (type 0x00020004). Validate the SDK's own
+./src/framegeneration/provider.cpp:504:            reinterpret_cast<const ffxDispatchDescFrameGenerationPrepare*>(header);
+./src/framegeneration/provider.cpp:537:    // ffxDispatchDescFrameGeneration (type 0x00020003). Validate 1..3 generated frames
+./src/framegeneration/provider.cpp:542:            reinterpret_cast<const ffxDispatchDescFrameGeneration*>(header);
+./src/framegeneration/provider.cpp:568:extern "C" FFX_API_ENTRY ffxReturnCode_t ffxCreateContext(ffxContext* context,
+./src/framegeneration/provider.cpp:569:                                                          ffxCreateContextDescHeader* header,
+./src/framegeneration/provider.cpp:575:ffxDestroyContext(ffxContext* context, const ffxAllocationCallbacks* callbacks) {
+./src/framegeneration/provider.cpp:579:extern "C" FFX_API_ENTRY ffxReturnCode_t ffxConfigure(ffxContext* context,
+./src/framegeneration/provider.cpp:580:                                                      const ffxConfigureDescHeader* header) {
+./src/framegeneration/provider.cpp:584:extern "C" FFX_API_ENTRY ffxReturnCode_t ffxQuery(ffxContext* context,
+./src/framegeneration/provider.cpp:585:                                                  ffxQueryDescHeader* header) {
+./src/framegeneration/provider.cpp:589:extern "C" FFX_API_ENTRY ffxReturnCode_t ffxDispatch(ffxContext* context,
+./src/framegeneration/provider.cpp:590:                                                     const ffxDispatchDescHeader* header) {
+./src/framegeneration/framegeneration-checks.hpp:60:bool cameraBasisOk(const ffxDispatchDescFrameGenerationPrepareCameraInfo* cam,
+./src/framegeneration/framegeneration-checks.hpp:88:Verdict createDescOk(const ffxCreateContextDescFrameGeneration* d) {
+./src/framegeneration/framegeneration-checks.hpp:114:Verdict prepareDescOk(const ffxDispatchDescFrameGenerationPrepare* p,
+./src/framegeneration/framegeneration-checks.hpp:148:Verdict generateDescOk(const ffxDispatchDescFrameGeneration* g) {
+./src/framegeneration/framegeneration-checks.hpp:165:// The SDK's Frame Generation host-integration contract (ffxConfigureDescFrameGeneration,
+./src/framegeneration/framegeneration-checks.hpp:172:Verdict configureDescOk(const ffxConfigureDescFrameGeneration* c) {
+./src/framegeneration/framegeneration-checks.hpp:201:        note(v, "Dispatch(Prepare) requires a preceding ffxConfigure(ffxConfigureDescFrameGeneration)");
+./src/framegeneration/framegeneration-checks.hpp:208:        note(v, "Dispatch(Frame Generation) requires a preceding ffxConfigure");
+./src/framegeneration/framegeneration-checks.hpp:216:// A registered distortion field (ffxConfigureDescFrameGenerationRegisterDistortionFieldResource,
+./src/framegeneration/framegeneration-checks.hpp:221:    const ffxConfigureDescFrameGenerationRegisterDistortionFieldResource* d) {
+./src/framegeneration/framegeneration-checks.hpp:233:// The HUDLess create block (ffxCreateContextDescFrameGenerationHudless, 0x00020009) asks the
+./src/framegeneration/framegeneration-checks.hpp:235:Verdict hudlessCreateDescOk(const ffxCreateContextDescFrameGenerationHudless* d) {
+./src/framegeneration/framegeneration-checks.hpp:249:const ffxDispatchDescFrameGenerationPrepareCameraInfo* findCameraInfo(
+./src/framegeneration/framegeneration-checks.hpp:250:    const ffxDispatchDescHeader* header) {
+./src/framegeneration/framegeneration-checks.hpp:253:            return reinterpret_cast<const ffxDispatchDescFrameGenerationPrepareCameraInfo*>(cur);
+./third_party/fidelityfx-api/api/include/ffx_api.h:59:typedef ffxApiHeader ffxCreateContextDescHeader;
+./third_party/fidelityfx-api/api/include/ffx_api.h:60:typedef ffxApiHeader ffxConfigureDescHeader;
+./third_party/fidelityfx-api/api/include/ffx_api.h:61:typedef ffxApiHeader ffxQueryDescHeader;
+./third_party/fidelityfx-api/api/include/ffx_api.h:62:typedef ffxApiHeader ffxDispatchDescHeader;
+./third_party/fidelityfx-api/api/include/ffx_api.h:80:struct ffxConfigureDescGlobalDebug1
+./third_party/fidelityfx-api/api/include/ffx_api.h:82:    ffxConfigureDescHeader header;
+./third_party/fidelityfx-api/api/include/ffx_api.h:88:struct ffxQueryDescGetVersions
+./third_party/fidelityfx-api/api/include/ffx_api.h:90:    ffxQueryDescHeader header;
+./third_party/fidelityfx-api/api/include/ffx_api.h:102:    uint64_t versionId;  ///< Id of version to use. Must be a value returned from a query in ffxQueryDescGetVersions.versionIds array.
+./third_party/fidelityfx-api/api/include/ffx_api.h:106:struct ffxQueryGetProviderVersion
+./third_party/fidelityfx-api/api/include/ffx_api.h:108:    ffxQueryDescHeader header;
+./third_party/fidelityfx-api/api/include/ffx_api.h:130:// Pointers passed in desc must remain live until ffxDestroyContext is called on the context.
+./third_party/fidelityfx-api/api/include/ffx_api.h:132:FFX_API_ENTRY ffxReturnCode_t ffxCreateContext(ffxContext* context, ffxCreateContextDescHeader* desc, const ffxAllocationCallbacks* memCb);
+./third_party/fidelityfx-api/api/include/ffx_api.h:133:typedef ffxReturnCode_t (*PfnFfxCreateContext)(ffxContext* context, ffxCreateContextDescHeader* desc, const ffxAllocationCallbacks* memCb);
+./third_party/fidelityfx-api/api/include/ffx_api.h:137:// MemCb must be compatible with the callbacks passed into ffxCreateContext.
+./third_party/fidelityfx-api/api/include/ffx_api.h:138:FFX_API_ENTRY ffxReturnCode_t ffxDestroyContext(ffxContext* context, const ffxAllocationCallbacks* memCb);
+./third_party/fidelityfx-api/api/include/ffx_api.h:144:FFX_API_ENTRY ffxReturnCode_t ffxConfigure(ffxContext* context, const ffxConfigureDescHeader* desc);
+./third_party/fidelityfx-api/api/include/ffx_api.h:145:typedef ffxReturnCode_t (*PfnFfxConfigure)(ffxContext* context, const ffxConfigureDescHeader* desc);
+./third_party/fidelityfx-api/api/include/ffx_api.h:150:FFX_API_ENTRY ffxReturnCode_t ffxQuery(ffxContext* context, ffxQueryDescHeader* desc);
+./third_party/fidelityfx-api/api/include/ffx_api.h:151:typedef ffxReturnCode_t (*PfnFfxQuery)(ffxContext* context, ffxQueryDescHeader* desc);
+./third_party/fidelityfx-api/api/include/ffx_api.h:155:FFX_API_ENTRY ffxReturnCode_t ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc);
+./third_party/fidelityfx-api/api/include/ffx_api.h:156:typedef ffxReturnCode_t (*PfnFfxDispatch)(ffxContext* context, const ffxDispatchDescHeader* desc);
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:72:struct ffxCreateContextDescUpscale
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:74:    ffxCreateContextDescHeader header;
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:82:struct ffxDispatchDescUpscale
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:84:    ffxDispatchDescHeader      header;
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:110:struct ffxQueryDescUpscaleGetUpscaleRatioFromQualityMode
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:112:    ffxQueryDescHeader header;
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:118:struct ffxQueryDescUpscaleGetRenderResolutionFromQualityMode
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:120:    ffxQueryDescHeader header;
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:129:struct ffxQueryDescUpscaleGetJitterPhaseCount
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:131:    ffxQueryDescHeader header;
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:138:struct ffxQueryDescUpscaleGetJitterOffset
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:140:    ffxQueryDescHeader header;
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:142:    int32_t            phaseCount; ///< The length of jitter phase. See <c><i>ffxQueryDescFsrGetJitterPhaseCount</i></c>.
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:148:struct ffxDispatchDescUpscaleGenerateReactiveMask
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:150:    ffxDispatchDescHeader     header;
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:163:struct ffxConfigureDescUpscaleKeyValue
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:165:    ffxConfigureDescHeader  header;
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:181:struct ffxQueryDescUpscaleGetGPUMemoryUsage
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:183:    ffxQueryDescHeader header;
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:188:struct ffxQueryDescUpscaleGetGPUMemoryUsageV2
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:190:    ffxQueryDescHeader header;
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:209:struct ffxQueryDescUpscaleGetResourceRequirements
+./third_party/fidelityfx-api/upscalers/include/ffx_upscale.h:211:    ffxQueryDescHeader header;
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:70:struct ffxCreateContextDescFrameGeneration
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:72:    ffxCreateContextDescHeader header;
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:82:    ffxDispatchDescHeader header;
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:93:typedef struct ffxDispatchDescFrameGeneration
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:95:    ffxDispatchDescHeader header;
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:105:} ffxDispatchDescFrameGeneration;
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:108:typedef ffxReturnCode_t(*FfxApiFrameGenerationDispatchFunc)(ffxDispatchDescFrameGeneration* params, void* pUserCtx);
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:111:struct ffxConfigureDescFrameGeneration
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:113:    ffxConfigureDescHeader header;
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:129:struct ffxDispatchDescFrameGenerationPrepare
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:131:    ffxDispatchDescHeader      header;
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:150:struct ffxConfigureDescFrameGenerationKeyValue
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:152:    ffxConfigureDescHeader  header;
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:164:struct ffxQueryDescFrameGenerationGetGPUMemoryUsage
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:166:    ffxQueryDescHeader header;
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:171:struct ffxConfigureDescFrameGenerationRegisterDistortionFieldResource
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:173:    ffxConfigureDescHeader header;
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:178:struct ffxCreateContextDescFrameGenerationHudless
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:180:    ffxCreateContextDescHeader header;
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:185:// Linked after ffxDispatchDescFrameGenerationPrepare. Required input for FSR3.1.4 and
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:187:struct ffxDispatchDescFrameGenerationPrepareCameraInfo
+./third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h:189:    ffxConfigureDescHeader header;
+./third_party/fidelityfx-sdk/Kits/Cauldron2/framework/render/vk/device_vk.cpp:2201:                                             const ffxQueryDescSwapchainReplacementFunctionsVK* pReplacementFunctions)
+./third_party/fidelityfx-sdk/Kits/Cauldron2/framework/render/vk/device_vk.h:156:                                 const ffxQueryDescSwapchainReplacementFunctionsVK* pReplacementFunctions   = nullptr);
+./third_party/fidelityfx-sdk/Kits/Cauldron2/framework/render/vk/device_vk.h:300:        ffxQueryDescSwapchainReplacementFunctionsVK m_SwapchainReplacementFunctions = {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/dx12/ffx_api_dx12.h:51:    ffxCreateContextDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/dx12/ffx_api_dx12.h:58:	ffxCreateContextDescHeader    header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:60:typedef ffxApiHeader ffxCreateContextDescHeader;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:61:typedef ffxApiHeader ffxConfigureDescHeader;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:62:typedef ffxApiHeader ffxQueryDescHeader;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:63:typedef ffxApiHeader ffxDispatchDescHeader;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:81:struct ffxConfigureDescGlobalDebug
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:83:    ffxConfigureDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:90:struct ffxQueryDescGetVersions
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:92:    ffxQueryDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:104:    uint64_t versionId;  ///< Id of version to use. Must be a value returned from a query in ffxQueryDescGetVersions.versionIds array.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:108:struct ffxQueryGetProviderVersion
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:110:    ffxQueryDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:132:// Pointers passed in desc must remain live until ffxDestroyContext is called on the context.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:134:FFX_API_ENTRY ffxReturnCode_t ffxCreateContext(ffxContext* context, ffxCreateContextDescHeader* desc, const ffxAllocationCallbacks* memCb);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:135:typedef ffxReturnCode_t (*PfnFfxCreateContext)(ffxContext* context, ffxCreateContextDescHeader* desc, const ffxAllocationCallbacks* memCb);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:139:// MemCb must be compatible with the callbacks passed into ffxCreateContext.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:140:FFX_API_ENTRY ffxReturnCode_t ffxDestroyContext(ffxContext* context, const ffxAllocationCallbacks* memCb);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:146:FFX_API_ENTRY ffxReturnCode_t ffxConfigure(ffxContext* context, const ffxConfigureDescHeader* desc);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:147:typedef ffxReturnCode_t (*PfnFfxConfigure)(ffxContext* context, const ffxConfigureDescHeader* desc);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:152:FFX_API_ENTRY ffxReturnCode_t ffxQuery(ffxContext* context, ffxQueryDescHeader* desc);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:153:typedef ffxReturnCode_t (*PfnFfxQuery)(ffxContext* context, ffxQueryDescHeader* desc);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:157:FFX_API_ENTRY ffxReturnCode_t ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:158:typedef ffxReturnCode_t (*PfnFfxDispatch)(ffxContext* context, const ffxDispatchDescHeader* desc);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:204:struct FFX_DEPRECATION("Use ffxConfigureDescGlobalDebug instead of ffxConfigureDescGlobalDebug1.") ffxConfigureDescGlobalDebug1
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.h:206:    ffxConfigureDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.hpp:90:        return detail::ConvertReturnCode(ffxCreateContext(&context, header, memCb));
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.hpp:95:        return detail::ConvertReturnCode(ffxDestroyContext(&context, memCb));
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.hpp:102:        return detail::ConvertReturnCode(ffxConfigure(&context, header));
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.hpp:109:        return detail::ConvertReturnCode(ffxConfigure(nullptr, header));
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.hpp:116:        return detail::ConvertReturnCode(ffxQuery(&context, header));
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.hpp:123:        return detail::ConvertReturnCode(ffxQuery(nullptr, header));
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.hpp:130:        return detail::ConvertReturnCode(ffxDispatch(&context, header));
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.hpp:137:    struct struct_type<ffxConfigureDescGlobalDebug1> : std::integral_constant<uint64_t, FFX_API_CONFIGURE_DESC_TYPE_GLOBALDEBUG1> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.hpp:140:    struct struct_type<ffxConfigureDescGlobalDebug> : std::integral_constant<uint64_t, FFX_API_CONFIGURE_DESC_TYPE_GLOBALDEBUG> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.hpp:146:    struct struct_type<ffxQueryDescGetVersions> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_GET_VERSIONS> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.hpp:149:    struct struct_type<ffxQueryGetProviderVersion> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.hpp:161:    struct FFX_DEPRECATION("Use ffx::ConfigureDescGlobalDebug instead of ffx::ConfigureDescGlobalDebug1.") ConfigureDescGlobalDebug1 : public InitHelper<ffxConfigureDescGlobalDebug1>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.hpp:164:    struct ConfigureDescGlobalDebug : public InitHelper<ffxConfigureDescGlobalDebug>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api.hpp:170:    struct QueryDescGetVersions : public InitHelper<ffxQueryDescGetVersions>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api_loader.h:56:    pOutFunctions->CreateContext  = (PfnFfxCreateContext)GetProcAddress((HMODULE)module, "ffxCreateContext");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api_loader.h:57:    pOutFunctions->DestroyContext = (PfnFfxDestroyContext)GetProcAddress((HMODULE)module, "ffxDestroyContext");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api_loader.h:58:    pOutFunctions->Configure      = (PfnFfxConfigure)GetProcAddress((HMODULE)module, "ffxConfigure");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api_loader.h:59:    pOutFunctions->Query          = (PfnFfxQuery)GetProcAddress((HMODULE)module, "ffxQuery");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/ffx_api_loader.h:60:    pOutFunctions->Dispatch       = (PfnFfxDispatch)GetProcAddress((HMODULE)module, "ffxDispatch");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/vk/ffx_api_vk.h:44:    ffxCreateContextDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/vk/ffx_api_vk.h:60:    ffxCreateContextDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/include/vk/ffx_api_vk.h:79:	ffxCreateContextDescHeader    header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_api.cpp:43:FFX_API_ENTRY ffxReturnCode_t ffxCreateContext(ffxContext* context, ffxCreateContextDescHeader* desc, const ffxAllocationCallbacks* memCb)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_api.cpp:70:FFX_API_ENTRY ffxReturnCode_t ffxDestroyContext(ffxContext* context, const ffxAllocationCallbacks* memCb)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_api.cpp:87:FFX_API_ENTRY ffxReturnCode_t ffxConfigure(ffxContext* context, const ffxConfigureDescHeader* header)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_api.cpp:91:    if (auto desc = ffx::DynamicCast< ffxConfigureDescGlobalDebug >(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_api.cpp:99:    else if (auto desc1 = ffx::DynamicCast< ffxConfigureDescGlobalDebug1 >(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_api.cpp:115:FFX_API_ENTRY ffxReturnCode_t ffxQuery(ffxContext* context, ffxQueryDescHeader* header)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_api.cpp:123:        if (auto desc = ffx::DynamicCast<ffxQueryDescGetVersions>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_api.cpp:130:                FFX_PRINT_MESSAGE(FFX_API_MESSAGE_TYPE_ERROR, L"ffxQueryDescGetVersions::createDescType contains an invalid effect ID.");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_api.cpp:166:                    L"ffxQuery with null context returned FFX_API_RETURN_NO_PROVIDER (4) for descriptor type 0x%08llx (%s sub 0x%02x). "
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_api.cpp:189:    return ffxQueryFallback(context, header, retCode);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_api.cpp:192:FFX_API_ENTRY ffxReturnCode_t ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_api_helper.h:128:ffxReturnCode_t ffxQueryFallback(ffxContext* context, ffxQueryDescHeader* header, ffxReturnCode_t retCode);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_backends.h:28:ffxReturnCode_t CreateBackend(const ffxCreateContextDescHeader* desc, bool& backendFound, FfxInterface* iface, size_t contexts, Allocator& alloc);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_backends.h:30:inline ffxReturnCode_t MustCreateBackend(const ffxCreateContextDescHeader* desc, FfxInterface* iface, size_t contexts, Allocator& alloc)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_internal_types.h:868:/// to <c><i>ffxCreateContext</i></c> via the <c><i>flags</i></c> field of
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_provider.h:69:    virtual ffxReturnCode_t CreateContext(ffxContext* context, ffxCreateContextDescHeader* desc, Allocator& alloc) = 0;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_provider.h:73:    virtual ffxReturnCode_t Configure(ffxContext* context, const ffxConfigureDescHeader* desc) const = 0;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_provider.h:75:    virtual ffxReturnCode_t Query(ffxContext* context, ffxQueryDescHeader* desc) const = 0;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_provider.h:77:    virtual ffxReturnCode_t Dispatch(ffxContext* context, const ffxDispatchDescHeader* desc) const = 0;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:26:ffxReturnCode_t ffxQueryFallback(ffxContext* context, ffxQueryDescHeader* header, ffxReturnCode_t retCode)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:36:                auto desc = reinterpret_cast<ffxQueryDescGetVersions*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:42:                auto desc = reinterpret_cast<ffxQueryDescUpscaleGetRenderResolutionFromQualityMode*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:54:                auto desc = reinterpret_cast<ffxQueryDescUpscaleGetUpscaleRatioFromQualityMode*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:62:                auto desc = reinterpret_cast<ffxQueryDescUpscaleGetJitterPhaseCount*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:70:                auto desc = reinterpret_cast<ffxQueryDescUpscaleGetJitterOffset*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:82:                auto desc = reinterpret_cast<ffxQueryDescUpscaleGetGPUMemoryUsage*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:93:                auto desc = reinterpret_cast<ffxQueryDescFrameGenerationGetGPUMemoryUsage*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:103:                auto desc = reinterpret_cast<ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageDX12*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:113:                auto desc = reinterpret_cast<ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageXbox*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:127:                auto desc = reinterpret_cast<ffxQueryDescUpscaleGetResourceRequirements*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:135:                auto desc = reinterpret_cast<ffxQueryDescUpscaleGetGPUMemoryUsageV2*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:146:                auto desc = reinterpret_cast<ffxQueryDescFrameGenerationGetGPUMemoryUsageV2*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:156:                auto desc = reinterpret_cast<ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageDX12V2*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:166:                auto desc = reinterpret_cast<ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageVKV2*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:177:            auto desc = reinterpret_cast<ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageXboxV2*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:190:                auto desc = reinterpret_cast<ffxQueryDescDenoiserGetGPUMemoryUsage*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:208:                auto desc = reinterpret_cast<ffxQueryGetProviderVersion*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/api/internal/ffx_query_fallback.cpp:218:                auto desc = reinterpret_cast<ffxQueryDescUpscaleGetResourceRequirements*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/dx12/ffx_backends_dx12.cpp:42:ffxReturnCode_t CreateBackend(const ffxCreateContextDescHeader *desc, bool& backendFound, FfxInterface *iface, size_t contexts, Allocator& alloc)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/dx12/ffx_backends_dx12.cpp:98:            return reinterpret_cast<const ffxQueryDescGetVersions*>(it)->device;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/dx12/ffx_backends_dx12.cpp:103:            return reinterpret_cast<const ffxQueryDescUpscaleGetGPUMemoryUsageV2*>(it)->device;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/dx12/ffx_backends_dx12.cpp:109:            return reinterpret_cast<const ffxQueryDescDenoiserGetGPUMemoryUsage*>(it)->device;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/dx12/ffx_backends_dx12.cpp:120:            reinterpret_cast<const ffxCreateContextDescFrameGenerationSwapChainForHwndDX12*>(it)->gameQueue->GetDevice(IID_PPV_ARGS(&device));
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/dx12/ffx_backends_dx12.cpp:127:            reinterpret_cast<const ffxCreateContextDescFrameGenerationSwapChainNewDX12*>(it)->gameQueue->GetDevice(IID_PPV_ARGS(&device));
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/dx12/ffx_backends_dx12.cpp:134:            reinterpret_cast<const ffxCreateContextDescFrameGenerationSwapChainWrapDX12*>(it)->gameQueue->GetDevice(IID_PPV_ARGS(&device));
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/dx12/ffx_backends_dx12.cpp:140:            return reinterpret_cast<const ffxQueryDescFrameGenerationGetGPUMemoryUsageV2*>(it)->device;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/dx12/ffx_backends_dx12.cpp:144:            return reinterpret_cast<const ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageDX12V2*>(it)->device;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/dx12/ffx_dx12.h:361:FFX_API FfxErrorCode ffxConfigureFrameInterpolationSwapchainDX12(FfxSwapchain gameSwapChain, FfxFrameInterpolationSwapchainConfigureKey key, void* valuePtr);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/vk/ffx_backends_vk.cpp:39:ffxReturnCode_t CreateBackend(const ffxCreateContextDescHeader *desc, bool& backendFound, FfxInterface *iface, size_t contexts, Allocator& alloc)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/vk/ffx_backends_vk.cpp:102:    const ffxCreateContextDescFrameGenerationSwapChainVK* swapchainDesc = nullptr;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/vk/ffx_backends_vk.cpp:103:    const ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageVKV2* gpuMemoryDesc = nullptr;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/vk/ffx_backends_vk.cpp:111:            return reinterpret_cast<const ffxQueryDescGetVersions*>(it)->device;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/vk/ffx_backends_vk.cpp:116:            const ffxQueryDescUpscaleGetGPUMemoryUsageV2* queryDesc = reinterpret_cast<const ffxQueryDescUpscaleGetGPUMemoryUsageV2*>(it);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/vk/ffx_backends_vk.cpp:128:            swapchainDesc = reinterpret_cast<const ffxCreateContextDescFrameGenerationSwapChainVK*>(it);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/vk/ffx_backends_vk.cpp:133:            gpuMemoryDesc = reinterpret_cast<const ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageVKV2*>(it);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/vk/ffx_vk.h:330:FFX_API FfxErrorCode ffxConfigureFrameInterpolationSwapchainVK(FfxSwapchain gameSwapChain, FfxFrameInterpolationSwapchainConfigureKey key, void* valuePtr);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/vk/ffx_vk.h:347:/// @param [in] desc                    The <c><i>ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageVKV2</i></c> description.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/vk/ffx_vk.h:355:struct ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageVKV2;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/backend/vk/ffx_vk.h:356:FFX_API FfxErrorCode ffxFrameInterpolationSwapchainGetGpuMemoryUsageVKV2(const struct ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageVKV2* desc);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:31:// ffxConfigureDescHeader
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:32:// ffxCreateContextDescHeader
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:33:// ffxDispatchDescHeader
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:34:// ffxQueryDescHeader
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:82:typedef struct ffxCreateContextDescDenoiser
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:86:    ffxCreateContextDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:105:} ffxCreateContextDescDenoiser;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:113:/// @pre Required to be passed to @c ffxConfigure with a non-nullptr denoiser @c FfxContext*.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:114:typedef struct ffxConfigureDescDenoiserKeyValue
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:118:    ffxConfigureDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:128:} ffxConfigureDescDenoiserKeyValue;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:165:/// @pre Required to be passed to @c ffxDispatch with a non-nullptr denoiser @c FfxContext*.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:166:/// @pre Always required to be passed to @c ffxDispatch.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:167:typedef struct ffxDispatchDescDenoiser
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:172:    ffxDispatchDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:321:} ffxDispatchDescDenoiser;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:328:/// @pre Required to be passed to @c ffxDispatch with a non-nullptr denoiser @c FfxContext*.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:329:/// @pre Can be passed to @c ffxDispatch if and only if @c FFX_DENOISER_ENABLE_DEBUGGING is set in the context creation flags.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:330:typedef struct ffxDispatchDescDenoiserDebugView
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:334:    ffxDispatchDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:352:} ffxDispatchDescDenoiserDebugView;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:356:/// @pre Required to be passed to @c ffxDispatch with a non-nullptr denoiser @c FfxContext*.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:357:/// @pre Required to be passed to @c ffxDispatch if and only if @c FFX_DENOISER_SIGNAL_AMBIENT_OCCLUSION is set in the context creation signal flags.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:358:typedef struct ffxDispatchDescDenoiserAmbientOcclusion
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:362:    ffxDispatchDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:369:} ffxDispatchDescDenoiserAmbientOcclusion;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:373:/// @pre Required to be passed to @c ffxDispatch with a non-nullptr denoiser @c FfxContext*.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:374:/// @pre Required to be passed to @c ffxDispatch if and only if @c FFX_DENOISER_SIGNAL_DIRECT_DIFFUSE is set in the context creation signal flags.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:375:typedef struct ffxDispatchDescDenoiserDirectDiffuse
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:379:    ffxDispatchDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:389:} ffxDispatchDescDenoiserDirectDiffuse;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:393:/// @pre Required to be passed to @c ffxDispatch with a non-nullptr denoiser @c FfxContext*.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:394:/// @pre Required to be passed to @c ffxDispatch if and only if @c FFX_DENOISER_SIGNAL_DIRECT_SPECULAR is set in the context creation signal flags.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:395:typedef struct ffxDispatchDescDenoiserDirectSpecular
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:399:    ffxDispatchDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:409:} ffxDispatchDescDenoiserDirectSpecular;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:413:/// @pre Required to be passed to @c ffxDispatch with a non-nullptr denoiser @c FfxContext*.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:414:/// @pre Required to be passed to @c ffxDispatch if and only if @c FFX_DENOISER_SIGNAL_DOMINANT_LIGHT_VISIBILITY is set in the context creation signal flags.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:415:typedef struct ffxDispatchDescDenoiserDominantLight
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:419:    ffxDispatchDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:436:} ffxDispatchDescDenoiserDominantLight;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:440:/// @pre Required to be passed to @c ffxDispatch with a non-nullptr denoiser @c FfxContext*.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:441:/// @pre Required to be passed to @c ffxDispatch if and only if @c FFX_DENOISER_SIGNAL_INDIRECT_DIFFUSE is set in the context creation signal flags.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:442:typedef struct ffxDispatchDescDenoiserIndirectDiffuse
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:446:    ffxDispatchDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:456:} ffxDispatchDescDenoiserIndirectDiffuse;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:460:/// @pre Required to be passed to @c ffxDispatch with a non-nullptr denoiser @c FfxContext*.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:461:/// @pre Required to be passed to @c ffxDispatch if and only if @c FFX_DENOISER_SIGNAL_INDIRECT_SPECULAR is set in the context creation signal flags.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:462:typedef struct ffxDispatchDescDenoiserIndirectSpecular
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:466:    ffxDispatchDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:476:} ffxDispatchDescDenoiserIndirectSpecular;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:480:/// @pre Required to be passed to @c ffxDispatch with a non-nullptr denoiser @c FfxContext*.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:481:/// @pre Required to be passed to @c ffxDispatch if and only if @c FFX_DENOISER_SIGNAL_SPECULAR_OCCLUSION is set in the context creation signal flags.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:482:typedef struct ffxDispatchDescDenoiserSpecularOcclusion
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:486:    ffxDispatchDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:493:} ffxDispatchDescDenoiserSpecularOcclusion;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:501:/// @pre Required to be passed to @c ffxQuery with a non-nullptr denoiser @c FfxContext*.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:502:typedef struct ffxQueryDescDenoiserGetDefaultKeyValue
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:506:    ffxQueryDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:516:} ffxQueryDescDenoiserGetDefaultKeyValue;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:520:/// @pre Can be passed to @c ffxQuery with a non-nullptr denoiser @c FfxContext* to retrieve the actual memory usage.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:521:/// @pre Can be passed to @c ffxQuery with a nullptr @c FfxContext* to retrieve the expected memory usage.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:522:typedef struct ffxQueryDescDenoiserGetGPUMemoryUsage
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:526:    ffxQueryDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.h:548:} ffxQueryDescDenoiserGetGPUMemoryUsage;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:50:// ffxConfigureDescDenoiserKeyValue
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:51:// ffxCreateContextDescDenoiser
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:52:// ffxDispatchDescDenoiser
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:53:// ffxDispatchDescDenoiserAmbientOcclusion
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:54:// ffxDispatchDescDenoiserDebugView
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:55:// ffxDispatchDescDenoiserDirectDiffuse
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:56:// ffxDispatchDescDenoiserDirectSpecular
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:57:// ffxDispatchDescDenoiserDominantLight
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:58:// ffxDispatchDescDenoiserIndirectDiffuse
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:59:// ffxDispatchDescDenoiserIndirectSpecular
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:60:// ffxDispatchDescDenoiserSpecularOcclusion
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:61:// ffxQueryDescDenoiserGetDefaultKeyValue
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:62:// ffxQueryDescDenoiserGetGPUMemoryUsage
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:106:                            ffxCreateContextDescDenoiser,
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:114:                            ffxConfigureDescDenoiserKeyValue,
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:122:                            ffxDispatchDescDenoiser,
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:125:                            ffxDispatchDescDenoiserDebugView,
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:128:                            ffxDispatchDescDenoiserAmbientOcclusion,
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:131:                            ffxDispatchDescDenoiserDirectDiffuse,
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:134:                            ffxDispatchDescDenoiserDirectSpecular,
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:137:                            ffxDispatchDescDenoiserDominantLight,
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:140:                            ffxDispatchDescDenoiserIndirectDiffuse,
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:143:                            ffxDispatchDescDenoiserIndirectSpecular,
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:146:                            ffxDispatchDescDenoiserSpecularOcclusion,
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:154:                            ffxQueryDescDenoiserGetDefaultKeyValue,
+./third_party/fidelityfx-sdk/Kits/FidelityFX/denoisers/include/ffx_denoiser.hpp:157:                            ffxQueryDescDenoiserGetGPUMemoryUsage,
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/FrameInterpolationSwapchainDX12.cpp:391:FfxErrorCode ffxConfigureFrameInterpolationSwapchainDX12(FfxSwapchain gameSwapChain, FfxFrameInterpolationSwapchainConfigureKey key, void* valuePtr)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/FrameInterpolationSwapchainDX12.cpp:1922:        ffxDispatchDescFrameGeneration desc{};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:61:static ffxReturnCode_t Fsr3FrameGenerationSwapChainParseVersion(ffxCreateContextDescHeader* header, FfxUInt32& versionPtr)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:70:        if (auto versionDesc = ffx::DynamicCast<ffxCreateContextDescFrameGenerationSwapChainVersionDX12>(it))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:80:        FFX_PRINT_MESSAGE(FFX_API_MESSAGE_TYPE_ERROR, L"ffxCreateContextDescFrameGenerationSwapChainVersionDX12 version is invalid.");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:86:        FFX_PRINT_MESSAGE(FFX_API_MESSAGE_TYPE_ERROR, L"An instance of ffxCreateContextDescFrameGenerationSwapChainVersionDX12 must be attached to ffxCreateContextDescFrameGenerationSwapChain* and specify a valid version to access new API functions.");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:94:ffxReturnCode_t ffxProvider_Fsr3FrameGenerationSwapChain::CreateContext(ffxContext* context, ffxCreateContextDescHeader* header, Allocator& alloc)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:96:    if (auto desc = ffx::DynamicCast<ffxCreateContextDescFrameGenerationSwapChainWrapDX12>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:117:    else if (auto descNew = ffx::DynamicCast<ffxCreateContextDescFrameGenerationSwapChainNewDX12>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:138:    else if (auto descHwnd = ffx::DynamicCast<ffxCreateContextDescFrameGenerationSwapChainForHwndDX12>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:179:ffxReturnCode_t ffxProvider_Fsr3FrameGenerationSwapChain::Configure(ffxContext* context, const ffxConfigureDescHeader* header) const
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:186:    if (auto desc = ffx::DynamicCast<ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:192:    else if (auto descKey = ffx::DynamicCast<ffxConfigureDescFrameGenerationSwapChainKeyValueDX12>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:194:        TRY2(ffxConfigureFrameInterpolationSwapchainDX12(ffxGetSwapchainDX12(internal_context->fiSwapChain), static_cast<FfxFrameInterpolationSwapchainConfigureKey>(descKey->key), descKey->ptr));
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:204:ffxReturnCode_t ffxProvider_Fsr3FrameGenerationSwapChain::Query(ffxContext* context, ffxQueryDescHeader* header) const
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:209:    if (auto desc = ffx::DynamicCast<ffxQueryDescFrameGenerationSwapChainInterpolationCommandListDX12>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:221:    else if (auto descTexture = ffx::DynamicCast<ffxQueryDescFrameGenerationSwapChainInterpolationTextureDX12>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:231:    else if (auto descMemory = ffx::DynamicCast<ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageDX12>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:243:    else if (auto descMemoryV2 = ffx::DynamicCast<ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageDX12V2>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:266:ffxReturnCode_t ffxProvider_Fsr3FrameGenerationSwapChain::Dispatch(ffxContext* context, const ffxDispatchDescHeader* header) const
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp:270:    if (auto desc = ffx::DynamicCast<ffxDispatchDescFrameGenerationSwapChainWaitForPresentsDX12>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/include/ffx_provider_fsr3framegeneration.h:34:    virtual ffxReturnCode_t CreateContext(ffxContext* context, ffxCreateContextDescHeader* desc, Allocator& alloc) override;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/include/ffx_provider_fsr3framegeneration.h:38:    virtual ffxReturnCode_t Configure(ffxContext* context, const ffxConfigureDescHeader* desc) const override;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/include/ffx_provider_fsr3framegeneration.h:40:    virtual ffxReturnCode_t Query(ffxContext* context, ffxQueryDescHeader* desc) const override;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/include/ffx_provider_fsr3framegeneration.h:42:    virtual ffxReturnCode_t Dispatch(ffxContext* context, const ffxDispatchDescHeader* desc) const override;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/include/ffx_provider_fsr3framegenerationswapchain.h:34:    virtual ffxReturnCode_t CreateContext(ffxContext* context, ffxCreateContextDescHeader* desc, Allocator& alloc) override;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/include/ffx_provider_fsr3framegenerationswapchain.h:38:    virtual ffxReturnCode_t Configure(ffxContext* context, const ffxConfigureDescHeader* desc) const override;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/include/ffx_provider_fsr3framegenerationswapchain.h:40:    virtual ffxReturnCode_t Query(ffxContext* context, ffxQueryDescHeader* desc) const override;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/include/ffx_provider_fsr3framegenerationswapchain.h:42:    virtual ffxReturnCode_t Dispatch(ffxContext* context, const ffxDispatchDescHeader* desc) const override;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_frameinterpolation.cpp:445:        FFX_PRINT_MESSAGE(FFX_API_MESSAGE_TYPE_ERROR, L"ffxCreateContextDescFrameGeneration params backBufferFormat or hudlessBackBufferFormat is not a supported format.");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_frameinterpolation.cpp:450:        FFX_PRINT_MESSAGE(FFX_API_MESSAGE_TYPE_ERROR, L"ffxCreateContextDescFrameGeneration params backBufferFormat and hudlessBackBufferFormat must belong to the same format precision group. Otherwise, may result in no interpolation. Hudless UI extraction is run instead of interpolation when value difference between backbuffer and HUDLessColor passes a threshold.");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_frameinterpolation.cpp:892:        FFX_PRINT_MESSAGE(FFX_API_MESSAGE_TYPE_ERROR, L"ffxConfigureDescFrameGeneration::HUDLessColor format have to be same as one of ffxCreateContextDescFrameGeneration::backBufferFormat or ffxCreateContextDescFrameGenerationHudless::hudlessBackBufferFormat. Otherwise, CopyTextureRegion from FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_CURRENT_INTERPOLATION_SOURCE to FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_PREVIOUS_INTERPOLATION_SOURCE would fail.");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_frameinterpolation.cpp:897:        FFX_PRINT_MESSAGE(FFX_API_MESSAGE_TYPE_ERROR, L"ffxDispatchDescFrameGeneration::presentColor format and ffxCreateContextDescFrameGeneration::backBufferFormat have to be identical. Or ffxConfigureDescFrameGeneration::HUDLessColor have to be valid.");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:64:    ffxDispatchDescFrameGenerationPrepareV2 prepareDescriptions[MAX_QUEUED_FRAMES] = {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:93:ffxReturnCode_t ffxProvider_Fsr3FrameGeneration::CreateContext(ffxContext* context, ffxCreateContextDescHeader* header, Allocator& alloc)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:95:    if (auto desc = ffx::DynamicCast<ffxCreateContextDescFrameGeneration>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:135:                if (auto descHudless = ffx::DynamicCast<ffxCreateContextDescFrameGenerationHudless>(it))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:223:ffxReturnCode_t ffxProvider_Fsr3FrameGeneration::Configure(ffxContext* context, const ffxConfigureDescHeader* header) const
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:230:    if (auto desc = ffx::DynamicCast<ffxConfigureDescFrameGeneration>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:263:                    config.frameGenerationCallback = [](ffxDispatchDescFrameGeneration* in_desc, void* ctx) -> ffxReturnCode_t
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:297:                    config.frameGenerationCallback = [](ffxDispatchDescFrameGeneration* in_desc, void* ctx) -> ffxReturnCode_t
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:331:                    config.frameGenerationCallback = [](ffxDispatchDescFrameGeneration* desc, void* ctx) -> ffxReturnCode_t
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:474:            if (auto distortionFieldDesc = ffx::DynamicCast<ffxConfigureDescFrameGenerationRegisterDistortionFieldResource>(it))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:485:    if (auto desc = ffx::DynamicCast<ffxConfigureDescGlobalDebug>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:497:    if (auto desc = ffx::DynamicCast<ffxConfigureDescGlobalDebug1>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:515:ffxReturnCode_t ffxProvider_Fsr3FrameGeneration::Query(ffxContext* context, ffxQueryDescHeader* header) const
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:519:    if (auto desc = ffx::DynamicCast<ffxQueryDescFrameGenerationGetGPUMemoryUsage>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:540:    if (auto desc = ffx::DynamicCast<ffxQueryDescFrameGenerationGetGPUMemoryUsageV2>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:577:ffxReturnCode_t ffxProvider_Fsr3FrameGeneration::Dispatch(ffxContext* context, const ffxDispatchDescHeader* header) const
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:587:        const ffxDispatchDescFrameGeneration* desc = reinterpret_cast<const ffxDispatchDescFrameGeneration*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:588:        const ffxDispatchDescFrameGenerationPrepareV2* prepDesc = &internal_context->prepareDescriptions[desc->frameID % MAX_QUEUED_FRAMES];
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:705:        ffxDispatchDescFrameGenerationPrepareV2* desc = {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:706:        constexpr size_t startOffset = sizeof(ffxDispatchDescHeader);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:707:        constexpr size_t copySize = sizeof(ffxDispatchDescFrameGenerationPrepare) - startOffset;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:717:                const ffxDispatchDescFrameGenerationPrepare* desc_v1 = reinterpret_cast<const ffxDispatchDescFrameGenerationPrepare*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:726:                    if (auto cameraInfoDesc = ffx::DynamicCast<ffxDispatchDescFrameGenerationPrepareCameraInfo>(it))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:738:                    FFX_PRINT_MESSAGE_ONCE(FFX_API_MESSAGE_TYPE_WARNING, L"ffxDispatchDescFrameGenerationPrepare is deprecated, update to ffxDispatchDescFrameGeneration" FFX_FRAMEGENERATION_PREPARE_REPLACEMENT_SUFFIX L".");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:742:                        FFX_PRINT_MESSAGE(FFX_API_MESSAGE_TYPE_WARNING, L"ffxDispatchDescFrameGenerationPrepare::unused_reset was never implemented and will be ignored, update to ffxDispatchDescFrameGeneration" FFX_FRAMEGENERATION_PREPARE_REPLACEMENT_SUFFIX L"::reset.");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:746:                        FFX_PRINT_MESSAGE(FFX_API_MESSAGE_TYPE_WARNING, L"ffxDispatchDescFrameGenerationPrepareCameraInfo is not linked to ffxDispatchDescFrameGenerationPrepare. Camera view matrix data is a prerequisite for MLFI provider enablement.");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/internal/ffx_provider_fsr3framegeneration.cpp:752:                const ffxDispatchDescFrameGenerationPrepareV2* desc_v2 = reinterpret_cast<const ffxDispatchDescFrameGenerationPrepareV2*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/FrameInterpolationSwapchainVK.cpp:423:FfxErrorCode ffxConfigureFrameInterpolationSwapchainVK(FfxSwapchain gameSwapChain, FfxFrameInterpolationSwapchainConfigureKey key, void* valuePtr)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/FrameInterpolationSwapchainVK.cpp:531:FfxErrorCode ffxFrameInterpolationSwapchainGetGpuMemoryUsageVKV2(const ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageVKV2* desc)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/FrameInterpolationSwapchainVK.cpp:533:    static_assert(sizeof(ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageVKV2) == 80, "Vulkan V2 memory query ABI size drifted");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/FrameInterpolationSwapchainVK.cpp:534:    static_assert(offsetof(ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageVKV2, device) == 16, "Vulkan V2 memory query ABI drifted");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/FrameInterpolationSwapchainVK.cpp:535:    static_assert(offsetof(ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageVKV2, gpuMemoryUsageFrameGenerationSwapchain) == 72, "Vulkan V2 memory query ABI drifted");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/FrameInterpolationSwapchainVK.cpp:2023:        ffxDispatchDescFrameGeneration desc{};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:63:static ffxReturnCode_t Fsr3FrameGenerationSwapChainParseVersion(ffxCreateContextDescHeader* header, FfxUInt32& versionPtr)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:72:        if (auto versionDesc = ffx::DynamicCast<ffxCreateContextDescFrameGenerationSwapChainVersionVK>(it))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:82:        FFX_PRINT_MESSAGE(FFX_API_MESSAGE_TYPE_ERROR, L"ffxCreateContextDescFrameGenerationSwapChainVersionVK version is invalid.");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:88:        FFX_PRINT_MESSAGE(FFX_API_MESSAGE_TYPE_ERROR, L"An instance of ffxCreateContextDescFrameGenerationSwapChainVersionVK must be attached to ffxCreateContextDescFrameGenerationSwapChainVK and specify a valid version to access new API functions.");
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:114:/// pointers in ffxQueryDescSwapchainReplacementFunctionsVK. The VkSwapchainKHR handle (and the
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:197:ffxReturnCode_t ffxProvider_Fsr3FrameGenerationSwapChain::CreateContext(ffxContext* context, ffxCreateContextDescHeader* header, Allocator& alloc)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:199:    if (auto desc = ffx::DynamicCast<ffxCreateContextDescFrameGenerationSwapChainVK>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:223:            if (auto mode = ffx::DynamicCast<ffxCreateContextDescFrameGenerationSwapChainModeVK>(it))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:259:ffxReturnCode_t ffxProvider_Fsr3FrameGenerationSwapChain::Configure(ffxContext* context, const ffxConfigureDescHeader* header) const
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:266:    if (auto desc = ffx::DynamicCast<ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceVK>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:272:    else if (auto descKey = ffx::DynamicCast<ffxConfigureDescFrameGenerationSwapChainKeyValueVK>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:274:        TRY2(ffxConfigureFrameInterpolationSwapchainVK(ffxGetSwapchainVK(internal_context->fiSwapChain), static_cast<FfxFrameInterpolationSwapchainConfigureKey>(descKey->key), descKey->ptr));
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:284:ffxReturnCode_t ffxProvider_Fsr3FrameGenerationSwapChain::Query(ffxContext* context, ffxQueryDescHeader* header) const
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:288:    if (auto descMemoryV2 = ffx::DynamicCast<ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageVKV2>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:302:    if (auto desc = ffx::DynamicCast<ffxQueryDescFrameGenerationSwapChainInterpolationCommandListVK>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:310:    else if (auto descTexture = ffx::DynamicCast<ffxQueryDescFrameGenerationSwapChainInterpolationTextureVK>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:316:    else if (auto descMemory = ffx::DynamicCast<ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageVK>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:321:    else if (auto descFunctions = ffx::DynamicCast<ffxQueryDescSwapchainReplacementFunctionsVK>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:338:ffxReturnCode_t ffxProvider_Fsr3FrameGenerationSwapChain::Dispatch(ffxContext* context, const ffxDispatchDescHeader* header) const
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp:342:    if (auto desc = ffx::DynamicCast<ffxDispatchDescFrameGenerationSwapChainWaitForPresentsVK>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:34:struct ffxCreateContextDescFrameGenerationSwapChainWrapDX12
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:36:    ffxCreateContextDescHeader header;     ///< Description header for frame generation swapchain wrapping context creation.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:42:struct ffxCreateContextDescFrameGenerationSwapChainNewDX12
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:44:    ffxCreateContextDescHeader header;       ///< Description header for frame generation swapchain creation.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:52:struct ffxCreateContextDescFrameGenerationSwapChainForHwndDX12
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:54:    ffxCreateContextDescHeader       header;          ///< Description header for frame generation swapchain creation for HWND.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:64:struct ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:66:    ffxConfigureDescHeader header;      ///< Description header for UI resource registration configuration.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:72:struct ffxQueryDescFrameGenerationSwapChainInterpolationCommandListDX12
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:74:    ffxQueryDescHeader header;           ///< Description header for interpolation command list query.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:79:struct ffxQueryDescFrameGenerationSwapChainInterpolationTextureDX12
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:81:    ffxQueryDescHeader     header;       ///< Description header for interpolation texture query.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:86:struct ffxDispatchDescFrameGenerationSwapChainWaitForPresentsDX12
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:88:    ffxDispatchDescHeader header;  ///< Description header for wait for presents dispatch.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:92:struct ffxConfigureDescFrameGenerationSwapChainKeyValueDX12
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:94:    ffxConfigureDescHeader header;  ///< Description header for key-value configuration.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:108:struct ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageDX12
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:110:    ffxQueryDescHeader              header;                                  ///< Description header for GPU memory usage query.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:115:struct ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageDX12V2
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:117:    ffxQueryDescHeader              header;                                  ///< Description header for GPU memory usage query.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:122:    struct FfxApiDimensions2D       uiResourceSize;                          ///< The resolution of the resource that will be used for UI composition. Set to (0,0) if providing null uiResource in  ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12. App needs to fill out before Query() call.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:123:    uint32_t                        uiResourceFormat;                        ///< The surface format for the uiResource. One of the values from FfxApiSurfaceFormat. Set to FFX_API_SURFACE_FORMAT_UNKNOWN(0) if providing null uiResource in  ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12. App needs to fill out before Query() call.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:129:struct ffxCreateContextDescFrameGenerationSwapChainVersionDX12
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h:131:    ffxCreateContextDescHeader header;   ///< Description header for frame generation swapchain version context creation.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:34:struct struct_type<ffxCreateContextDescFrameGenerationSwapChainWrapDX12> : std::integral_constant<uint64_t, FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_WRAP_DX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:37:struct CreateContextDescFrameGenerationSwapChainWrapDX12 : public InitHelper<ffxCreateContextDescFrameGenerationSwapChainWrapDX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:41:struct struct_type<ffxCreateContextDescFrameGenerationSwapChainNewDX12> : std::integral_constant<uint64_t, FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_NEW_DX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:44:struct CreateContextDescFrameGenerationSwapChainNewDX12 : public InitHelper<ffxCreateContextDescFrameGenerationSwapChainNewDX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:48:struct struct_type<ffxCreateContextDescFrameGenerationSwapChainForHwndDX12> : std::integral_constant<uint64_t, FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_FOR_HWND_DX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:51:struct CreateContextDescFrameGenerationSwapChainForHwndDX12 : public InitHelper<ffxCreateContextDescFrameGenerationSwapChainForHwndDX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:55:struct struct_type<ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12> : std::integral_constant<uint64_t, FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_REGISTERUIRESOURCE_DX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:58:struct ConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12 : public InitHelper<ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:62:struct struct_type<ffxQueryDescFrameGenerationSwapChainInterpolationCommandListDX12> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_INTERPOLATIONCOMMANDLIST_DX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:65:struct QueryDescFrameGenerationSwapChainInterpolationCommandListDX12 : public InitHelper<ffxQueryDescFrameGenerationSwapChainInterpolationCommandListDX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:69:struct struct_type<ffxQueryDescFrameGenerationSwapChainInterpolationTextureDX12> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_INTERPOLATIONTEXTURE_DX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:72:struct QueryDescFrameGenerationSwapChainInterpolationTextureDX12 : public InitHelper<ffxQueryDescFrameGenerationSwapChainInterpolationTextureDX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:76:struct struct_type<ffxDispatchDescFrameGenerationSwapChainWaitForPresentsDX12> : std::integral_constant<uint64_t, FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_WAIT_FOR_PRESENTS_DX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:79:struct DispatchDescFrameGenerationSwapChainWaitForPresentsDX12 : public InitHelper<ffxDispatchDescFrameGenerationSwapChainWaitForPresentsDX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:83:struct struct_type<ffxConfigureDescFrameGenerationSwapChainKeyValueDX12> : std::integral_constant<uint64_t, FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_KEYVALUE_DX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:86:struct ConfigureDescFrameGenerationSwapChainKeyValueDX12 : public InitHelper<ffxConfigureDescFrameGenerationSwapChainKeyValueDX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:90:struct struct_type<ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageDX12> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_GPU_MEMORY_USAGE_DX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:93:struct QueryFrameGenerationSwapChainGetGPUMemoryUsageDX12 : public InitHelper<ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageDX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:97:struct struct_type<ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageDX12V2> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_GPU_MEMORY_USAGE_DX12_V2>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:100:struct QueryFrameGenerationSwapChainGetGPUMemoryUsageDX12V2 : public InitHelper<ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageDX12V2>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:104:struct struct_type<ffxCreateContextDescFrameGenerationSwapChainVersionDX12> : std::integral_constant<uint64_t, FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_VERSION_DX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.hpp:107:struct CreateContextDescFrameGenerationSwapChainVersionDX12 : public InitHelper<ffxCreateContextDescFrameGenerationSwapChainVersionDX12>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:69:struct ffxCreateContextDescFrameGeneration
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:71:    ffxCreateContextDescHeader header;            ///< Description header for frame generation context creation.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:81:    ffxDispatchDescHeader header;                 ///< Description header for present callback dispatch.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:92:typedef struct ffxDispatchDescFrameGeneration
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:94:    ffxDispatchDescHeader header;                      ///< Description header for frame generation dispatch.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:104:} ffxDispatchDescFrameGeneration;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:107:typedef ffxReturnCode_t (*FfxApiFrameGenerationDispatchFunc)(ffxDispatchDescFrameGeneration* params, void* pUserCtx);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:110:struct ffxConfigureDescFrameGeneration
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:112:    ffxConfigureDescHeader            header;                              ///< Description header for frame generation configuration.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:131:struct FFX_DEPRECATION("ffxDispatchDescFrameGenerationPrepare is deprecated, use ffxDispatchDescFrameGeneration" FFX_FRAMEGENERATION_PREPARE_REPLACEMENT_SUFFIX) ffxDispatchDescFrameGenerationPrepare
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:133:    ffxDispatchDescHeader      header;             ///< Description header for frame generation prepare dispatch.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:154:struct ffxConfigureDescFrameGenerationKeyValue
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:156:    ffxConfigureDescHeader header;  ///< Description header for frame generation key-value configuration.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:169:struct ffxQueryDescFrameGenerationGetGPUMemoryUsage
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:171:    ffxQueryDescHeader              header;                         ///< Description header for GPU memory usage query.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:176://Pass this optional linked struct after ffxConfigureDescFrameGeneration
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:177:struct ffxConfigureDescFrameGenerationRegisterDistortionFieldResource
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:179:    ffxConfigureDescHeader header;           ///< Description header for distortion field resource configuration.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:185:struct ffxCreateContextDescFrameGenerationHudless
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:187:    ffxCreateContextDescHeader header;                   ///< Description header for hudless context creation.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:195:// Link this struct after ffxDispatchDescFrameGenerationPrepare. This is a required input to FSR3.1.4 and FSR3.1.5.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:196:// These fields are now embedded in ffxDispatchDescFrameGenerationPrepareV2.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:197:struct FFX_DEPRECATION("ffxDispatchDescFrameGenerationPrepareCameraInfo is deprecated, use ffxDispatchDescFrameGeneration" FFX_FRAMEGENERATION_PREPARE_REPLACEMENT_SUFFIX " instead") ffxDispatchDescFrameGenerationPrepareCameraInfo
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:199:    ffxConfigureDescHeader header;             ///< Description header for camera info configuration.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:209:struct ffxQueryDescFrameGenerationGetGPUMemoryUsageV2
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:211:    ffxQueryDescHeader              header;                         ///< Description header for GPU memory usage query.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:225:struct ffxDispatchDescFrameGenerationPrepareV2
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:228:    ffxDispatchDescHeader      header;             ///< Description header for frame generation prepare dispatch.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:268:struct ffxCreateContextDescFrameGenerationVersion
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h:270:    ffxCreateContextDescHeader header;   ///< Description header for frame generation version context creation.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:34:struct struct_type<ffxCreateContextDescFrameGeneration> : std::integral_constant<uint64_t, FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:37:struct CreateContextDescFrameGeneration : public InitHelper<ffxCreateContextDescFrameGeneration>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:41:struct struct_type<ffxConfigureDescFrameGeneration> : std::integral_constant<uint64_t, FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:44:struct ConfigureDescFrameGeneration : public InitHelper<ffxConfigureDescFrameGeneration>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:48:struct struct_type<ffxDispatchDescFrameGeneration> : std::integral_constant<uint64_t, FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:51:struct DispatchDescFrameGeneration : public InitHelper<ffxDispatchDescFrameGeneration>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:58:struct FFX_DEPRECATION("ffxDispatchDescFrameGenerationPrepare is deprecated, use ffxDispatchDescFrameGeneration" FFX_FRAMEGENERATION_PREPARE_REPLACEMENT_SUFFIX) struct_type<ffxDispatchDescFrameGenerationPrepare> : std::integral_constant<uint64_t, FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:61:struct FFX_DEPRECATION("DispatchDescFrameGenerationPrepare is deprecated, use DispatchDescFrameGeneration" FFX_FRAMEGENERATION_PREPARE_REPLACEMENT_SUFFIX) DispatchDescFrameGenerationPrepare : public InitHelper<ffxDispatchDescFrameGenerationPrepare>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:67:struct struct_type<ffxConfigureDescFrameGenerationKeyValue> : std::integral_constant<uint64_t, FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION_KEYVALUE>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:70:struct ConfigureDescFrameGenerationKeyValue : public InitHelper<ffxConfigureDescFrameGenerationKeyValue>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:74:struct struct_type<ffxQueryDescFrameGenerationGetGPUMemoryUsage> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_FRAMEGENERATION_GPU_MEMORY_USAGE>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:77:struct QueryDescFrameGenerationGetGPUMemoryUsage : public InitHelper<ffxQueryDescFrameGenerationGetGPUMemoryUsage>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:81:struct struct_type<ffxConfigureDescFrameGenerationRegisterDistortionFieldResource> : std::integral_constant<uint64_t, FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION_REGISTERDISTORTIONRESOURCE>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:84:struct ConfigureDescFrameGenerationRegisterDistortionFieldResource : public InitHelper<ffxConfigureDescFrameGenerationRegisterDistortionFieldResource>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:88:struct struct_type<ffxCreateContextDescFrameGenerationHudless> : std::integral_constant<uint64_t, FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION_HUDLESS>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:91:struct CreateContextDescFrameGenerationHudless : public InitHelper<ffxCreateContextDescFrameGenerationHudless>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:98:struct FFX_DEPRECATION("ffxDispatchDescFrameGenerationPrepareCameraInfo is deprecated, use ffxDispatchDescFrameGeneration" FFX_FRAMEGENERATION_PREPARE_REPLACEMENT_SUFFIX) struct_type<ffxDispatchDescFrameGenerationPrepareCameraInfo> : std::integral_constant<uint64_t, FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_CAMERAINFO>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:101:struct FFX_DEPRECATION("DispatchDescFrameGenerationPrepareCameraInfo is deprecated, use DispatchDescFrameGeneration" FFX_FRAMEGENERATION_PREPARE_REPLACEMENT_SUFFIX) DispatchDescFrameGenerationPrepareCameraInfo : public InitHelper<ffxDispatchDescFrameGenerationPrepareCameraInfo>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:107:struct struct_type<ffxQueryDescFrameGenerationGetGPUMemoryUsageV2> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_FRAMEGENERATION_GPU_MEMORY_USAGE_V2>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:110:struct QueryDescFrameGenerationGetGPUMemoryUsageV2 : public InitHelper<ffxQueryDescFrameGenerationGetGPUMemoryUsageV2>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:114:struct struct_type<ffxDispatchDescFrameGenerationPrepareV2> : std::integral_constant<uint64_t, FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_V2>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:117:struct DispatchDescFrameGenerationPrepareV2 : public InitHelper<ffxDispatchDescFrameGenerationPrepareV2>{};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:128:struct struct_type<ffxCreateContextDescFrameGenerationVersion> : std::integral_constant<uint64_t, FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION_VERSION>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.hpp:131:struct CreateContextDescFrameGenerationVersion : public InitHelper<ffxCreateContextDescFrameGenerationVersion>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:34:struct ffxCreateContextDescFrameGenerationSwapChainVK
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:36:    ffxCreateContextDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:41:    VkSwapchainCreateInfoKHR   createInfo;         ///< the description of the desired swapchain. If its VkSwapchainCreateInfoKHR::oldSwapchain field isn't VK_NULL_HANDLE, it should be the same as the ffxCreateContextDescFrameGenerationSwapChainVK::swapchain field above.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:49:struct ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceVK
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:51:    ffxConfigureDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:57:struct ffxQueryDescFrameGenerationSwapChainInterpolationCommandListVK
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:59:    ffxQueryDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:64:struct ffxQueryDescFrameGenerationSwapChainInterpolationTextureVK
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:66:    ffxQueryDescHeader     header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:71:struct ffxDispatchDescFrameGenerationSwapChainWaitForPresentsVK
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:73:    ffxDispatchDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:77:struct ffxConfigureDescFrameGenerationSwapChainKeyValueVK
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:79:    ffxConfigureDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:93:struct ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageVK
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:95:    ffxQueryDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:102:struct ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageVKV2
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:104:    ffxQueryDescHeader              header;                                  ///< Description header for the pre-context GPU memory query.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:126:struct ffxQueryDescSwapchainReplacementFunctionsVK
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:128:    ffxQueryDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:139:struct ffxCreateContextDescFrameGenerationSwapChainModeVK
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:141:    ffxCreateContextDescHeader header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:146:struct ffxCreateContextDescFrameGenerationSwapChainVersionVK
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.h:148:    ffxCreateContextDescHeader header;   ///< Description header for frame generation swapchain version context creation.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:34:    struct struct_type<ffxCreateContextDescFrameGenerationSwapChainVK> : std::integral_constant<uint64_t, FFX_API_CREATE_CONTEXT_DESC_TYPE_FGSWAPCHAIN_VK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:35:    struct CreateContextDescFrameGenerationSwapChainVK : public InitHelper<ffxCreateContextDescFrameGenerationSwapChainVK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:38:    struct struct_type<ffxCreateContextDescFrameGenerationSwapChainModeVK> : std::integral_constant<uint64_t, FFX_API_CREATE_CONTEXT_DESC_TYPE_FGSWAPCHAIN_MODE_VK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:39:    struct CreateContextDescFrameGenerationSwapChainModeVK : public InitHelper<ffxCreateContextDescFrameGenerationSwapChainModeVK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:42:    struct struct_type<ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceVK> : std::integral_constant<uint64_t, FFX_API_CONFIGURE_DESC_TYPE_FGSWAPCHAIN_REGISTERUIRESOURCE_VK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:43:    struct ConfigureDescFrameGenerationSwapChainRegisterUiResourceVK : public InitHelper<ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceVK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:46:    struct struct_type<ffxQueryDescFrameGenerationSwapChainInterpolationCommandListVK> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_FGSWAPCHAIN_INTERPOLATIONCOMMANDLIST_VK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:47:    struct QueryDescFrameGenerationSwapChainInterpolationCommandListVK : public InitHelper<ffxQueryDescFrameGenerationSwapChainInterpolationCommandListVK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:50:    struct struct_type<ffxQueryDescFrameGenerationSwapChainInterpolationTextureVK> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_FGSWAPCHAIN_INTERPOLATIONTEXTURE_VK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:51:    struct QueryDescFrameGenerationSwapChainInterpolationTextureVK : public InitHelper<ffxQueryDescFrameGenerationSwapChainInterpolationTextureVK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:54:    struct struct_type<ffxQueryDescSwapchainReplacementFunctionsVK> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_FGSWAPCHAIN_FUNCTIONS_VK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:55:    struct QueryDescSwapchainReplacementFunctionsVK : public InitHelper<ffxQueryDescSwapchainReplacementFunctionsVK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:58:    struct struct_type<ffxDispatchDescFrameGenerationSwapChainWaitForPresentsVK> : std::integral_constant<uint64_t, FFX_API_DISPATCH_DESC_TYPE_FGSWAPCHAIN_WAIT_FOR_PRESENTS_VK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:59:    struct DispatchDescFrameGenerationSwapChainWaitForPresentsVK : public InitHelper<ffxDispatchDescFrameGenerationSwapChainWaitForPresentsVK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:62:    struct struct_type<ffxConfigureDescFrameGenerationSwapChainKeyValueVK> : std::integral_constant<uint64_t, FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_KEYVALUE_VK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:63:    struct ConfigureDescFrameGenerationSwapChainKeyValueVK : public InitHelper<ffxConfigureDescFrameGenerationSwapChainKeyValueVK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:66:    struct struct_type<ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageVK> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_GPU_MEMORY_USAGE_VK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:67:    struct QueryFrameGenerationSwapChainGetGPUMemoryUsageVK : public InitHelper<ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageVK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:70:    struct struct_type<ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageVKV2> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_GPU_MEMORY_USAGE_VK_V2> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:71:    struct QueryFrameGenerationSwapChainGetGPUMemoryUsageVKV2 : public InitHelper<ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageVKV2> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:74:    struct struct_type<ffxCreateContextDescFrameGenerationSwapChainVersionVK> : std::integral_constant<uint64_t, FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_VERSION_VK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include/vk/ffx_api_framegeneration_vk.hpp:75:    struct CreateContextDescFrameGenerationSwapChainVersionVK : public InitHelper<ffxCreateContextDescFrameGenerationSwapChainVersionVK> {};
+./third_party/fidelityfx-sdk/Kits/FidelityFX/radiancecache/include/ffx_radiancecache.h:38:/// Configuration flags supplied to ffxCreateContextDescRadianceCache.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/radiancecache/include/ffx_radiancecache.h:52:typedef struct ffxCreateContextDescRadianceCache
+./third_party/fidelityfx-sdk/Kits/FidelityFX/radiancecache/include/ffx_radiancecache.h:54:    ffxCreateContextDescHeader              header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/radiancecache/include/ffx_radiancecache.h:59:} ffxCreateContextDescRadianceCache;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/radiancecache/include/ffx_radiancecache.h:63:/// Configuration flags supplied to ffxDispatchDescRadianceCache.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/radiancecache/include/ffx_radiancecache.h:85:typedef struct ffxDispatchDescRadianceCache
+./third_party/fidelityfx-sdk/Kits/FidelityFX/radiancecache/include/ffx_radiancecache.h:87:    ffxDispatchDescHeader                   header;             
+./third_party/fidelityfx-sdk/Kits/FidelityFX/radiancecache/include/ffx_radiancecache.h:101:} ffxDispatchDescRadianceCache;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/radiancecache/include/ffx_radiancecache.h:107:    ffxDispatchDescHeader                   header;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/radiancecache/include/ffx_radiancecache.hpp:33:    struct struct_type<ffxCreateContextDescRadianceCache> : std::integral_constant<uint64_t, FFX_API_CREATE_CONTEXT_DESC_TYPE_RADIANCECACHE>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/radiancecache/include/ffx_radiancecache.hpp:37:    struct CreateContextDescRadianceCache : public InitHelper<ffxCreateContextDescRadianceCache>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/radiancecache/include/ffx_radiancecache.hpp:42:    struct struct_type<ffxDispatchDescRadianceCache> : std::integral_constant<uint64_t, FFX_API_DISPATCH_DESC_TYPE_RADIANCECACHE>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/radiancecache/include/ffx_radiancecache.hpp:46:    struct DispatchDescRadianceCache : public InitHelper<ffxDispatchDescRadianceCache>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/include/ffx_provider_fsr2.h:34:    virtual ffxReturnCode_t CreateContext(ffxContext* context, ffxCreateContextDescHeader* desc, Allocator& alloc) override;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/include/ffx_provider_fsr2.h:38:    virtual ffxReturnCode_t Configure(ffxContext* context, const ffxConfigureDescHeader* desc) const override;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/include/ffx_provider_fsr2.h:40:    virtual ffxReturnCode_t Query(ffxContext* context, ffxQueryDescHeader* desc) const override;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/include/ffx_provider_fsr2.h:42:    virtual ffxReturnCode_t Dispatch(ffxContext* context, const ffxDispatchDescHeader* desc) const override;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/include/ffx_provider_fsr3upscale.h:34:    virtual ffxReturnCode_t CreateContext(ffxContext* context, ffxCreateContextDescHeader* desc, Allocator& alloc) override;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/include/ffx_provider_fsr3upscale.h:38:    virtual ffxReturnCode_t Configure(ffxContext* context, const ffxConfigureDescHeader* desc) const override;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/include/ffx_provider_fsr3upscale.h:40:    virtual ffxReturnCode_t Query(ffxContext* context, ffxQueryDescHeader* desc) const override;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/include/ffx_provider_fsr3upscale.h:42:    virtual ffxReturnCode_t Dispatch(ffxContext* context, const ffxDispatchDescHeader* desc) const override;
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr2.cpp:77:ffxReturnCode_t ffxProvider_FSR2::CreateContext(ffxContext* context, ffxCreateContextDescHeader* header, Allocator& alloc)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr2.cpp:82:    if (auto desc = ffx::DynamicCast<ffxCreateContextDescUpscale>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr2.cpp:132:ffxReturnCode_t ffxProvider_FSR2::Configure(ffxContext* context, const ffxConfigureDescHeader* header) const
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr2.cpp:142:            auto desc = reinterpret_cast<const ffxConfigureDescGlobalDebug*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr2.cpp:152:            auto desc = reinterpret_cast<const ffxConfigureDescGlobalDebug1*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr2.cpp:163:ffxReturnCode_t ffxProvider_FSR2::Query(ffxContext* context, ffxQueryDescHeader* header) const
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr2.cpp:171:        auto desc = reinterpret_cast<ffxQueryDescUpscaleGetJitterOffset*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr2.cpp:186:        auto desc = reinterpret_cast<ffxQueryDescUpscaleGetJitterPhaseCount*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr2.cpp:197:        auto desc = reinterpret_cast<ffxQueryDescUpscaleGetRenderResolutionFromQualityMode*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr2.cpp:215:        auto desc = reinterpret_cast<ffxQueryDescUpscaleGetUpscaleRatioFromQualityMode*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr2.cpp:227:        auto desc = reinterpret_cast<ffxQueryDescUpscaleGetGPUMemoryUsage*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr2.cpp:239:        ffxQueryDescUpscaleGetGPUMemoryUsageV2* desc = reinterpret_cast<ffxQueryDescUpscaleGetGPUMemoryUsageV2*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr2.cpp:255:        auto desc = reinterpret_cast<ffxQueryDescUpscaleGetResourceRequirements*>(header);   
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr2.cpp:274:ffxReturnCode_t ffxProvider_FSR2::Dispatch(ffxContext* context, const ffxDispatchDescHeader* header) const
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr2.cpp:286:        auto desc = reinterpret_cast<const ffxDispatchDescUpscale*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr2.cpp:324:        auto desc = reinterpret_cast<const ffxDispatchDescUpscaleGenerateReactiveMask*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr3upscale.cpp:80:ffxReturnCode_t ffxProvider_FSR3Upscale::CreateContext(ffxContext* context, ffxCreateContextDescHeader* header, Allocator& alloc)
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr3upscale.cpp:85:    if (auto desc = ffx::DynamicCast<ffxCreateContextDescUpscale>(header))
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr3upscale.cpp:180:ffxReturnCode_t ffxProvider_FSR3Upscale::Configure(ffxContext* context, const ffxConfigureDescHeader* header) const
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr3upscale.cpp:195:        auto desc = reinterpret_cast<const ffxConfigureDescUpscaleKeyValue*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr3upscale.cpp:202:        auto desc = reinterpret_cast<const ffxConfigureDescGlobalDebug*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr3upscale.cpp:212:        auto desc = reinterpret_cast<const ffxConfigureDescGlobalDebug1*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr3upscale.cpp:225:ffxReturnCode_t ffxProvider_FSR3Upscale::Query(ffxContext* context, ffxQueryDescHeader* header) const
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr3upscale.cpp:243:        auto desc = reinterpret_cast<ffxQueryDescUpscaleGetJitterOffset*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr3upscale.cpp:258:        auto desc = reinterpret_cast<ffxQueryDescUpscaleGetJitterPhaseCount*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr3upscale.cpp:269:        auto desc = reinterpret_cast<ffxQueryDescUpscaleGetRenderResolutionFromQualityMode*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr3upscale.cpp:286:        auto desc = reinterpret_cast<ffxQueryDescUpscaleGetUpscaleRatioFromQualityMode*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr3upscale.cpp:301:        auto desc = reinterpret_cast<ffxQueryDescUpscaleGetGPUMemoryUsage*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr3upscale.cpp:313:        ffxQueryDescUpscaleGetGPUMemoryUsageV2* desc = reinterpret_cast<ffxQueryDescUpscaleGetGPUMemoryUsageV2*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr3upscale.cpp:329:        auto desc = reinterpret_cast<ffxQueryDescUpscaleGetResourceRequirements*>(header);   
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr3upscale.cpp:348:ffxReturnCode_t ffxProvider_FSR3Upscale::Dispatch(ffxContext* context, const ffxDispatchDescHeader* header) const
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr3upscale.cpp:365:        auto desc = reinterpret_cast<const ffxDispatchDescUpscale*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/internal/ffx_provider_fsr3upscale.cpp:409:        auto desc = reinterpret_cast<const ffxDispatchDescUpscaleGenerateReactiveMask*>(header);
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:77:struct ffxCreateContextDescUpscale
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:79:    ffxCreateContextDescHeader header;          ///< Header descriptor, use type FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:87:struct ffxDispatchDescUpscale
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:89:    ffxDispatchDescHeader      header;                      ///< Header descriptor, use type FFX_API_DISPATCH_DESC_TYPE_UPSCALE.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:115:struct ffxQueryDescUpscaleGetUpscaleRatioFromQualityMode
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:117:    ffxQueryDescHeader header;            ///< Header descriptor, use type FFX_API_QUERY_DESC_TYPE_UPSCALE_GETUPSCALERATIOFROMQUALITYMODE.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:123:struct ffxQueryDescUpscaleGetRenderResolutionFromQualityMode
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:125:    ffxQueryDescHeader header;            ///< Header descriptor, use type FFX_API_QUERY_DESC_TYPE_UPSCALE_GETRENDERRESOLUTIONFROMQUALITYMODE.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:134:struct ffxQueryDescUpscaleGetJitterPhaseCount
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:136:    ffxQueryDescHeader header;          ///< Header descriptor, use type FFX_API_QUERY_DESC_TYPE_UPSCALE_GETJITTERPHASECOUNT.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:143:struct ffxQueryDescUpscaleGetJitterOffset
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:145:    ffxQueryDescHeader header;      ///< Header descriptor, use type FFX_API_QUERY_DESC_TYPE_UPSCALE_GETJITTEROFFSET.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:147:    int32_t            phaseCount;  ///< The length of jitter phase. See <c><i>ffxQueryDescFsrGetJitterPhaseCount</i></c>.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:153:struct ffxDispatchDescUpscaleGenerateReactiveMask
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:155:    ffxDispatchDescHeader     header;           ///< Header descriptor, use type FFX_API_DISPATCH_DESC_TYPE_UPSCALE_GENERATEREACTIVEMASK.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:168:struct ffxConfigureDescUpscaleKeyValue
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:170:    ffxConfigureDescHeader header;  ///< Header descriptor, use type FFX_API_CONFIGURE_DESC_TYPE_UPSCALE_KEYVALUE.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:186:struct ffxQueryDescUpscaleGetGPUMemoryUsage
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:188:    ffxQueryDescHeader              header;                 ///< Header descriptor, use type FFX_API_QUERY_DESC_TYPE_UPSCALE_GPU_MEMORY_USAGE.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:193:struct ffxQueryDescUpscaleGetGPUMemoryUsageV2
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:195:    ffxQueryDescHeader              header;                  ///< Header descriptor, use type FFX_API_QUERY_DESC_TYPE_UPSCALE_GPU_MEMORY_USAGE_V2.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:214:struct ffxQueryDescUpscaleGetResourceRequirements
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:216:    ffxQueryDescHeader header;              ///< Header descriptor, use type FFX_API_QUERY_DESC_TYPE_UPSCALE_GET_RESOURCE_REQUIREMENTS.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:222:struct ffxCreateContextDescUpscaleVersion
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.h:224:    ffxCreateContextDescHeader header;   ///< Header descriptor, use type FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION.
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:34:struct struct_type<ffxCreateContextDescUpscale> : std::integral_constant<uint64_t, FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:37:struct CreateContextDescUpscale : public InitHelper<ffxCreateContextDescUpscale>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:41:struct struct_type<ffxDispatchDescUpscale> : std::integral_constant<uint64_t, FFX_API_DISPATCH_DESC_TYPE_UPSCALE>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:44:struct DispatchDescUpscale : public InitHelper<ffxDispatchDescUpscale>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:48:struct struct_type<ffxQueryDescUpscaleGetUpscaleRatioFromQualityMode> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_UPSCALE_GETUPSCALERATIOFROMQUALITYMODE>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:51:struct QueryDescUpscaleGetUpscaleRatioFromQualityMode : public InitHelper<ffxQueryDescUpscaleGetUpscaleRatioFromQualityMode>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:55:struct struct_type<ffxQueryDescUpscaleGetRenderResolutionFromQualityMode> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_UPSCALE_GETRENDERRESOLUTIONFROMQUALITYMODE>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:58:struct QueryDescUpscaleGetRenderResolutionFromQualityMode : public InitHelper<ffxQueryDescUpscaleGetRenderResolutionFromQualityMode>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:62:struct struct_type<ffxQueryDescUpscaleGetJitterPhaseCount> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_UPSCALE_GETJITTERPHASECOUNT>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:65:struct QueryDescUpscaleGetJitterPhaseCount : public InitHelper<ffxQueryDescUpscaleGetJitterPhaseCount>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:69:struct struct_type<ffxQueryDescUpscaleGetJitterOffset> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_UPSCALE_GETJITTEROFFSET>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:72:struct QueryDescUpscaleGetJitterOffset : public InitHelper<ffxQueryDescUpscaleGetJitterOffset>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:76:struct struct_type<ffxDispatchDescUpscaleGenerateReactiveMask> : std::integral_constant<uint64_t, FFX_API_DISPATCH_DESC_TYPE_UPSCALE_GENERATEREACTIVEMASK>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:79:struct DispatchDescUpscaleGenerateReactiveMask : public InitHelper<ffxDispatchDescUpscaleGenerateReactiveMask>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:83:struct struct_type<ffxConfigureDescUpscaleKeyValue> : std::integral_constant<uint64_t, FFX_API_CONFIGURE_DESC_TYPE_UPSCALE_KEYVALUE>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:86:struct ConfigureDescUpscaleKeyValue : public InitHelper<ffxConfigureDescUpscaleKeyValue>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:90:struct struct_type<ffxQueryDescUpscaleGetGPUMemoryUsage> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_UPSCALE_GPU_MEMORY_USAGE>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:93:struct QueryDescUpscaleGetGPUMemoryUsage : public InitHelper<ffxQueryDescUpscaleGetGPUMemoryUsage>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:97:struct struct_type<ffxQueryDescUpscaleGetGPUMemoryUsageV2> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_UPSCALE_GPU_MEMORY_USAGE_V2>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:100:struct QueryDescUpscaleGetGPUMemoryUsageV2 : public InitHelper<ffxQueryDescUpscaleGetGPUMemoryUsageV2>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:104:struct struct_type<ffxQueryDescUpscaleGetResourceRequirements> : std::integral_constant<uint64_t, FFX_API_QUERY_DESC_TYPE_UPSCALE_GET_RESOURCE_REQUIREMENTS>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:107:struct QueryDescUpscaleGetResourceRequirements : public InitHelper<ffxQueryDescUpscaleGetResourceRequirements>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:111:struct struct_type<ffxCreateContextDescUpscaleVersion> : std::integral_constant<uint64_t, FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION>
+./third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/include/ffx_upscale.hpp:114:struct CreateContextDescUpscaleVersion : public InitHelper<ffxCreateContextDescUpscaleVersion>
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/denoiserrendermodule.cpp:162:// ffxDispatch
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/denoiserrendermodule.cpp:163:// ffxDispatchDescHeader
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/denoiserrendermodule.cpp:1419:        // Needs to persist in the ::ffxDispatch scope.
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/denoiserrendermodule.cpp:1463:        ffxDispatchDescHeader* prevMainHeader = &dispatchDesc.header;
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/denoiserrendermodule.cpp:1466:            ffxDispatchDescHeader* const nextHeader = &desc.header;
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/denoiserrendermodule.cpp:1471:        ffxDispatchDescHeader* prevDominantLightVisibilityHeader = &dispatchDescDominantLightVisibility.header;
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/denoiserrendermodule.cpp:1474:            ffxDispatchDescHeader* const nextHeader = &desc.header;
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/denoiserrendermodule.cpp:1481:        // Need to persist in the ::ffxDispatch scope.
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/denoiserrendermodule.cpp:1492:        // Need to persist in the ::ffxDispatch scope.
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/denoiserrendermodule.cpp:1503:        // Need to persist in the ::ffxDispatch scope.
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/denoiserrendermodule.cpp:1514:        // Need to persist in the ::ffxDispatch scope.
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/denoiserrendermodule.cpp:1535:        // Need to persist in the ::ffxDispatch scope.
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/denoiserrendermodule.cpp:1546:        // Need to persist in the ::ffxDispatch scope.
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/denoiserrendermodule.cpp:1557:        // Need to persist in the ::ffxDispatch scope.
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/denoiserrendermodule.cpp:1568:        // Need to persist in the ::ffxDispatch scope.
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/denoiserrendermodule.cpp:1583:            ffxReturnCode_t ret = ::ffxDispatch(&m_pMainDenoiserContext, &dispatchDesc.header);
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/denoiserrendermodule.cpp:1590:            ffxReturnCode_t ret = ::ffxDispatch(&m_pDominantLightVisibilityDenoiserContext, &dispatchDescDominantLightVisibility.header);
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/fsrapirendermodule.cpp:200:                    L"ffxQuery(UpscalingContext,GETJITTERPHASECOUNT) returned %d", (uint32_t)retCode);
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/fsrapirendermodule.cpp:211:                    L"ffxQuery(UpscalingContext,FSR_GETJITTEROFFSET) returned %d", (uint32_t)retCode);
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/fsrapirendermodule.cpp:348:                struct ffxQueryDescUpscaleGetGPUMemoryUsageV2 upscalerGetGPUMemoryUsageV2 = {0};
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/fsrapirendermodule.cpp:363:                    retCode_t = ffxQuery(nullptr, &upscalerGetGPUMemoryUsageV2.header);
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/fsrapirendermodule.cpp:365:                        L"ffxQuery(nullptr,UpscaleGetGPUMemoryUsageV2, %S) returned %d", m_FsrVersionNames[m_FsrVersionIndex], retCode_t);
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/fsrapirendermodule.cpp:373:                        L"ffxQuery(nullptr,UpscaleGetGPUMemoryUsageV2) returned %d", (uint32_t)retCode);
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/fsrapirendermodule.cpp:382:            ffxQueryGetProviderVersion getVersion = {0};
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/fsrapirendermodule.cpp:385:            retCode_t = ffxQuery(&m_UpscalingContext, &getVersion.header);
+./third_party/fidelityfx-sdk/Samples/Denoisers/FidelityFX_Denoiser/dx12/fsrapirendermodule.cpp:387:                L"ffxQuery(UpscalingContext,GetProviderVersion) returned %d", retCode_t);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:99:    ffxQueryDescGetVersions versionQuery{};
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:106:    ffxReturnCode_t retCode = ffxQuery(nullptr, &versionQuery.header);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:108:        L"ffxQuery(nullptr,GetVersions%sCount) returned %d", GetVersionQueryName(createDescType), retCode);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:114:    retCode = ffxQuery(nullptr, &versionQuery.header);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:116:        L"ffxQuery(nullptr,GetVersions%sIdsNames) returned %d", GetVersionQueryName(createDescType), retCode);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:363:                    L"ffxQuery(UpscalingContext,GETJITTERPHASECOUNT) returned %d", (uint32_t)retCode);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:374:                    L"ffxQuery(UpscalingContext,FSR_GETJITTEROFFSET) returned %d", (uint32_t)retCode);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:461:                L"ffxQuery(nullptr,GetResourceRequirements,%S,backend) returned %d", m_FsrVersionNames[index].c_str(), (uint32_t)retCode);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:939:                    L"ffxQuery(nullptr,UpscaleGetUpscaleRatioFromQualityMode,%S,backend) returned %d", m_FsrVersionNames[m_FsrVersionIndex].c_str(), (uint32_t)retCode);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:951:                    L"ffxQuery(nullptr,UpscaleGetUpscaleRatioFromQualityMode,backend) returned %d", (uint32_t)retCode);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:1143:                struct ffxQueryDescUpscaleGetGPUMemoryUsageV2 upscalerGetGPUMemoryUsageV2 = {0};
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:1177:                    retCode_t = ffxQuery(nullptr, &upscalerGetGPUMemoryUsageV2.header);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:1179:                        L"ffxQuery(nullptr,UpscaleGetGPUMemoryUsageV2, %S) returned %d", m_FsrVersionNames[m_FsrVersionIndex].c_str(), retCode_t);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:1185:                    retCode_t = ffxQuery(nullptr, &renderResDesc.header);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:1187:                        L"ffxQuery(nullptr,QueryDescUpscaleGetRenderResolutionFromQualityMode, %S) returned %d", m_FsrVersionNames[m_FsrVersionIndex].c_str(), retCode_t);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:1196:                        L"ffxQuery(nullptr,UpscaleGetGPUMemoryUsageV2) returned %d", (uint32_t)retCode);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:1199:                    retCode_t = ffxQuery(nullptr, &renderResDesc.header);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:1201:                        L"ffxQuery(nullptr,QueryDescUpscaleGetRenderResolutionFromQualityMode, %S) returned %d", m_FsrVersionNames[m_FsrVersionIndex].c_str(), retCode_t);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:1211:            ffxQueryGetProviderVersion getVersion = {0};
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:1214:            retCode_t = ffxQuery(&m_UpscalingContext, &getVersion.header);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:1216:                L"ffxQuery(UpscalingContext,GetProviderVersion) returned %d", retCode_t);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:1271:                L"ffxQuery(nullptr,SwapChainGetGPUMemoryUsageV2) returned %d", (uint32_t)retCode);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:1393:            m_FrameGenerationConfig.frameGenerationCallback = [](ffxDispatchDescFrameGeneration* params, void* pUserCtx) -> ffxReturnCode_t
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:1395:                return ffxDispatch(reinterpret_cast<ffxContext*>(pUserCtx), &params->header);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:1816:            m_FrameGenerationConfig.frameGenerationCallback = [](ffxDispatchDescFrameGeneration* params, void* pUserCtx) -> ffxReturnCode_t
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:1818:                return ffxDispatch(reinterpret_cast<ffxContext*>(pUserCtx), &params->header);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/internal/fsrapirendermodule.cpp:2053:    CauldronAssert(ASSERT_ERROR, retCode == ffx::ReturnCode::Ok, L"ffxDispatch(FSR_GENERATEREACTIVEMASK) failed with %d", (uint32_t)retCode);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:335:                    L"ffxQuery(UpscalingContext,GETJITTERPHASECOUNT) returned %d", (uint32_t)retCode);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:346:                    L"ffxQuery(UpscalingContext,FSR_GETJITTEROFFSET) returned %d", (uint32_t)retCode);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:387:        struct ffxQueryDescGetVersions versionQuery = { 0 };
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:396:        retCode_t = ffxQuery(nullptr, &versionQuery.header);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:398:            L"ffxQuery(nullptr,GetVersionsUpscaleCount) returned %d", retCode_t);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:404:        retCode_t = ffxQuery(nullptr, &versionQuery.header);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:406:            L"ffxQuery(nullptr,GetVersionsUpscaleIdsNames) returned %d", retCode_t);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:418:            L"ffxQuery(nullptr,GetResourceRequirements,VersionOverride %S) returned %d", m_FsrVersionNames[index], (uint32_t)retCode);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:544:        struct ffxQueryDescGetVersions versionQuery = { 0 };
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:551:        retCode_t = ffxQuery(nullptr, &versionQuery.header);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:553:            L"ffxQuery(nullptr,GetVersionsFGCount) returned %d", retCode_t);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:559:        retCode_t = ffxQuery(nullptr, &versionQuery.header);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:561:            L"ffxQuery(nullptr,GetVersionsFGIdsNames) returned %d", retCode_t);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:930:                struct ffxQueryDescUpscaleGetGPUMemoryUsageV2 upscalerGetGPUMemoryUsageV2 = {0};
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:953:                    retCode_t = ffxQuery(nullptr, &upscalerGetGPUMemoryUsageV2.header);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:955:                        L"ffxQuery(nullptr,UpscaleGetGPUMemoryUsageV2, %S) returned %d", m_FsrVersionNames[m_FsrVersionIndex], retCode_t);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:963:                        L"ffxQuery(nullptr,UpscaleGetGPUMemoryUsageV2) returned %d", (uint32_t)retCode);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:972:            ffxQueryGetProviderVersion getVersion = {0};
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:975:            retCode_t = ffxQuery(&m_UpscalingContext, &getVersion.header);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:977:                L"ffxQuery(UpscalingContext,GetProviderVersion) returned %d", retCode_t);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:1002:                L"ffxQuery(m_SwapChainContext, SwapChainGetGPUMemoryUsageVK) returned %d", (uint32_t)retCode);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:1111:            m_FrameGenerationConfig.frameGenerationCallback = [](ffxDispatchDescFrameGeneration* params, void* pUserCtx) -> ffxReturnCode_t
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:1113:                return ffxDispatch(reinterpret_cast<ffxContext*>(pUserCtx), &params->header);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:1458:            m_FrameGenerationConfig.frameGenerationCallback = [](ffxDispatchDescFrameGeneration* params, void* pUserCtx) -> ffxReturnCode_t
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:1460:                return ffxDispatch(reinterpret_cast<ffxContext*>(pUserCtx), &params->header);
+./third_party/fidelityfx-sdk/Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp:1635:    CauldronAssert(ASSERT_ERROR, retCode == ffx::ReturnCode::Ok, L"ffxDispatch(FSR_GENERATEREACTIVEMASK) failed with %d", (uint32_t)retCode);
+./tools/framegeneration-probe.cpp:8:// hands it to the provider ABI (ffxCreateContext/ffxQuery/ffxDispatch/ffxDestroyContext),
+./tools/framegeneration-probe.cpp:38:// No-op host callbacks for the probe's ffxConfigure host-integration contract. The provider
+./tools/framegeneration-probe.cpp:44:static ffxReturnCode_t probeFrameGenerationCallback(ffxDispatchDescFrameGeneration*, void*) {
+./tools/framegeneration-probe.cpp:48:// The Vulkan backend block a host attaches to ffxCreateContext (descriptor type 3).
+./tools/framegeneration-probe.cpp:212:        // execution contract (ffxCreateContext == OK). A device that merely created a VkDevice but
+./tools/framegeneration-probe.cpp:236:        ffxCreateContextDescFrameGeneration createDesc{};
+./tools/framegeneration-probe.cpp:255:        const ffxReturnCode_t created = ffxCreateContext(&context, create, nullptr);
+./tools/framegeneration-probe.cpp:259:            // is honestly refused by ffxCreateContext with a runtime error. That is the CORRECT
+./tools/framegeneration-probe.cpp:263:                        "(ffxCreateContext=%d)\n",
+./tools/framegeneration-probe.cpp:269:        expect("ffxCreateContext", (int)created, (int)FFX_API_RETURN_OK);
+./tools/framegeneration-probe.cpp:273:            ffxDispatchDescFrameGenerationPrepare early{};
+./tools/framegeneration-probe.cpp:278:            expect("ffxDispatch(Prepare) before Configure",
+./tools/framegeneration-probe.cpp:279:                   (int)ffxDispatch(&context, &early.header),
+./tools/framegeneration-probe.cpp:284:            ffxQueryDescGetVersions versions{
+./tools/framegeneration-probe.cpp:288:            ffxQuery(&context, &versions.header);
+./tools/framegeneration-probe.cpp:295:            expect("ffxQuery(GET_VERSIONS).versionIds[0] == 0xF600000001000002",
+./tools/framegeneration-probe.cpp:301:            ffxQueryDescFrameGenerationGetGPUMemoryUsage gpuQ{};
+./tools/framegeneration-probe.cpp:305:            expect("ffxQuery(GPU_MEMORY_USAGE)",
+./tools/framegeneration-probe.cpp:306:                   (int)ffxQuery(&context, &gpuQ.header),
+./tools/framegeneration-probe.cpp:308:            // Follow the SDK's mandatory order: ffxConfigure(ffxConfigureDescFrameGeneration, 0x0002
+./tools/framegeneration-probe.cpp:313:            ffxConfigureDescFrameGeneration configure{};
+./tools/framegeneration-probe.cpp:327:            const int configureCode = (int)ffxConfigure(&context, &configure.header);
+./tools/framegeneration-probe.cpp:328:            expect("ffxConfigure(host contract)", configureCode, (int)FFX_API_RETURN_OK);
+./tools/framegeneration-probe.cpp:334:            ffxDispatchDescFrameGenerationPrepare prepare{};
+./tools/framegeneration-probe.cpp:345:            ffxDispatchDescFrameGenerationPrepareCameraInfo cam{};
+./tools/framegeneration-probe.cpp:356:            const int dispatchCode = (int)ffxDispatch(&context, &prepare.header);
+./tools/framegeneration-probe.cpp:357:            expect("ffxDispatch(Prepare) after Configure", dispatchCode,
+./tools/framegeneration-probe.cpp:362:            ffxDispatchDescFrameGeneration generate{};
+./tools/framegeneration-probe.cpp:368:            expect("ffxDispatch(FrameGeneration) after Prepare",
+./tools/framegeneration-probe.cpp:369:                   (int)ffxDispatch(&context, &generate.header),
+./tools/framegeneration-probe.cpp:376:            expect("ffxDispatch(present-callback)",
+./tools/framegeneration-probe.cpp:377:                   (int)ffxDispatch(&context, &presentCb.header),
+./tools/framegeneration-probe.cpp:379:            const int destroyed = (int)ffxDestroyContext(&context, nullptr);
+./tools/framegeneration-probe.cpp:380:            expect("ffxDestroyContext", destroyed, (int)FFX_API_RETURN_OK);
+./tools/framegeneration-probe.cpp:388:            if (ffxCreateContext(&warm, create, nullptr) == FFX_API_RETURN_OK &&
+./tools/framegeneration-probe.cpp:403:                ffxDestroyContext(&warm, nullptr);
+./tools/framegeneration-check-test.cpp:24:static ffxDispatchDescFrameGenerationPrepareCameraInfo makeCam() {
+./tools/framegeneration-check-test.cpp:26:    ffxDispatchDescFrameGenerationPrepareCameraInfo c{};
+./tools/framegeneration-check-test.cpp:45:static ffxReturnCode_t cbFg(ffxDispatchDescFrameGeneration*, void*) {
+./tools/framegeneration-check-test.cpp:52:        ffxCreateContextDescFrameGeneration d{};
+./tools/framegeneration-check-test.cpp:82:        ffxDispatchDescFrameGenerationPrepare p{};
+./tools/framegeneration-check-test.cpp:107:        ffxDispatchDescFrameGeneration g{};
+./tools/framegeneration-check-test.cpp:127:        ffxDispatchDescFrameGenerationPrepare p{};
+./tools/framegeneration-check-test.cpp:138:        ffxConfigureDescFrameGeneration c{};
+./tools/framegeneration-check-test.cpp:182:        ffxConfigureDescFrameGenerationRegisterDistortionFieldResource d{};
+./tools/framegeneration-check-test.cpp:190:        ffxCreateContextDescFrameGenerationHudless h{};
+./tools/upscaler-query-test.cpp:7:// ffxQuery (GetUpscaleRatioFromQualityMode / GetRenderResolutionFromQualityMode /
+./tools/framegeneration-plan-test.cpp:421:    //    machine-checked fact; it does NOT enable ffxDispatch (graph deps/order, intermediate

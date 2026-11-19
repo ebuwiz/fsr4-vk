@@ -69,6 +69,17 @@ if [[ -f "$repo_root/assets/frame-generation/pack/pipelines.tsv" ]]; then
         echo "[check] FG pass-plan consistency (GPU-free)"
         "$build_dir/framegeneration-plan-test"
     fi
+    # Cooperative-dataflow BOUNDARY probe: asserts the measured reality that the 156 ML cooperative
+    # passes declare weights (set 1 SSBO) + activation (set 4 SSBO) + CBV (set 5 Uniform) at binding 0,
+    # but each OpCooperativeMatrixLoad/StoreKHR pointer is a BINDLESS/dynamic buffer address, so NO
+    # pass->pass dataflow edge (hence the ML execution ORDER) is statically derivable from the shipped
+    # SPIR-V. Pins edges=0 as a drift gate: if a future pack/toolchain made order derivable this fails
+    # loudly, and ffxDispatch stays honestly refused until then. GPU-free (uses spirv-dis).
+    if [[ -f "$repo_root/assets/frame-generation/pack/mlfi-graph.json" ]]; then
+        echo "[check] FG cooperative-dataflow boundary probe (GPU-free)"
+        "$py" "$repo_root/tools/extract/frame-generation/dataflow.py" \
+            --pack "$repo_root/assets/frame-generation/pack"
+    fi
 fi
 
 # Deterministic FSR query helper math (quality->ratio, render resolution, jitter
