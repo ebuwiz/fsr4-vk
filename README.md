@@ -236,7 +236,10 @@ The build itself verifies every embedded asset payload and alias. On top of that
     isolation, and the FG model/graph/pipelines three-way identity gate — `test_mlfi_graph_chain_matches_pack`
     proves the 4k+8k 191-pass ML chains' per-pass shader identity (module hash + SPIR-V digest) matches
     the shipped `modules.tsv`, that the graph's cooperative-matrix count equals the SPIR-V census (156),
-    and that the 9,437,184-byte `mlfi-model.bin` bytes hash to the DLL-extracted model SHA — all GPU-free),
+    and that the 9,437,184-byte `mlfi-model.bin` bytes hash to the DLL-extracted model SHA — all GPU-free — and `test_mlfi_chain_structure_and_model_tiling`, which pins the ML
+    chain structure (the 4k and 8k per-index descriptor-set signatures are tier-invariant; the graph's
+    per-pass sets equal the pack `pipelines.tsv`; the 156 cooperative passes bind sets 1,4,5; and the model
+    blob is a whole number of 16x16 tiles for fp16/fp32/int8) WITHOUT asserting any dataflow order/DAG),
   `framegeneration-check-order-camera` (`framegeneration-check-test`: the GPU-free
   Frame Generation mandatory-order + camera-info + create/generate predicates), and
   `framegeneration-compile-parity-474` (`framegeneration-exec --compile-pack

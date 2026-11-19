@@ -16,6 +16,7 @@ They check the load-bearing invariants, not constants-for-theirs-sake:
 """
 
 import hashlib
+import collections
 import json
 import struct
 import subprocess
@@ -526,13 +527,96 @@ def test_mlfi_graph_chain_matches_pack():
             raise AssertionError("on-disk mlfi-model.bin != the DLL-extracted model blob (identity)")
 
 
+def test_mlfi_chain_structure_and_model_tiling():
+    # Grounded from the DLL-RE graph + the shipped pack, NO execution order/DAG claimed. Verifies:
+    #  (1) every mlfi pass' descriptor-set participation in mlfi-graph.json EQUALS the pack
+    #      pipelines.tsv bound sets (DLL-RE <-> pack conversion: two independent producers);
+    #  (2) the 4k and 8k chains are STRUCTURALLY TIER-INVARIANT: an identical per-index signature
+    #      sequence for positions 0..190;
+    #  (3) the 156 cooperative-matrix passes are exactly the passes binding descriptor sets 1,4,5
+    #      (activation + model weights), and the whole 382-pass signature multiset matches the pinned
+    #      FG 4.0.2 census;
+    #  (4) the 9,437,184-byte model blob aligns to the pinned 16x16 cooperative tiling for every
+    #      recovered component dtype (fp16/fp32/int8 -> a whole number of tiles).
+    # This grounds roadmap blocker #2's premise (chain structure / per-pass resource participation) and
+    # the model<->tile grid (toward #1 CsTensorSizes and #3 allocation). It does NOT recover the graph
+    # dependency ORDER or per-node offsets (not derivable from these signatures) and the provider still
+    # refuses dispatch. GPU-free; self-skips when the generated pack/graph is absent.
+    graph_path = PACK / "mlfi-graph.json"
+    pipelines_path = PACK / "pipelines.tsv"
+    if not (graph_path.is_file() and pipelines_path.is_file()):
+        print("SKIP mlfi-structure: FG graph/pack not generated")
+        return
+    graph = json.loads(graph_path.read_text())
+    chains = graph["chains"]
+    if sorted(chains) != ["4k", "8k"]:
+        raise AssertionError(f"chains != 4k/8k: {sorted(chains)}")
+    if len(chains["4k"]) != 191 or len(chains["8k"]) != 191:
+        raise AssertionError("ML chains not a complete 191+191")
+
+    # (1) pack bound descriptor-set signature per neural entry (set ids from set:binding:KIND tokens).
+    kinds = {"SB", "UB", "CIS", "SI", "SMP"}
+    pack_sig = {}
+    for ln in pipelines_path.read_text().splitlines()[1:]:
+        c = ln.split("\t")
+        if len(c) < 8 or c[1] != "compute-neural":
+            continue
+        s = set()
+        for tok in c[6].split(";"):
+            f = tok.split(":")
+            if len(f) >= 3 and f[2] in kinds:
+                s.add(int(f[0]))
+        pack_sig[c[2]] = tuple(sorted(s))
+    graph_sig = {}
+    for tier in ("4k", "8k"):
+        for e in chains[tier]:
+            graph_sig[e["entry"]] = tuple(sorted(e.get("descriptor_sets", [])))
+    if set(graph_sig) != set(pack_sig):
+        raise AssertionError("graph vs pack neural entry sets differ")
+    drift = [k for k in graph_sig if graph_sig[k] != pack_sig[k]]
+    if drift:
+        raise AssertionError(f"descriptor-set participation drift on {len(drift)} passes, e.g. {drift[:3]}")
+
+    # (2) tier-invariant per-index signature sequence (4k[i] == 8k[i] for all i).
+    for i in range(191):
+        a = tuple(sorted(chains["4k"][i]["descriptor_sets"]))
+        b = tuple(sorted(chains["8k"][i]["descriptor_sets"]))
+        if a != b:
+            raise AssertionError(f"4k[{i}] sig {a} != 8k[{i}] sig {b}")
+
+    # (3) cooperative passes and the pinned signature multiset.
+    coop = [e for tier in ("4k", "8k") for e in chains[tier] if e.get("cooperative_matrix")]
+    if len(coop) != 156:
+        raise AssertionError(f"cooperative passes != 156: {len(coop)}")
+    coop_sig = collections.Counter(tuple(sorted(e["descriptor_sets"])) for e in coop)
+    if coop_sig != collections.Counter({(1, 4, 5): 156}):
+        raise AssertionError(f"cooperative passes must all bind sets 1,4,5; got {dict(coop_sig)}")
+    sig_multiset = collections.Counter(
+        tuple(sorted(e["descriptor_sets"])) for tier in ("4k", "8k") for e in chains[tier])
+    expected = collections.Counter({
+        (4, 5): 186, (1, 4, 5): 156, (1,): 32,
+        (0, 2, 4, 5): 4, (3, 4, 5): 2, (0, 2, 3, 4, 5): 2,
+    })
+    if sig_multiset != expected:
+        raise AssertionError(f"signature multiset != pinned FG 4.0.2 census: {dict(sig_multiset)}")
+
+    # (4) model blob <-> 16x16 cooperative tiling for every recovered dtype.
+    model = graph["model"]["size"]
+    if model != 9437184:
+        raise AssertionError(f"model size {model} != 9437184")
+    for footprint, tiles, dtype in ((512, 18432, "fp16"), (1024, 9216, "fp32"), (256, 36864, "int8")):
+        if model % footprint != 0 or model // footprint != tiles:
+            raise AssertionError(f"model {model}B is not {tiles} whole 16x16 {dtype} tiles")
+
+
 def main():
     failures = []
     for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
                  test_dedup_and_census, test_abi_exports, test_pipeline_cache_namespace_isolation,
                  test_pack_manifest_shape, test_framegeneration_exec_selftest,
                  test_descriptor_slot_resolver, test_layout_census_analyzer,
-                 test_mlfi_graph_chain_matches_pack):
+                 test_mlfi_graph_chain_matches_pack,
+                 test_mlfi_chain_structure_and_model_tiling):
         name = test.__name__
         try:
             test()
