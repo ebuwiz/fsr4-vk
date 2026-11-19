@@ -59,6 +59,12 @@ struct FrameGenerationContext {
     // gate the camera/depth validation.
     bool debugChecking = false;   // FFX_FRAMEGENERATION_ENABLE_DEBUG_CHECKING
     bool depthInfinite = false;   // FFX_FRAMEGENERATION_ENABLE_DEPTH_INFINITE
+    bool highDynamicRange = false;         // FFX_FRAMEGENERATION_ENABLE_HIGH_DYNAMIC_RANGE
+    bool depthInverted = false;             // FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED
+    bool displayResMotionVectors = false;   // FFX_FRAMEGENERATION_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS
+    bool jitterCancellation = false;        // FFX_FRAMEGENERATION_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION
+    bool asyncWorkloadCreate = false;       // FFX_FRAMEGENERATION_ENABLE_ASYNC_WORKLOAD_SUPPORT
+    bool versionLinked = false;             // ffxCreateContextDescFrameGenerationVersion linked at create
     bool configured = false;
     bool prepared = false;
     bool frameGenerationEnabled = true;   // from ffxConfigureDescFrameGeneration
@@ -276,6 +282,16 @@ ffxReturnCode_t createContext(ffxContext* context, ffxCreateContextDescHeader* h
             return FFX_API_RETURN_ERROR_PARAMETER;
         }
     }
+    // Honor version negotiation honestly (grounded by the FSRFG_Dx12 injector reference: a host selects
+    // the algorithm version via ffxOverrideVersion.versionId from ffxQueryDescGetVersions; 0=non-ML, 1=ML).
+    // This .so implements exactly ONE FG version (classic; the 382-pass ML compute is not present), so a
+    // host pinning a DIFFERENT id is refused rather than silently substituted. No override = default classic.
+    if (const auto* override = ffgvk::findVersionOverride(header);
+        override != nullptr && override->versionId != ffgvk::kReferenceVersionId) {
+        logLine("create refused: requested ffxOverrideVersion id is not the single classic FG version "
+                "this provider implements (ML inference not provided; refusing to substitute)");
+        return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+    }
 
     const auto* enabled = ffgvk::findEnabledFeatures(header);
     if (!enabled) {
@@ -316,6 +332,24 @@ ffxReturnCode_t createContext(ffxContext* context, ffxCreateContextDescHeader* h
             (fgCreate->flags & FFX_FRAMEGENERATION_ENABLE_DEBUG_CHECKING) != 0u;
         created->depthInfinite =
             (fgCreate->flags & FFX_FRAMEGENERATION_ENABLE_DEPTH_INFINITE) != 0u;
+        created->highDynamicRange =
+            (fgCreate->flags & FFX_FRAMEGENERATION_ENABLE_HIGH_DYNAMIC_RANGE) != 0u;
+        created->depthInverted =
+            (fgCreate->flags & FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED) != 0u;
+        created->displayResMotionVectors =
+            (fgCreate->flags & FFX_FRAMEGENERATION_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS) != 0u;
+        created->jitterCancellation =
+            (fgCreate->flags & FFX_FRAMEGENERATION_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION) != 0u;
+        created->asyncWorkloadCreate =
+            (fgCreate->flags & FFX_FRAMEGENERATION_ENABLE_ASYNC_WORKLOAD_SUPPORT) != 0u;
+        // Recognize the 2.4.0 version-link block (0x0e) on the create chain (matched by type id only;
+        // the older vendored header has no ffxCreateContextDescFrameGenerationVersion struct).
+        for (const auto* cur = header; cur != nullptr; cur = cur->pNext) {
+            if (cur->type == ffgvk::kCreateVersionDescType) {
+                created->versionLinked = true;
+                break;
+            }
+        }
         if (hudless) {
             created->hudlessEnabled = true;
             created->hudlessBackBufferFormat = hudless->hudlessBackBufferFormat;
@@ -483,6 +517,14 @@ ffxReturnCode_t query(ffxContext* context, ffxQueryDescHeader* header) {
                     "until the interpolation/ML/present runtime is implemented");
             return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
         }
+        if (current->type == ffgvk::kQueryGPUUsageV2Type) {
+            // ffxQueryDescFrameGenerationGetGPUMemoryUsageV2 (0x0b): the pre-context (NULL-context)
+            // sizing query. Same honesty rule: this slice allocates nothing, so any byte count would be
+            // a fabrication -- refuse instead of returning a misleading zero to size VRAM against.
+            logLine("query refused: Frame Generation GPU memory usage V2 (pre-context) is not reportable "
+                    "until the interpolation/ML/present runtime is implemented");
+            return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+        }
     }
     // Unknown query descriptors are reported, never answered wrongly.
     return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
@@ -540,6 +582,13 @@ ffxReturnCode_t dispatch(ffxContext* context, const ffxDispatchDescHeader* heade
     if (header->type == ffgvk::kDispatchGenerateType) {
         const auto* generate =
             reinterpret_cast<const ffxDispatchDescFrameGeneration*>(header);
+        // Documented cancel path (grounded by the injector reference's DispatchCallback): numGeneratedFrames
+        // == 0 means "no interpolation this frame" (e.g. host disabled FG mid-frame or duplicate frameID).
+        // There is nothing to fabricate, so honestly return OK instead of refusing.
+        if (generate->numGeneratedFrames == 0u) {
+            logLine("generate: numGeneratedFrames==0 cancel (no interpolation requested this frame)");
+            return FFX_API_RETURN_OK;
+        }
         const auto v = ffgcheck::generateDescOk(generate);
         if (!v.ok) {
             logLine("generate refused: " + v.reason);
@@ -554,6 +603,23 @@ ffxReturnCode_t dispatch(ffxContext* context, const ffxDispatchDescHeader* heade
                 "implemented in this provider slice; refusing to fake frame generation. "
                 "Host-integration boundary (swap-chain present / pacing) is documented "
                 "in README.");
+        return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+    }
+
+    // ffxDispatchDescFrameGenerationPrepareV2 (0x0c) supersedes Prepare(0x04)+CameraInfo(0x0a) in the 2.4.0
+    // API; its camera block is EMBEDDED. The older vendored ffx_frame_generation.h this provider includes has
+    // no PrepareV2 struct, so we recognize + order-check it by descriptor type id (no struct reinterpret ->
+    // keeps the build safe), then apply the same honest algorithm refusal. A later layout-complete read (after
+    // repointing to the 2.4.0 header) would add the embedded-camera validation the injector relies on.
+    if (header->type == ffgvk::kDispatchPrepareV2Type) {
+        const auto ord = ffgcheck::prepareOrderOk(created->configured);
+        if (!ord.ok) {
+            logLine("prepareV2 refused: " + ord.reason);
+            return FFX_API_RETURN_ERROR_PARAMETER;
+        }
+        logLine("prepareV2 accepted (order valid) but dispatch pending: the Frame Generation "
+                "interpolation/ML/present runtime is not implemented in this provider slice; refusing "
+                "to fake frame generation.");
         return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
     }
 
