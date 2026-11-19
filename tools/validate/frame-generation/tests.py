@@ -944,6 +944,47 @@ def test_sdk_present_pacing_threading():
         raise AssertionError("present/pacing mixed timeline+binary semaphore choreography drifted")
 
 
+def test_sdk_swapchain_replacement_provider():
+    # Ground the user-pasted "Frame Generation (Swapchain)" doc as machine-checkable: the SDK ships a
+    # SEPARATE provider (fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp) that REPLACES the app's
+    # VkSwapchainKHR by handing back replacement function pointers, and -- crucially -- DELEGATES the
+    # interpolation workload to the HOST (frameGenerationCallback / InterpolationCommandListVK +
+    # InterpolationTextureVK) rather than computing it. So the swapchain present/pacing/UI product is
+    # implementable WITHOUT the closed 382-pass ML and WITHOUT fabricating any image. Pins the whole
+    # documented API surface. GPU-free; self-skips when the SDK is not populated.
+    fg = ROOT / "third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration"
+    prov = fg / "fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp"
+    if not prov.is_file():
+        print("SKIP sdk-swapchain-provider: FFX SDK submodule not populated")
+        return
+    t = prov.read_text(errors="ignore")
+    for tok in (
+        # The VkSwapchainKHR replacement function-pointer surface handed back via ffxQuery.
+        "SwapchainReplacementFunctionsVK",
+        "pOutCreateSwapchainFFXAPI", "pOutDestroySwapchainFFXAPI",
+        "pOutGetSwapchainImagesKHR", "pOutAcquireNextImageKHR", "pOutQueuePresentKHR",
+        "pOutSetHdrMetadataEXT", "pOutGetLastPresentCountFFXAPI",
+        # Creation + mode + version descs.
+        "CreateContextDescFrameGenerationSwapChainVK",
+        "CreateContextDescFrameGenerationSwapChainVersionVK",
+        "CreateContextDescFrameGenerationSwapChainModeVK", "composeOnPresentQueue",
+        # Interpolation is HOST-supplied (the swapchain does not itself run the FI/ML interface).
+        "InterpolationCommandListVK", "InterpolationTextureVK",
+        # Present lifecycle + memory queries + pinned swapchain version id.
+        "WaitForPresentsVK", "SwapChainGetGPUMemoryUsageVK",
+        "FFX_FRAMEGENERATION_SWAPCHAIN_VK_VERSION",
+    ):
+        if tok not in t:
+            raise AssertionError(f"documented Swapchain-provider API token missing from SDK source: {tok}")
+    # The before-destroy lifecycle + V2 memory query + async-workload opt-in gate also exist.
+    aux = (fg / "fsr3/vk/FrameInterpolationSwapchainVK.cpp").read_text(errors="ignore")
+    if "SwapChainGetGPUMemoryUsageVKV2" not in aux:
+        raise AssertionError("SwapChain GetGPUMemoryUsageVKV2 not present in the VK swapchain source")
+    fi = (fg / "fsr3/internal/ffx_provider_fsr3framegeneration.cpp").read_text(errors="ignore")
+    if "ENABLE_ASYNC_WORKLOAD_SUPPORT" not in fi:
+        raise AssertionError("FFX_FRAMEGENERATION_ENABLE_ASYNC_WORKLOAD_SUPPORT opt-in flag absent from SDK")
+
+
 def main():
     failures = []
     for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
@@ -959,7 +1000,8 @@ def main():
                  test_sdk_spd_inpainting_pyramid_setup,
                  test_sdk_present_swapchain_contract,
                  test_sdk_framegeneration_api_contract,
-                 test_sdk_present_pacing_threading):
+                 test_sdk_present_pacing_threading,
+                 test_sdk_swapchain_replacement_provider):
         name = test.__name__
         try:
             test()

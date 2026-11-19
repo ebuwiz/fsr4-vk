@@ -350,6 +350,29 @@ The build itself verifies every embedded asset payload and alias. On top of that
   (for example one lacking `VK_KHR_cooperative_matrix`) is *skipped* by
   `framegeneration-probe` (exit 77) rather than failed — this reflects the feature's
   supported-hardware boundary, not a gap in the provider.
+- **The "AMD reference captures" blocker applies to the *interpolation output*, not to the Swapchain
+  provider.** AMD's "Frame Generation (Swapchain)" doc + the SDK's
+  `fsr3/vk/ffx_provider_framegenerationswapchain_vk.cpp` show the Swapchain is a **separate provider**
+  that *replaces the app's `VkSwapchainKHR`* and **delegates the interpolation workload to the host**
+  (`ffxConfigureDescFrameGeneration::frameGenerationCallback`, or the
+  `ffxQueryDescFrameGenerationSwapChainInterpolationCommandListVK` + `…InterpolationTextureVK`
+  query) — it does **not** itself run the Frame‑Interpolation/ML interface. Therefore a
+  **present / pacing / UI‑composition provider is fully specified by this doc + source and can be
+  built without the closed 382‑pass ML and without fabricating any image** (the host supplies the
+  command buffer + destination texture that this provider merely presents and paces). What the doc
+  does *not* give is *pixel* parity for the interpolation *result* — that still needs AMD reference
+  captures. The whole surface is pinned by `test_sdk_swapchain_replacement_provider`. Doc facts this
+  provider must honour: FG **4.0.0 requires AMD RX 9000 (RDNA4)+ or the API auto‑falls back to 3.1.7**
+  (no hardware requirement); it creates **two CPU worker threads** (pacing + present/UI‑composition);
+  **driver‑assisted frame pacing** (Adrenalin 26.10.1+, exclusive or borderless fullscreen, VSync
+  off, presenting inside the display's VRR window) replaces the busy‑wait when available; FG **4.0.2
+  targets an input rate of at least 30 FPS**; it needs a typed‑UAV‑load GPU with
+  **`VK_FORMAT_R16G16B16A16_UNORM`** storage‑image support; the app gets the replacement `pOut…`
+  pointers from `ffxQuery(ffxQueryDescSwapchainReplacementFunctionsVK)`; and
+  `ffxDispatch(…WaitForPresentsVK)` must run before context destroy. So the concrete next implementation
+  step is this **Swapchain provider** (a `VkSwapchainKHR` replacement + 2 threads + UI composition +
+  pacing), which is now honest to build; the still‑closed parts remain the **ML order/weights** and
+  any **>4×** (which the `outputs[4]` contract forbids).
 - **Why `ffxDispatch` / `ffxQuery` return an error today — by design, not a defect.** Until the
   Frame Generation compute (classic optical‑flow + dilate **and** the 382 ML inference passes)
   **and** the present/pacing runtime are implemented *and* image‑quality‑validated against AMD
