@@ -5,6 +5,24 @@ and Linux, using AMD's model weights and shaders translated to SPIR-V.
 
 This project is not affiliated with or endorsed by AMD.
 
+## How to approach
+
+The whole project is built on **measured ground truth, never inference**. Read this before any code change; every capability claim must trace to a runnable gate.
+
+- **Pin the inputs.** Both source DLLs are pinned by SHA-256 - upscaler 4.1.2.4555 (`aad4...`) and Frame Generation 4.0.2.4555 (`e684...77bb6`) - and every extraction tool **fails on drift** rather than skipping a mismatch. AMD's open **FidelityFX SDK 2.4.0** (`third_party/fidelityfx-sdk`) is vendored as **CPU control-flow ground truth**: the *classic* interpolation pass order, resource tables, present/pacing/UI and descriptor layouts are **MINED from that readable source** and pinned by gates - not guessed out of the DLL.
+- **Two independent providers.** The upscaler is **complete + validated**. The Frame Generation provider is the ABI + capability contract + host-integration surface + reconstructed pass-plan substrate, and it **honestly refuses the not-yet-validated algorithm** instead of fabricating a blend or a made-up optical-flow stand-in. The two `.so` outputs must never share assets, model logic or runtime resources.
+- **Verify before claiming.** GPU-free gates run on any host (`bash tools/build/check.sh`, `ctest`, and the 26 FG gates in `tools/validate/frame-generation/tests.py`); device gates **auto-skip with exit 77**, so a GPU-less CI host stays green instead of failing. A red run is a real regression, not a missing GPU.
+- **Treat transport as a measured constraint.** Conventional `VkDescriptorSet` fails 2684 of 2692 FG sets because FG bindings are `VK_WHOLE_ARRAY` runtime arrays; the host runtime **must** use `VK_EXT_descriptor_buffer` (all 1208 FG bindings serialize with 0 failures). No FG shader has a cross-kind slot, so plain derived `VkPipelineLayout`s suffice - pipeline creation for all 474 compute modules is **solved**.
+- **Respect the closed boundary.** The 382 `mlfi_*` ML pass->pass execution ORDER is **not statically derivable** from the shipped SPIR-V (bindless pointers), and the ONNX neural net is **absent from the open SDK**; pixel parity needs AMD reference captures. The provider stays refused there *by design*, now with source-level evidence rather than only a shader-side `edges=0` proof.
+
+## What runs today (status matrix)
+
+- **Upscaler `amd_fidelityfx_upscaler_vk.so` - runs.** Records every FSR4 pass onto the host's `VkCommandBuffer` and self-sequences the barriers; full `ffxQuery`/create/dispatch contract answered; validated **byte-identical across both descriptor transports** (`descriptor-smoke`).
+- **Frame Generation `amd_fidelityfx_framegeneration_vk.so` - the boundary runs, the algorithm refuses.**
+  - *Runs (returns its documented code):* `ffxCreateContext` (capability contract + version advertisement + `fg4`-namespaced pipeline cache + warm reload); `ffxConfigure` capturing the full host contract; the **enforced** contract surface - all 7 create flags interpreted, mandatory Configure->Prepare->generate order, **version-negotiation refusal** of a non-classic `ffxOverrideVersion`, `PrepareV2` (`0x0c`) and `GetGPUMemoryUsageV2` (`0x0b`) recognized, `numGeneratedFrames == 0` **cancel** -> `OK`; the offline tooling (inventory / convert / reverse / plan / vk-identity) and the 26-gate python suite; `framegeneration-plan-test` + `framegeneration-check-test` (GPU-free) and `framegeneration-exec` (`--compile-pack`, `--descriptor-buffer-parity`, `--write-descriptors`, `--expect-plan`) + `framegeneration-probe` (device).
+  - *Honestly refused (`FFX_API_RETURN_ERROR_RUNTIME_ERROR`):* `ffxDispatch(Prepare | PrepareV2 | generate 1..3)` - the interpolation / ML / present runtime - and `ffxQuery(GetGPUMemoryUsage V1/V2)` while the provider owns no allocated targets. The present-callback descriptor returns `NO_PROVIDER`.
+- **See `## Next steps`** for what turns these honest refusals into a running FG runtime.
+
 ## Requirements
 
 - Python 3.10+, CMake 3.22.1+ and a C++20 compiler.
@@ -380,18 +398,7 @@ The build itself verifies every embedded asset payload and alias. On top of that
   which these are **already honored** (`src/framegeneration/{provider,framegeneration-checks}.cpp/.hpp`):
   `ENABLE_DEBUG_CHECKING`, `ENABLE_DEPTH_INFINITE`, `generationRect` (non‑negative + `0`=whole‑frame
   sentinel), `HUDLessColor`, `onlyPresentGenerated`, `frameID`, `RegisterDistortionFieldResource`,
-  `QueryDescFrameGenerationGetGPUMemoryUsage`. And these contract items are **still to wire** (honest
-  gaps this doc surfaces, all implementable from the header without the ML): linking
-  `ffxCreateContextDescFrameGenerationVersion` (`FFX_FRAMEGENERATION_VERSION`) in `pNext` at create;
-  accepting the **`PrepareV2`** path (and emitting the `unused_reset`→`reset` deprecation + honoring
-  `reset` ≡ non‑contiguous `frameID`); interpreting the other create flags
-  (`…DISPLAY_RESOLUTION_MOTION_VECTORS`, `…MOTION_VECTORS_JITTER_CANCELLATION`, `…DEPTH_INVERTED`,
-  `…HIGH_DYNAMIC_RANGE`, `…ASYNC_WORKLOAD_SUPPORT`); answering the **pre‑context** `…GetGPUMemoryUsageV2`
-  (NULL‑context) query; the letterbox rule that `generationRect.width/height` must equal the upscale
-  output size (only `left/top` may vary); the 3 UI paths + `RegisterUiResource…VK` and the
-  `ENABLE_INTERNAL_UI_DOUBLE_BUFFERING` resource‑lifetime rule; the `WaitForPresentsVK` teardown flush
-  before context destroy; and the documented **mutex‑guard** list (the FG+SwapChain contexts are not
-  thread‑safe).
+  `QueryDescFrameGenerationGetGPUMemoryUsage`. And these contract items are **now wired** by the contract-enforcement step (see `## How to approach` and the new gate `test_sdk_fg_host_contract_enforcement`): linking `ffxCreateContextDescFrameGenerationVersion` (`FFX_FRAMEGENERATION_VERSION`) in `pNext` at create is recognized; the **`PrepareV2`** path (`0x0c`) is accepted; the other create flags (`...DISPLAY_RESOLUTION_MOTION_VECTORS`, `...MOTION_VECTORS_JITTER_CANCELLATION`, `...DEPTH_INVERTED`, `...HIGH_DYNAMIC_RANGE`, `...ASYNC_WORKLOAD_SUPPORT`) are all interpreted; the **pre-context** `...GetGPUMemoryUsageV2` (`0x0b`) query is answered (honest refusal); and the documented `numGeneratedFrames == 0` **cancel** returns `OK`. And these are **still to wire** (honest gaps, all implementable from the header without the ML): the letterbox rule that `generationRect.width/height` must equal the upscale output size (only `left/top` may vary); the 3 UI paths + `RegisterUiResource...VK` and the `ENABLE_INTERNAL_UI_DOUBLE_BUFFERING` resource-lifetime rule; the `WaitForPresentsVK` teardown flush before context destroy; emitting the `unused_reset`->`reset` deprecation + honoring `reset` == non-contiguous `frameID`; and the documented **mutex-guard** list (the FG+SwapChain contexts are not thread-safe).
 - **How a real host drives FG — grounded by the `FSRFG_Dx12` injector reference (3zwr1/AMDNR).** This
   working integration (the same family as Hookshot's own-thread present) shows the *exact* runtime sequence
   and, decisively, **how the ML path is reached without reconstructing any pass order**:
@@ -438,6 +445,19 @@ The build itself verifies every embedded asset payload and alias. On top of that
   **behind** that contract. **Ceiling:** this FG 4.0.2 API tops out at `outputs[4]` → **4×**
   (≤3 interpolated frames, `frameID` advancing by exactly 1); "8×" is beyond FG 4.0.2 and is correctly
   refused, not a hook we are missing. This is pinned by `test_sdk_framegeneration_api_contract`.
+- **Contract enforcement (now implemented, not just documented).** The provider now *acts* on this host‑
+  integration surface instead of merely recording it: it reads **all 7** `FFX_FRAMEGENERATION_ENABLE_*`
+  create flags into the context; it **honors version negotiation** by calling `ffgvk::findVersionOverride` and
+  returning `RUNTIME_ERROR` if a host pins an `ffxOverrideVersion.versionId` this `.so` cannot run (classic
+  only — the 382‑pass ML inference is not provided, so we *refuse* rather than silently substitute a different
+  algorithm); it recognizes the 2.4.0‑only descriptor ids the older vendored header has **no struct for** — the
+  create version‑link (`0x0e`), `PrepareV2` dispatch (`0x0c`, which now runs the same in‑order check then the
+  honest `RUNTIME_ERROR` refusal) and `GetGPUMemoryUsageV2` (`0x0b`, refused exactly like V1) — matching them by
+  `type` id only so the build stays safe; and it honors the documented `numGeneratedFrames == 0` **cancel** path
+  by returning `OK` (nothing to fabricate) while still refusing `1..3` with `RUNTIME_ERROR`. Every change is
+  **additive** to branches the on‑device ladder never enters (no override, `numGeneratedFrames = 1`, present‑
+  callback), so the documented return‑code ladder is preserved by construction. Machine‑checked by the new
+  gate `test_sdk_fg_host_contract_enforcement` (GPU‑free, pack‑free), bringing the FG gate count to **26**.
 - `bash tools/build/linux.sh` now ends by running `tools/build/check.sh`, a
   post-build validation gate in which every check asserts exit 0 (a red run is a
   real regression — invalid SPIR-V, a dropped asset payload, or a broken Frame
@@ -785,6 +805,27 @@ On the RX 9070 XT path the probe additionally runs a cold→warm pipeline-cache 
 trip: the provider seeds an empty cache, serializes `36` bytes on teardown, reloads
 them on the next create (`seedBytes=36`), and the probe verifies the on-disk container
 carries the `FFG4PC1` magic and the `fg4` algorithm tag (never the upscaler's `fs4`).
+
+## Reference capture path (ground truth for the algorithm)
+
+The two remaining FG blockers - the 382-pass ML execution ORDER and output-pixel parity - are closed only by **observing AMD's own provider run**, not by decompiling it. The v2.4.0 tree already carries what a capture needs:
+
+- **AMD's own reference provider + host, both native Vulkan** (no game; no Proton bridge in principle):
+  - `Kits/FidelityFX/signedbin/amd_fidelityfx_framegeneration_vk.dll` (pinned SHA `d002dabf...`, FG 4.0.2.4555) plus its `_upscaler_vk.dll` / `_loader_vk.dll` siblings - AMD's reference binaries on the SAME API our `.so` implements.
+  - `Samples/Upscalers/FidelityFX_FSR/vk/fsrapirendermodule.cpp` - a **native-Vulkan** FFX host (`ffx_api_framegeneration_vk.hpp`) that drives create -> the **4-queue Frame Generation swapchain** (`CreateContextDescFrameGenerationSwapChainVK`: game / asyncCompute / present / imageAcquire) -> configure -> prepare -> generate -> present. Readable host-integration ground truth for exactly the boundary we implement.
+  - `dlls/amdvkffx64.dll` (pinned `179bf7e1...`) - the AMD Vulkan-FFX driver module (the `ffx-vk-linux` family).
+- **What the `_vk` DLL gives statically, right now, GPU-free:** its readable shader **IDENTITY** - 382 `mlfi_{4k,8k}_passNNN` (pass0..190 per tier), 156 cooperative-matrix markers, and the classic interpolation names (`CsDilate`, `cbInpaintingPyramid`, `uOpticalFlowPyramidLevel`, `iInputLumaResolution`, `FfxFrameInterpolationDebugViewport`). `tools/extract/frame-generation/vk-identity.py` proves that set EQUALS our DX12-extracted pack (dll-only=0, pack-only=0) - a **second AMD-authored confirmation**, pinned by the new gate `test_vk_dll_shader_identity`.
+- **What it does NOT give statically:** the `_vk` shader **bytes** are one compressed proprietary blob (no plaintext SPIR-V, no standard zstd/lz4 frames - the lone `18 4D 2E` marker decodes to a nonsense 3.7 GB size, so it is not a real zstd frame), and `passNNN` are **container labels, not the ML execution order** (already proven non-derivable). Identity is confirmed; the schedule still must be observed.
+- **To recover the ML order + pixel parity:** build the `vk` sample (MIT), select the **ML FG variant** (not classic FSR3) on a device AMD's FG actually runs (RX 9000 / cooperative-matrix capable), and intercept the Vulkan compute the DLL issues - a thin `libvulkan.so` shim or the validation layer logging each `vkCmdDispatch*` -> (threadgroup dims, bound-pipeline SPIR-V hash, resolved descriptors) emitted in our existing `modules.tsv`/plan schema, so the captured order diffs straight against `framegeneration-exec --expect-plan`; read back the output textures for A/B via `tools/validate/ab-frames.py`.
+- **Deps to stage in `dlls/`:** running the VK path needs `_loader_vk` (pinned `38a56a01...`) + `_upscaler_vk` (pinned `4a7e895a...`) alongside the already-present `amd_fidelityfx_framegeneration_vk.dll`. The DX12 alternative - capturing the pinned `_dx12` DLL (`e684...77bb6`) under Wine + vkd3d-proton - keeps the traced Vulkan calls aligned with the shader set you already extracted.
+
+## Next steps
+
+The Frame Generation algorithm is the only genuinely open work; everything else is buildable **without** touching the closed 382-pass ML boundary. In priority order:
+
+1. **Build the Swapchain present/pacing provider** (a separate effect id, `FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN_VK`). It **replaces the app's `VkSwapchainKHR`** and **delegates the interpolation workload to the host** (`frameGenerationCallback`, or the `...InterpolationCommandListVK` / `...InterpolationTextureVK` query) - it does **not** run the ML interface itself. Fully specified by the SDK source + the present/pacing/UI + swapchain gates, so it needs **no** ML and **no** reference capture to build honestly: `VkSwapchainKHR` replacement + the 2 CPU worker threads (present + pacing) + UI composition (`...USE_PREMUL_ALPHA`) + the `WaitForPresentsVK` teardown flush + driver-assisted pacing. This is where the still-open contract items above (UI paths, `RegisterUiResource...VK`, the internal-double-buffering lifetime, the `generationRect` letterbox width/height-equality rule, and the mutex-guard list) land.
+2. **Land a classic-only 4x interpolation runtime.** Wire the mined classic pass order + the 48-id / shared 17-id resource pool + `VK_EXT_descriptor_buffer` host population into a recording dispatch (Phase 1-2), already gated by `--compile-pack` (474 created), `--descriptor-buffer-parity` (0 failed) and `--expect-plan` (checked=474 missing=0 mismatch=0). Image parity still needs AMD reference captures, and it stays **<=4x** per the `outputs[4]` ceiling.
+3. **The 382-pass ML (`mlfi`) chain stays blocked** on the DLL's closed CPU dispatch scheduler + AMD reference captures. Choose between: **(a) deep PE disassembly** of `amd_fidelityfx_framegeneration_dx12.dll` to recover the bindless descriptor writes / ML node order (high risk, unverifiable without captures), or **(b) hold** - accept FG as complete-as-documented with the honest, fully-gated substrate. **Recommended: do (1) and (2) first** - they deliver a real, honest FG experience without ever opening the closed boundary.
 
 ## Documentation
 FSR 4.1.2:
