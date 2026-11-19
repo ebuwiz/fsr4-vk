@@ -11,7 +11,7 @@ The whole project is built on **measured ground truth, never inference**. Read t
 
 - **Pin the inputs.** Both source DLLs are pinned by SHA-256 - upscaler 4.1.2.4555 (`aad4...`) and Frame Generation 4.0.2.4555 (`e684...77bb6`) - and every extraction tool **fails on drift** rather than skipping a mismatch. AMD's open **FidelityFX SDK 2.4.0** (`third_party/fidelityfx-sdk`) is vendored as **CPU control-flow ground truth**: the *classic* interpolation pass order, resource tables, present/pacing/UI and descriptor layouts are **MINED from that readable source** and pinned by gates - not guessed out of the DLL.
 - **Two independent providers.** The upscaler is **complete + validated**. The Frame Generation provider is the ABI + capability contract + host-integration surface + reconstructed pass-plan substrate, and it **honestly refuses the not-yet-validated algorithm** instead of fabricating a blend or a made-up optical-flow stand-in. The two `.so` outputs must never share assets, model logic or runtime resources.
-- **Verify before claiming.** GPU-free gates run on any host (`bash tools/build/check.sh`, `ctest`, and the 31 gates in `tools/validate/frame-generation/tests.py`); device gates **auto-skip with exit 77**, so a GPU-less CI host stays green instead of failing. A red run is a real regression, not a missing GPU.
+- **Verify before claiming.** GPU-free gates run on any host (`bash tools/build/check.sh`, `ctest`, and the 32 gates in `tools/validate/frame-generation/tests.py`); device gates **auto-skip with exit 77**, so a GPU-less CI host stays green instead of failing. A red run is a real regression, not a missing GPU.
 - **Treat transport as a measured constraint.** Conventional `VkDescriptorSet` fails 2684 of 2692 FG sets because FG bindings are `VK_WHOLE_ARRAY` runtime arrays; the host runtime **must** use `VK_EXT_descriptor_buffer` (all 1208 FG bindings serialize with 0 failures). No FG shader has a cross-kind slot, so plain derived `VkPipelineLayout`s suffice - pipeline creation for all 474 compute modules is **solved**.
 - **Respect the closed boundary.** The 382 `mlfi_*` ML pass->pass execution ORDER is **not statically derivable** from the shipped SPIR-V (bindless pointers), and the ONNX neural net is **absent from the open SDK**; pixel parity needs AMD reference captures. The provider stays refused there *by design*, now with source-level evidence rather than only a shader-side `edges=0` proof.
 
@@ -831,10 +831,13 @@ The two remaining FG blockers - the 382-pass ML execution ORDER and output-pixel
   The shim itself is now authored too - `tools/capture/frame-generation/capture-shim.cpp` is an LD_PRELOAD over
   `vkCreateShaderModule` (dumps SPIR-V) / `vkCreateComputePipelines` (links pipeline -> module file) /
   `vkCmdBindPipeline` + `vkCmdDispatch{,Base,Indirect}` (records order), built on a Vulkan-free `capture-ledger.hpp`.
-  Five GPU-free gates cover the rig: `test_stage_vk_dll_pins_reference_rig`, `test_capture_diff_order_reader_roundtrip`
+  Six GPU-free gates cover the rig: `test_stage_vk_dll_pins_reference_rig`, `test_capture_diff_order_reader_roundtrip`
   (the FG pack's modules.tsv), `test_capture_diff_upscaler_pack_roundtrip` (the SAME rig accepts the UPSCALER
   pack-unified manifest's 504 .spv payload digests as its identity plan), `test_capture_ledger_unit_runs` (ledger
-  dispatch attribution) and `test_capture_shim_builds_against_vulkan_headers`
+  dispatch attribution), `test_capture_shim_builds_against_vulkan_headers` and `test_capture_order_fusion`
+  (`tools/extract/frame-generation/apply-capture-order.py` promotes an AMD-captured first-seen schedule into the
+  plan as an authoritative `amd_order` + `order_source=amd-runtime-capture`; the gate proves the round-trip, refuses
+  unknown-digest/duplicate-first_seen captures, and that with NO real capture the committed plan stays `grouped-scaffold`)
   (compiles vs the pinned fork, `pCode`). Nothing hand-written remains: the runtime-capture flow is stage the DLLs ->
   LD_PRELOAD the shim on the sample -> `capture-diff.py --expect-plan`, and the ORDER it yields is AMD's own observed one.
 

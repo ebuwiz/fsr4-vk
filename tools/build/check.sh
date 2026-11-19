@@ -71,6 +71,18 @@ if [[ -f "$repo_root/assets/frame-generation/pack/pipelines.tsv" ]]; then
     echo "[check] FG pass-plan reconstruction (plan.py)"
     "$py" "$repo_root/tools/extract/frame-generation/plan.py" \
         --pack "$repo_root/assets/frame-generation/pack"
+    # If a real AMD runtime capture has been turned into an emitted-order file (capture-diff.py --emit-order),
+    # promote that AMD-OBSERVED schedule into the plan as authoritative amd_order. GPU-free; self-skips when no
+    # capture was taken -- then the plan stays grouped-scaffold (which test_capture_order_fusion asserts). It can
+    # only record an order AMD actually ran, never an invented one (closes the dataflow.py "not derivable" boundary
+    # only via a genuine capture).
+    if [[ -f "$repo_root/assets/frame-generation/pack/fg-order-capture.tsv" ]]; then
+        echo "[check] FG captured AMD-order fusion (GPU-free; order READ from AMD capture, never derived)"
+        "$py" "$repo_root/tools/extract/frame-generation/apply-capture-order.py" \
+            --pack "$repo_root/assets/frame-generation/pack" \
+            --capture "$repo_root/assets/frame-generation/pack/fg-order-capture.tsv" \
+            --require-complete --in-place
+    fi
     if [[ -x "$build_dir/framegeneration-plan-test" ]]; then
         echo "[check] FG pass-plan consistency (GPU-free)"
         "$build_dir/framegeneration-plan-test"

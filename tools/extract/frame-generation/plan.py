@@ -302,6 +302,7 @@ def main(argv=None):
         "unresolved": sum(1 for r in recs if r["unresolved"]),
         "transport": dict(collections.Counter(r["transport"] for r in recs)),
         "tiers": dict(collections.Counter(r["tier"] for r in neural)),
+        "order_source": "grouped-scaffold",
         "order_basis": "grouped-scaffold (classic-first, mlfi tier-grouped pass-ascending); "
                        "NOT asserted to match AMD Frame Generation DLL execution order",
         "reference_max_render": [render_w, render_h],

@@ -1226,6 +1226,82 @@ def test_capture_diff_upscaler_pack_roundtrip():
         raise AssertionError("upscaler manifest .spv digests not >=504 distinct")
 
 
+def test_capture_order_fusion():
+    """GPU-free wiring: capture-diff.py --emit-order (AMD's own first-seen schedule) -> apply-capture-order.py
+    promotes it into the plan as authoritative `amd_order`. Proven by synthesizing a complete capture over the
+    plan's own compute shas in a KNOWN scrambled order and asserting the promoted order EQUALS that capture (a
+    round-trip), that unknown/duplicate/gap captures are REFUSED, and that --in-place WITHOUT a complete capture
+    never mutates the committed plan (which must still read grouped-scaffold here -- no real AMD capture yet)."""
+    import csv
+    import json
+    import subprocess
+    import tempfile
+    tool = ROOT / "tools/extract/frame-generation/apply-capture-order.py"
+    pack = ROOT / "assets/frame-generation/pack"
+    if not (tool.is_file() and (pack / "modules.tsv").is_file() and (pack / "fg-plan.tsv").is_file()):
+        print("SKIP capture-order fusion: tool or FG pack absent"); return
+    # Compute universe from modules.tsv (sha<->name) + the plan tsv (compute rows).
+    name_to_sha = {}
+    with (pack / "modules.tsv").open(newline="") as fh:
+        for row in csv.DictReader(fh, delimiter="\t"):
+            if row["stage"].startswith("compute"):
+                name_to_sha[row["name"]] = row["spirv_sha256"]
+    compute_shas = sorted(set(name_to_sha.values()))   # 474 plan rows alias onto 408 distinct digests
+    n = len(compute_shas)
+    assert n >= 408, f"expected >=408 distinct compute digests, got {n}"
+    # A deterministic bijective permutation (multiplicative, coprime to n) => a scrambled AMD-like order.
+    prime = 7
+    perm = {}
+    for i, sha in enumerate(sorted(compute_shas)):
+        perm[sha] = (i * prime) % n
+    cap = "first_seen_index\tcall_count\tstage\tentry\tsha\n"
+    for sha, idx in sorted(perm.items(), key=lambda kv: kv[1]):
+        cap += f"{idx}\t1\t\t\t{sha}\n"
+    with tempfile.TemporaryDirectory() as td:
+        capf = Path(td) / "cap.tsv"; capf.write_text(cap)
+        outdir = Path(td) / "out"; outdir.mkdir()
+        # (1) round-trip: a COMPLETE valid capture is promoted and matches exactly.
+        r = subprocess.run([sys.executable, str(tool), "--pack", str(pack), "--capture", str(capf),
+                            "--require-complete", "--out-prefix", str(outdir)],
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "complete=True" in r.stdout and "order_source=amd-runtime-capture" in r.stdout, r.stdout
+        got = {}
+        with (outdir / "fg-plan.tsv").open(newline="") as fh:
+            for row in csv.DictReader(fh, delimiter="\t"):
+                if row["stage"].startswith("compute") and row.get("amd_order", "") != "":
+                    got[row["name"]] = int(row["amd_order"])
+        assert set(got) == set(name_to_sha), f"promoted amd_order should cover all {len(name_to_sha)} plan rows"
+        for name, sha in name_to_sha.items():
+            assert got[name] == perm[sha], f"amd_order mismatch for {name}"
+        s = json.loads((outdir / "fg-plan.json").read_text())
+        assert s.get("order_source") == "amd-runtime-capture", s.get("order_source")
+        assert s.get("amd_order_coverage") == [n, n], s.get("amd_order_coverage")
+        # (2) unknown sha in the capture -> refused (identity must match the pack).
+        bad = cap + f"{n}\t1\t\t\t{'0' * 64}\n"
+        badf = Path(td) / "bad.tsv"; badf.write_text(bad)
+        rb = subprocess.run([sys.executable, str(tool), "--pack", str(pack), "--capture", str(badf),
+                             "--require-complete", "--out-prefix", str(outdir)],
+                            capture_output=True, text=True)
+        assert rb.returncode != 0, "unknown-sha capture should be refused"
+        # (3) duplicate first_seen -> refused (breaks the total-order invariant).
+        dup = "first_seen_index\tcall_count\tstage\tentry\tsha\n0\t1\t\t\t%s\n0\t1\t\t\t%s\n" % (
+            compute_shas[0], compute_shas[1])
+        dupf = Path(td) / "dup.tsv"; dupf.write_text(dup)
+        rd_ = subprocess.run([sys.executable, str(tool), "--pack", str(pack), "--capture", str(dupf),
+                              "--require-complete", "--out-prefix", str(outdir)],
+                             capture_output=True, text=True)
+        assert rd_.returncode != 0, "duplicate first_seen capture should be refused"
+    # (4) honest absence: the COMMITTED plan is NOT amd-ordered (no real AMD capture has been taken).
+    committed = json.loads((pack / "fg-plan.json").read_text())
+    assert committed.get("order_source", "grouped-scaffold") == "grouped-scaffold", \
+        "committed plan must remain grouped-scaffold without a real capture (never a fabricated AMD order)"
+    with (pack / "fg-plan.tsv").open(newline="") as fh:
+        assert "amd_order" not in (csv.DictReader(fh, delimiter="\t").fieldnames or []), \
+            "committed plan tsv must not carry amd_order without a capture"
+    print("capture-order fusion: round-trip + unknown/dup refusal + committed-plan stays scaffold OK")
+
+
 def test_stage_vk_dll_pins_reference_rig():
     # A reference capture needs AMD's FULL Vulkan FG set, not just the provider DLL: loader + upscaler +
     # framegeneration, all MIT-signed in the pinned v2.4.0 submodule (signedbin). tools/capture/frame-generation/
@@ -1313,6 +1389,7 @@ def main():
                  test_vk_dll_shader_identity,
                  test_capture_diff_order_reader_roundtrip,
                  test_capture_diff_upscaler_pack_roundtrip,
+                 test_capture_order_fusion,
                  test_stage_vk_dll_pins_reference_rig,
                  test_capture_ledger_unit_runs,
                  test_capture_shim_builds_against_vulkan_headers):
