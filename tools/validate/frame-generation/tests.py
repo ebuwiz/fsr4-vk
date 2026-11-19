@@ -1188,6 +1188,53 @@ def test_vk_dll_shader_identity():
             raise AssertionError(f"vk-identity did not confirm '{need}': {result.stdout}")
 
 
+def test_capture_diff_order_reader_roundtrip():
+    # The runtime-order CAPTURE reader. tools/capture/frame-generation/capture-diff.py diffs an intercepted
+    # Vulkan compute trace against the pack PLAN by SPIR-V digest -> per-module first-seen position + call
+    # count, flags any dispatch with no matching pack module (extra), and NEVER derives the order itself.
+    # GPU-free + pack-based: --selftest synthesizes a whole-plan capture (round-trip extra=0 missing=0) and injects
+    # one unknown digest (must be flagged extra). Self-skips if the tool or pack is absent.
+    tool = ROOT / "tools/capture/frame-generation/capture-diff.py"
+    pack = ROOT / "assets/frame-generation/pack"
+    if not (tool.is_file() and pack.is_dir()):
+        print("SKIP capture-diff: tool or pack absent"); return
+    result = run([sys.executable, tool, "--selftest", "--pack", pack])
+    if result.returncode != 0:
+        raise AssertionError("capture-diff selftest failed: " + (result.stdout + result.stderr))
+    if "selftest PASS" not in result.stdout or "drift detected" not in result.stdout:
+        raise AssertionError("capture-diff selftest did not confirm round-trip + drift: " + result.stdout)
+
+
+def test_stage_vk_dll_pins_reference_rig():
+    # A reference capture needs AMD's FULL Vulkan FG set, not just the provider DLL: loader + upscaler +
+    # framegeneration, all MIT-signed in the pinned v2.4.0 submodule (signedbin). tools/capture/frame-generation/
+    # stage-vk-dlls.py verifies EACH source DLL against its pinned SHA (d002 / 4a7e / 38a5) and refuses to stage a
+    # non-pinned version, so a capture rig can never silently mix versions. GPU-free; self-skips if the SDK
+    # signedbin dir is absent. (The separate amdvkffx64.dll driver module is NOT managed here.)
+    tool = ROOT / "tools/capture/frame-generation/stage-vk-dlls.py"
+    signedbin = ROOT / "third_party/fidelityfx-sdk/Kits/FidelityFX/signedbin"
+    if not (tool.is_file() and signedbin.is_dir()):
+        print("SKIP stage-vk-dlls: tool or SDK signedbin absent"); return
+    chk = run([sys.executable, tool, "--check", "--source-dir", signedbin])
+    if chk.returncode != 0 or "checked=3/3" not in chk.stdout:
+        raise AssertionError("stage --check did not verify the 3 pinned Vulkan DLLs: " + (chk.stdout + chk.stderr))
+    with tempfile.TemporaryDirectory() as td:
+        ap = run([sys.executable, tool, "--apply", "--source-dir", signedbin, "--dest", td])
+        if ap.returncode != 0 or "staged=3" not in ap.stdout:
+            raise AssertionError("stage --apply did not stage the 3 DLLs: " + (ap.stdout + ap.stderr))
+        for name, want in (
+            ("amd_fidelityfx_framegeneration_vk.dll",
+             "d002dabff8c5e71eaa715fc99438cd4dc81230262a7897b16bc402efec3498b4"),
+            ("amd_fidelityfx_upscaler_vk.dll",
+             "4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7"),
+            ("amd_fidelityfx_loader_vk.dll",
+             "38a56a01fb3565c0757d9f5c1e4e69de4b65e5f2e5769b323b200dc1f142bab9"),
+        ):
+            p = Path(td) / name
+            if not p.is_file() or hashlib.sha256(p.read_bytes()).hexdigest() != want:
+                raise AssertionError(f"staged {name} missing or hash mismatch")
+
+
 def main():
     failures = []
     for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
@@ -1209,7 +1256,9 @@ def main():
                  test_sdk_framegeneration_descriptor_layouts,
                  test_sdk_fg_version_negotiation,
                  test_sdk_fg_host_contract_enforcement,
-                 test_vk_dll_shader_identity):
+                 test_vk_dll_shader_identity,
+                 test_capture_diff_order_reader_roundtrip,
+                 test_stage_vk_dll_pins_reference_rig):
         name = test.__name__
         try:
             test()
