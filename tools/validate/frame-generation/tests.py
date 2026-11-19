@@ -678,6 +678,60 @@ def test_sdk_ground_truth():
         raise AssertionError(f"unexpected MLFI/neural bytes in open SDK; re-check the ML boundary: {offenders[:5]}")
 
 
+def test_sdk_classic_controlflow_order():
+    # MINE (reverse) AMD's CLASSIC FrameGeneration CPU control flow straight from the pinned v2.4.0 SDK
+    # provider source -- the actual scheduleDispatch / CreateComputePipeline call sequence -- and PIN it
+    # as a drift gate. This recovers roadmap blocker #2's ORDER for the *classic* half (the only CPU
+    # orchestration AMD ships in source); it does NOT and cannot recover the 382 ML `mlfi_*` node order,
+    # which stays the closed boundary (proven absent from the SDK by test_sdk_ground_truth). If a future
+    # SDK reorders/renames a classic pass this fails loudly. GPU-free; self-skips if the SDK is absent.
+    fg = ROOT / "third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration"
+    if not fg.is_dir():
+        print("SKIP sdk-order: FFX SDK submodule not populated")
+        return
+    of = (fg / "fsr3/internal/ffx_opticalflow.cpp").read_text(errors="ignore")
+    fi = (fg / "fsr3/internal/ffx_frameinterpolation.cpp").read_text(errors="ignore")
+
+    # Creation inventory (AMD's own pass-name enum), in declared order.
+    disp = re.compile(r"scheduleDispatch\((?:[^&)]*?&context(?:Private)?->pipeline([A-Za-z0-9_]+))")
+    created = re.compile(r"CreateComputePipeline\((FFX_(?:FRAMEINTERPOLATION|OPTICALFLOW)_PASS_[A-Z0-9_]+)")
+    of_disp = disp.findall(of)
+    fi_disp = disp.findall(fi)
+    fi_created = created.findall(fi)
+
+    # OpticalFlow dispatch order (PrepareLuma, then the input pyramid, then the SCD + search chain).
+    if of_disp != ["PrepareLuma", "GenerateOpticalFlowInputPyramid", "GenerateSCDHistogram", "ComputeSCDDivergence",
+                   "ComputeOpticalFlowAdvancedV5", "FilterOpticalFlowV5", "ScaleOpticalFlowAdvancedV5"]:
+        raise AssertionError(f"OpticalFlow dispatch order drifted from pinned SDK: {of_disp}")
+    # FrameInterpolation: Prepare step = FiReconstructAndDilate (first submit), then the Generate chain in
+    # this order. The two pyramid submits are wrapped in a local lambda (scheduleDispatchGameVectorField...),
+    # so they are not asserted by token position; only the canonical Generate chain is checked as an
+    # ORDERED subsequence. If AMD reorders any of these the gate fails.
+    if not fi_disp or fi_disp[0] != "FiReconstructAndDilate":
+        raise AssertionError(f"FrameInterpolation Prepare step is not ReconstructAndDilate: {fi_disp[:3]}")
+    fi_core = ["FiSetup", "FiReconstructPreviousDepth", "FiGameMotionVectorField",
+               "FiOpticalFlowVectorField", "FiDisocclusionMask", "FiScfi",
+               "InpaintingPyramid", "Inpainting"]
+    pos = -1
+    for step in fi_core:
+        try:
+            pos = fi_disp.index(step, pos + 1)
+        except ValueError:
+            raise AssertionError(f"FrameInterpolation Generate order drifted from pinned SDK: {fi_disp}")
+    # The declared CLASSIC pass inventory must equal AMD's 11 FrameInterpolation passes.
+    fi_passes = [c for c in fi_created if "FRAMEINTERPOLATION" in c]
+    expected_fi_passes = [
+        "FFX_FRAMEINTERPOLATION_PASS_RECONSTRUCT_AND_DILATE", "FFX_FRAMEINTERPOLATION_PASS_SETUP",
+        "FFX_FRAMEINTERPOLATION_PASS_RECONSTRUCT_PREV_DEPTH", "FFX_FRAMEINTERPOLATION_PASS_GAME_MOTION_VECTOR_FIELD",
+        "FFX_FRAMEINTERPOLATION_PASS_OPTICAL_FLOW_VECTOR_FIELD", "FFX_FRAMEINTERPOLATION_PASS_DISOCCLUSION_MASK",
+        "FFX_FRAMEINTERPOLATION_PASS_INTERPOLATION", "FFX_FRAMEINTERPOLATION_PASS_INPAINTING_PYRAMID",
+        "FFX_FRAMEINTERPOLATION_PASS_INPAINTING", "FFX_FRAMEINTERPOLATION_PASS_GAME_VECTOR_FIELD_INPAINTING_PYRAMID",
+        "FFX_FRAMEINTERPOLATION_PASS_DEBUG_VIEW",
+    ]
+    if fi_passes != expected_fi_passes:
+        raise AssertionError(f"FrameInterpolation declared pass inventory drifted: {fi_passes}")
+
+
 def main():
     failures = []
     for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
@@ -686,7 +740,8 @@ def main():
                  test_descriptor_slot_resolver, test_layout_census_analyzer,
                  test_mlfi_graph_chain_matches_pack,
                  test_mlfi_chain_structure_and_model_tiling,
-                 test_sdk_ground_truth):
+                 test_sdk_ground_truth,
+                 test_sdk_classic_controlflow_order):
         name = test.__name__
         try:
             test()

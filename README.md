@@ -298,8 +298,15 @@ The build itself verifies every embedded asset payload and alias. On top of that
   and the presence of the full **Vulkan** present/pacing/UI-composition sources
   (`fsr3/vk/FrameInterpolationSwapchainVK{,_DebugPacing,_UiComposition,_Helpers}.cpp`).
   Two roadmap consequences follow: (1) the **classic** optical-flow + frame-interpolation
-  pass order, the intermediate-resource model, and the present/pacing/UI half are now
-  recoverable from AMD source and are the next implementation step; (2) the same gate
+  CPU pass order is now **MINED (reversed) out of AMD's Process bodies and pinned** by
+  `test_sdk_classic_controlflow_order`: OpticalFlow = PrepareLuma → GenerateOpticalFlowInputPyramid
+  → GenerateSCDHistogram → ComputeSCDDivergence → ComputeOpticalFlowAdvancedV5 → FilterOpticalFlowV5
+  → ScaleOpticalFlowAdvancedV5; FrameInterpolation = Prepare `ReconstructAndDilate`, then Generate
+  Setup → ReconstructPreviousDepth → GameMotionVectorField → GameVectorFieldInpaintingPyramid →
+  OpticalFlowVectorField → DisocclusionMask → Interpolation(SCFI) → InpaintingPyramid → Inpainting
+  → GameVectorFieldInpaintingPyramid → DebugView (11 declared `FFX_FRAMEINTERPOLATION_PASS_*` + 7
+  `FFX_OPTICALFLOW_PASS_*`); together with the 48-id resource model + present/pacing/UI, this closes
+  roadmap blocker #2 for the CLASSIC half; (2) the same gate
   PROVES the **MLFI ONNX neural net** — the 382 `mlfi_*` inference passes — is *not*
   shipped in the open SDK, confirming the ML pass→pass execution ORDER is the single
   genuinely closed boundary; the ML `ffxDispatch` path therefore stays honestly refused
