@@ -52,35 +52,40 @@ static float norm3(const float* a) {
     return std::sqrt(dot3(a, a));
 }
 
-// A camera-info block (linked after a Prepare descriptor) must carry finite,
-// mutually-orthonormal basis vectors: unit length and pairwise |dot| near zero.
-// This is the contract the SDK documents for FSR3.1.4+ ("required input ... best
-// quality"), independent of handedness so it cannot reject a valid left- or right-
-// handed app convention.
+// Shared orthonormal-basis test: finite, unit-length, pairwise |dot| near zero, handedness-independent.
+// Used by BOTH the deprecated linked CameraInfo (0x0a) and the 2.4.0 PrepareV2 (0x0c) EMBEDDED camera
+// vectors, so the two entry points enforce ONE contract.
+bool basisOk(const float* up, const float* right, const float* fwd, std::string& reason) {
+    if (!finite3(up) || !finite3(right) || !finite3(fwd)) {
+        reason = "camera basis vector is not finite";
+        return false;
+    }
+    const float tol = 1e-3f;
+    for (const float* v : {up, right, fwd}) {
+        if (std::fabs(norm3(v) - 1.0f) > tol) {
+            reason = "camera basis vector is not unit length";
+            return false;
+        }
+    }
+    if (std::fabs(dot3(up, right)) > tol || std::fabs(dot3(up, fwd)) > tol ||
+        std::fabs(dot3(right, fwd)) > tol) {
+        reason = "camera basis vectors are not orthogonal";
+        return false;
+    }
+    return true;
+}
+
+// A camera-info block (linked after a Prepare descriptor) must carry finite, mutually-orthonormal basis
+// vectors: unit length and pairwise |dot| near zero. This is the contract the SDK documents for FSR3.1.4+
+// ("required input ... best quality"), independent of handedness so it cannot reject a valid left- or
+// right-handed app convention.
 bool cameraBasisOk(const ffxDispatchDescFrameGenerationPrepareCameraInfo* cam,
                    std::string& reason) {
     if (cam == nullptr) {
         reason = "camera-info block (type 0x0002000a) not linked after Prepare";
         return false;
     }
-    if (!finite3(cam->cameraUp) || !finite3(cam->cameraRight) || !finite3(cam->cameraForward)) {
-        reason = "camera basis vector is not finite";
-        return false;
-    }
-    const float tol = 1e-3f;
-    for (const float* v : {cam->cameraUp, cam->cameraRight, cam->cameraForward}) {
-        if (std::fabs(norm3(v) - 1.0f) > tol) {
-            reason = "camera basis vector is not unit length";
-            return false;
-        }
-    }
-    if (std::fabs(dot3(cam->cameraUp, cam->cameraRight)) > tol ||
-        std::fabs(dot3(cam->cameraUp, cam->cameraForward)) > tol ||
-        std::fabs(dot3(cam->cameraRight, cam->cameraForward)) > tol) {
-        reason = "camera basis vectors are not orthogonal";
-        return false;
-    }
-    return true;
+    return basisOk(cam->cameraUp, cam->cameraRight, cam->cameraForward, reason);
 }
 
 // Create-context sanity: a real display/render resolution and a known surface
@@ -139,6 +144,58 @@ Verdict prepareDescOk(const ffxDispatchDescFrameGenerationPrepare* p,
     }
     if (!std::isfinite(p->cameraFovAngleVertical) || p->cameraFovAngleVertical <= 0.0f) {
         note(v, "cameraFovAngleVertical must be a positive finite radians value");
+    }
+    return v;
+}
+
+// ffxDispatchDescFrameGenerationPrepareV2 (0x0c) is absent from the vendored ffx_frame_generation.h this
+// provider includes. Mirror it EXACTLY from the pinned 2.4.0 SDK
+// (Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h L225..L249): its leading fields are ABI-identical
+// to ffxDispatchDescFrameGenerationPrepare (0x04) - the only change is `unused_reset` renamed to `reset` - and
+// the camera basis is carried EMBEDDED as four [3]-float vectors, SUPERSEDING the deprecated linked CameraInfo
+// (0x0a). Reading a host PrepareV2 through this mirror is what lets the provider validate the embedded camera
+// WITHOUT repointing the whole provider at the newer header. check-test asserts sizeof(mirror) ==
+// sizeof(base Prepare) + 4*3 floats, so the ABI assumption is machine-checked, not assumed.
+struct PrepareV2Desc {
+    ffxDispatchDescHeader      header;
+    uint64_t                   frameID;
+    uint32_t                   flags;
+    void*                      commandList;
+    struct FfxApiDimensions2D  renderSize;
+    struct FfxApiFloatCoords2D jitterOffset;
+    struct FfxApiFloatCoords2D motionVectorScale;
+    float                        frameTimeDelta;
+    bool                         reset;
+    float                        cameraNear;
+    float                        cameraFar;
+    float                        cameraFovAngleVertical;
+    float                        viewSpaceToMetersFactor;
+    struct FfxApiResource        depth;
+    struct FfxApiResource        motionVectors;
+    float                        cameraPosition[3];
+    float                        cameraUp[3];
+    float                        cameraRight[3];
+    float                        cameraForward[3];
+};
+
+// PrepareV2 (0x0c) argument + embedded-camera validation: the SAME numeric argument contract as prepareDescOk
+// over the layout-identical prefix, PLUS the EMBEDDED basis via basisOk (which the old Prepare path only got
+// when a separate CameraInfo block was linked under debug-checking). This is the completion of the provider's
+// PrepareV2 TODO ("add the embedded-camera validation the injector relies on"); it does NOT run the algorithm.
+Verdict prepareV2DescOk(const PrepareV2Desc* v2, bool depthInfinite, bool debugChecking) {
+    Verdict v;
+    if (v2 == nullptr) {
+        note(v, "null PrepareV2 descriptor");
+        return v;
+    }
+    const auto base = prepareDescOk(
+        reinterpret_cast<const ffxDispatchDescFrameGenerationPrepare*>(v2), depthInfinite, debugChecking);
+    if (!base.ok) {
+        note(v, base.reason);
+    }
+    std::string br;
+    if (!basisOk(v2->cameraUp, v2->cameraRight, v2->cameraForward, br)) {
+        note(v, "PrepareV2 embedded camera: " + br);
     }
     return v;
 }

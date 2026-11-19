@@ -606,20 +606,26 @@ ffxReturnCode_t dispatch(ffxContext* context, const ffxDispatchDescHeader* heade
         return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
     }
 
-    // ffxDispatchDescFrameGenerationPrepareV2 (0x0c) supersedes Prepare(0x04)+CameraInfo(0x0a) in the 2.4.0
-    // API; its camera block is EMBEDDED. The older vendored ffx_frame_generation.h this provider includes has
-    // no PrepareV2 struct, so we recognize + order-check it by descriptor type id (no struct reinterpret ->
-    // keeps the build safe), then apply the same honest algorithm refusal. A later layout-complete read (after
-    // repointing to the 2.4.0 header) would add the embedded-camera validation the injector relies on.
+    // ffxDispatchDescFrameGenerationPrepareV2 (0x0c) SUPERSEDES Prepare(0x04)+CameraInfo(0x0a) in 2.4.0; its
+    // camera basis is EMBEDDED. Read the host descriptor through ffgcheck::PrepareV2Desc (an ABI mirror of the
+    // pinned 2.4.0 layout, machine-checked by check-test) and validate ORDER + arguments + the EMBEDDED basis
+    // - the completion of this provider's former PrepareV2 TODO - then STILL refuse the algorithm honestly:
+    // the interpolation/ML/present runtime is not implemented, so no frames are fabricated.
     if (header->type == ffgvk::kDispatchPrepareV2Type) {
         const auto ord = ffgcheck::prepareOrderOk(created->configured);
         if (!ord.ok) {
             logLine("prepareV2 refused: " + ord.reason);
             return FFX_API_RETURN_ERROR_PARAMETER;
         }
-        logLine("prepareV2 accepted (order valid) but dispatch pending: the Frame Generation "
-                "interpolation/ML/present runtime is not implemented in this provider slice; refusing "
-                "to fake frame generation.");
+        const auto* v2 = reinterpret_cast<const ffgcheck::PrepareV2Desc*>(header);
+        const auto pv = ffgcheck::prepareV2DescOk(v2, created->depthInfinite, created->debugChecking);
+        if (!pv.ok) {
+            logLine("prepareV2 refused: " + pv.reason);
+            return FFX_API_RETURN_ERROR_PARAMETER;
+        }
+        logLine("prepareV2 accepted (order + arguments + embedded camera basis valid) but dispatch pending: "
+                "the Frame Generation interpolation/ML/present runtime is not implemented in this provider "
+                "slice; refusing to fake frame generation.");
         return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
     }
 

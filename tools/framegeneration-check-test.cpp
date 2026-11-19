@@ -195,8 +195,40 @@ int main() {
         check(ffgcheck::hudlessCreateDescOk(&h).ok, "hudless: known format accepted");
     }
 
+    // --- PrepareV2 (0x0c): the provider order-checks it; here pin arg + EMBEDDED camera basis -----
+    {
+        ffgcheck::PrepareV2Desc v2{};
+        v2.renderSize = {1920u, 1080u};
+        v2.jitterOffset = {0.0f, 0.0f};
+        v2.motionVectorScale = {1.0f, 1.0f};
+        v2.frameTimeDelta = 16.6f;
+        v2.reset = false;
+        v2.cameraNear = 0.1f;
+        v2.cameraFar = 1000.0f;
+        v2.cameraFovAngleVertical = 1.0f;
+        v2.viewSpaceToMetersFactor = 0.0f;
+        const float pos[3] = {0.0f, 0.0f, 0.0f}, up[3] = {0.0f, 1.0f, 0.0f},
+                      right[3] = {1.0f, 0.0f, 0.0f}, fwd[3] = {0.0f, 0.0f, -1.0f};
+        for (int i = 0; i < 3; ++i) {
+            v2.cameraPosition[i] = pos[i]; v2.cameraUp[i] = up[i];
+            v2.cameraRight[i] = right[i]; v2.cameraForward[i] = fwd[i];
+        }
+        check(ffgcheck::prepareV2DescOk(&v2, false, true).ok, "prepareV2: valid args + embedded basis accepted");
+        auto bad = v2; bad.cameraUp[1] = 2.0f;   // not unit
+        check(!ffgcheck::prepareV2DescOk(&bad, false, true).ok, "prepareV2: non-unit embedded basis rejected");
+        bad = v2; bad.cameraRight[1] = 1.0f;     // up.dot(right) != 0
+        check(!ffgcheck::prepareV2DescOk(&bad, false, true).ok, "prepareV2: non-orthogonal embedded basis rejected");
+        bad = v2; bad.renderSize = {0u, 0u};
+        check(!ffgcheck::prepareV2DescOk(&bad, false, true).ok, "prepareV2: zero renderSize rejected");
+        check(!ffgcheck::prepareV2DescOk(nullptr, false, true).ok, "prepareV2: null descriptor rejected");
+        // ABI mirror check: the 4 embedded camera vectors begin exactly at sizeof(base Prepare).
+        check(sizeof(ffgcheck::PrepareV2Desc) ==
+                  sizeof(ffxDispatchDescFrameGenerationPrepare) + 4u * 3u * sizeof(float),
+              "prepareV2: mirror size == base Prepare + 4x camera[3]");
+    }
+
     if (failures == 0) {
-        std::printf("framegeneration-check self-test OK (order + camera + create/generate)\n");
+        std::printf("framegeneration-check self-test OK (order + camera + create/generate/prepareV2)\n");
         return 0;
     }
     std::printf("framegeneration-check self-test FAILED: %d\n", failures);
