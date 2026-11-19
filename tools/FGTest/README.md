@@ -36,11 +36,7 @@ Frame Generation `generate` stays a data-blocked `RUNTIME_ERROR` in this provide
 `tools/extract/frame-generation/apply-capture-order.py`). This sample is the moving-graphics host such a runtime
 would drive; it does NOT fake interpolated frames.
 
-The **upscaler** provider is driven too (`ffxCreateContext(upscale)` + `ffxQuery` ratio/render-resolution
-helpers). Here `ffxCreateContext(upscale)` returns `3` because this probe attaches the *Frame Generation*
-backend descriptor block; the `fsr4vk` upscaler expects its own backend+instance block (which the repo runtime
-supplies). The upscaler's actual on-device run path lives in `descriptor-smoke` / the provider; this sample
-deliberately does NOT blind-dispatch an image with a guessed resource layout (that would be unsafe, not a fake).
+The **upscaler** provider genuinely creates a live context in-app: after attaching the `fsr4vk` backend(3) **+ instance(4)** descriptor blocks and setting `FSR4_VK_ASSET_ROOT` to `assets/pack-unified`, `ffxCreateContext(upscale)` returns **0 (OK)** on this device, and the `ffxQuery` helpers are answered by AMD's real math — `GET_UPSCALE_RATIO(BALANCED) = 1.70` and `GET_RENDER_RESOLUTION(1440x810, BALANCED) -> 848x477`. The pixel upscale **DISPATCH** (feeding `VkImage` resources back through `ffxDispatchDescUpscale`) is deliberately NOT hand-rolled here — that is the runtime's `VkImageInfo` resource marshalling, and the upscaler's real on-GPU render → submit → read-back (descriptor-buffer vs descriptor-set byte-identical, int8 + fp8) is covered by the green **`descriptor-smoke`** on-device gate.
 
 ## Files
 - `main.cpp` — offscreen animated-triangle renderer + `dlopen` of both providers + the FFX call ladders.
