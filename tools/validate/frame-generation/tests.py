@@ -18,6 +18,7 @@ They check the load-bearing invariants, not constants-for-theirs-sake:
 import hashlib
 import collections
 import json
+import re
 import struct
 import subprocess
 import sys
@@ -609,6 +610,74 @@ def test_mlfi_chain_structure_and_model_tiling():
             raise AssertionError(f"model {model}B is not {tiles} whole 16x16 {dtype} tiles")
 
 
+def test_sdk_ground_truth():
+    # AMD's OWN CPU control flow, now read straight from the vendored FidelityFX SDK 2.4.0 submodule
+    # (the Redstone line, pinned 7539ae8b). This REPLACES blind DLL disassembly with ground-truth source
+    # for the FrameGeneration provider: the ffxDispatch Prepare orchestration, the shared FSR3<->FG resource
+    # coupling, the GetGPUMemoryUsage answer model (FI + OpticalFlow + Shared), the FrameInterpolation
+    # 48-id intermediate-resource table (roadmap blocker #3 -- now RESOLVED-by-source), and the Vulkan
+    # present/pacing/UI-composition host-integration sources (previously an open gap). It ALSO PROVES the
+    # MLFI ONNX neural net -- the 382 mlfi_* inference passes -- is NOT shipped in the open SDK, so the
+    # ML pass->pass execution ORDER remains the single genuinely closed boundary and ffxDispatch's ML
+    # path stays honestly refused. GPU-free (reads SDK source only); self-skips if the SDK submodule is
+    # not populated on this checkout.
+    fg = ROOT / "third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration"
+    if not fg.is_dir():
+        print("SKIP sdk: FFX SDK submodule not populated")
+        return
+
+    # (1) FrameInterpolation intermediate-resource model == AMD's 48-id table + 2 constant buffers.
+    res_h = fg / "fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_resources.h"
+    if not res_h.is_file():
+        raise AssertionError("SDK FrameInterpolation resources header not found (SDK layout drift)")
+    txt = res_h.read_text(errors="ignore")
+    if not re.search(r"RESOURCE_IDENTIFIER_COUNT\s+48\b", txt):
+        raise AssertionError("FrameInterpolation resource COUNT != 48 (drift vs pinned SDK)")
+    if not re.search(r"CONSTANTBUFFER_COUNT\s+2\b", txt):
+        raise AssertionError("FrameInterpolation CONSTANTBUFFER_COUNT != 2 (drift vs pinned SDK)")
+    for rid in ("OUTPUT", "DILATED_DEPTH", "DILATED_MOTION_VECTORS", "DISOCCLUSION_MASK",
+                "OPTICAL_FLOW_SCENE_CHANGE_DETECTION", "INPAINTING_PYRAMID_MIPMAP_12",
+                "PRESENT_BACKBUFFER", "COUNTERS", "DISTORTION_FIELD"):
+        if f"FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_{rid} " not in txt:
+            raise AssertionError(f"FrameInterpolation resource id {rid} absent from SDK source")
+
+    # (2) The provider's CPU control flow (ffxDispatch / Query) facts must still match AMD's source.
+    prov_path = fg / "fsr3/internal/ffx_provider_fsr3framegeneration.cpp"
+    if not prov_path.is_file():
+        raise AssertionError("SDK ffxDispatch provider source not found")
+    prov = prov_path.read_text(errors="ignore")
+    for fact in (
+        "MAX_QUEUED_FRAMES = 2",
+        "ffxFrameInterpolationContextGetGpuMemoryUsage",
+        "ffxOpticalflowContextGetGpuMemoryUsage",
+        "ffxSharedContextGetGpuMemoryUsage",
+        "ffxFrameInterpolationPrepare(",
+        "FFX_FSR3_RESOURCE_IDENTIFIER_DILATED_DEPTH_0",
+        "FFX_FSR3_RESOURCE_IDENTIFIER_DILATED_MOTION_VECTORS_0",
+        "FFX_FSR3_RESOURCE_IDENTIFIER_RECONSTRUCTED_PREVIOUS_NEAREST_DEPTH_0",
+        "prerequisite for MLFI provider enablement",
+        "numGeneratedFrames = desc->numInterpolatedFrames",
+    ):
+        if fact not in prov:
+            raise AssertionError(f"ffxDispatch provider fact drifted from pinned SDK: {fact}")
+
+    # (3) The Vulkan present/pacing/UI-composition half is AMD source now, not a reconstruction gap.
+    for vk in ("FrameInterpolationSwapchainVK.cpp", "FrameInterpolationSwapchainVK_DebugPacing.cpp",
+               "FrameInterpolationSwapchainVK_UiComposition.cpp", "FrameInterpolationSwapchainVK_Helpers.cpp"):
+        if not (fg / "fsr3/vk" / vk).is_file():
+            raise AssertionError(f"SDK Vulkan present source missing: {vk}")
+
+    # (4) The MLFI neural net (382 mlfi_* ONNX passes) is NOT in the open SDK -- the ML ORDER boundary
+    # is real, not a failure to look. Assert zero neural-model bytes anywhere under the FG SDK tree.
+    mlfi = re.compile(rb"mlfi_[0-9A-Za-z]|\.onnx", re.I)
+    offenders = []
+    for p in fg.rglob("*"):
+        if p.is_file() and mlfi.search(p.read_bytes()):
+            offenders.append(str(p.relative_to(fg)))
+    if offenders:
+        raise AssertionError(f"unexpected MLFI/neural bytes in open SDK; re-check the ML boundary: {offenders[:5]}")
+
+
 def main():
     failures = []
     for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
@@ -616,7 +685,8 @@ def main():
                  test_pack_manifest_shape, test_framegeneration_exec_selftest,
                  test_descriptor_slot_resolver, test_layout_census_analyzer,
                  test_mlfi_graph_chain_matches_pack,
-                 test_mlfi_chain_structure_and_model_tiling):
+                 test_mlfi_chain_structure_and_model_tiling,
+                 test_sdk_ground_truth):
         name = test.__name__
         try:
             test()

@@ -239,7 +239,10 @@ The build itself verifies every embedded asset payload and alias. On top of that
     and that the 9,437,184-byte `mlfi-model.bin` bytes hash to the DLL-extracted model SHA — all GPU-free — and `test_mlfi_chain_structure_and_model_tiling`, which pins the ML
     chain structure (the 4k and 8k per-index descriptor-set signatures are tier-invariant; the graph's
     per-pass sets equal the pack `pipelines.tsv`; the 156 cooperative passes bind sets 1,4,5; and the model
-    blob is a whole number of 16x16 tiles for fp16/fp32/int8) WITHOUT asserting any dataflow order/DAG),
+    blob is a whole number of 16x16 tiles for fp16/fp32/int8) WITHOUT asserting any dataflow order/DAG,
+    and `test_sdk_ground_truth` (AMD's own CPU `ffxDispatch`/Query orchestration, the 48-id FrameInterpolation
+    resource model, the GetGPUMemoryUsage answer model, the Vulkan present/pacing/UI sources and the
+    MLFI-neural-not-in-open-SDK proof, all read from the pinned v2.4.0 SDK submodule)),
   `framegeneration-check-order-camera` (`framegeneration-check-test`: the GPU-free
   Frame Generation mandatory-order + camera-info + create/generate predicates), and
   `framegeneration-compile-parity-474` (`framegeneration-exec --compile-pack
@@ -279,6 +282,35 @@ The build itself verifies every embedded asset payload and alias. On top of that
   AMD device" signal — so `ctest` stays green on a GPU-less CI host instead of failing. Verified
   on the target device: **9/9 passed**.
 
+- **AMD's own SDK is now vendored and mined (ground truth, not blind DLL-RE).**
+  `third_party/fidelityfx-sdk` is the pinned FidelityFX SDK **2.4.0** submodule (the
+  Redstone line, commit 7539ae8b) and it ships the **readable CPU source** for the
+  Frame Generation provider — the exact `ffxDispatch` control flow that was previously
+  only blind-reverse-engineered from the DLL. `test_sdk_ground_truth` in
+  `tools/validate/frame-generation/tests.py` reads that source and asserts the facts are
+  intact: the provider's `MAX_QUEUED_FRAMES = 2`; the `GetGPUMemoryUsage` answer model
+  (`ffxFrameInterpolation… + ffxOpticalflow… + ffxShared…` summed); the Prepare path's
+  shared FSR3↔FG resource coupling (`FFX_FSR3_RESOURCE_IDENTIFIER_DILATED_DEPTH_0`,
+  `…_DILATED_MOTION_VECTORS_0`, `…_RECONSTRUCTED_PREVIOUS_NEAREST_DEPTH_0`, with a
+  per-frame toggle); the desc remap (`numInterpolatedFrames→numGeneratedFrames`); the
+  **48-id `FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_*`** intermediate-target table
+  (+ 2 constant buffers) — roadmap blocker #3 is now *resolved by AMD source*, not inferred;
+  and the presence of the full **Vulkan** present/pacing/UI-composition sources
+  (`fsr3/vk/FrameInterpolationSwapchainVK{,_DebugPacing,_UiComposition,_Helpers}.cpp`).
+  Two roadmap consequences follow: (1) the **classic** optical-flow + frame-interpolation
+  pass order, the intermediate-resource model, and the present/pacing/UI half are now
+  recoverable from AMD source and are the next implementation step; (2) the same gate
+  PROVES the **MLFI ONNX neural net** — the 382 `mlfi_*` inference passes — is *not*
+  shipped in the open SDK, confirming the ML pass→pass execution ORDER is the single
+  genuinely closed boundary; the ML `ffxDispatch` path therefore stays honestly refused
+  exactly as before, now with source-level evidence rather than only a shader-side
+  `edges=0` proof.
+- **Frame Generation device scope.** Redstone/MLFI Frame Generation targets the AMD
+  **RX 9000 series** (RDNA4): the FG host-integration ladder is exercised on the RX 9070
+  XT, and any device that does not satisfy the Frame Generation execution contract
+  (for example one lacking `VK_KHR_cooperative_matrix`) is *skipped* by
+  `framegeneration-probe` (exit 77) rather than failed — this reflects the feature's
+  supported-hardware boundary, not a gap in the provider.
 - `bash tools/build/linux.sh` now ends by running `tools/build/check.sh`, a
   post-build validation gate in which every check asserts exit 0 (a red run is a
   real regression — invalid SPIR-V, a dropped asset payload, or a broken Frame
