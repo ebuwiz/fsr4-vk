@@ -43,6 +43,12 @@ fi
 echo "[check] Frame Generation ABI self-tests (entry points + honest refusal)"
 "$py" "$repo_root/tools/validate/frame-generation/tests.py"
 
+# Second AMD-authored confirmation of the UPSCALER model blobs: the Vulkan upscaler DLL carries byte-identical
+# int8+fp8 standard+ultraperf weight banks + the RCAS/auto-exposure/Navi2/Lite variant names. GPU-free; the
+# tool self-skips (exit 0) when dlls/amd_fidelityfx_upscaler_vk.dll is absent, so CI without it stays green.
+echo "[check] Vulkan upscaler DLL model-blob confirmation (second AMD source, GPU-free)"
+"$py" "$repo_root/tools/validate/upscaler-vk-identity.py" --expect
+
 # The FSR 4.1.2 debug-checker predicates (src/provider/upscaler-checks.hpp) have a
 # GPU-free unit test that already builds as a target; running it here means the
 # warning decision logic cannot silently drift without failing the Linux gate.
