@@ -1033,6 +1033,47 @@ def test_sdk_interpolation_api_contract():
         raise AssertionError("PrepareCameraInfo (deprecated) desc not found as pinned")
 
 
+def test_sdk_framegeneration_descriptor_layouts():
+    # PROVE the descriptor type-id constants our FG provider reads match AMD's 2.4.0 SDK exactly -- the
+    # four the older ffx_frame_generation.h lacks (PrepareV2 0x0c, GetGPUMemoryUsageV2 0x0b, present-premul
+    # 0x0d, create-version 0x0e) plus the existing configure/generate ids -- so the C++ `kEffectId | 0xNN`
+    # composition in framegeneration.hpp cannot silently drift from the reference. Also pins the FRAME
+    # GENERATION SWAPCHAIN descs hang off a DIFFERENT effect id (so they are a separate provider, NOT read
+    # here). GPU-free; self-skips when the SDK is not populated.
+    inc = ROOT / "third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/include"
+    hdr = (inc / "ffx_framegeneration.h")
+    vk = (inc / "vk/ffx_api_framegeneration_vk.h")
+    hpp = ROOT / "src/framegeneration/framegeneration.hpp"
+    if not (hdr.is_file() and vk.is_file() and hpp.is_file()):
+        print("SKIP sdk-desc-layouts: FFX SDK FG headers not present")
+        return
+    t = hdr.read_text(errors="ignore")
+
+    # Each interpolation desc's sub-id under FFX_API_EFFECT_ID_FRAMEGENERATION must match.
+    for macro, subid in (
+        ("FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION", "0x02"),
+        ("FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION", "0x03"),
+        ("FFX_API_QUERY_DESC_TYPE_FRAMEGENERATION_GPU_MEMORY_USAGE_V2", "0x0b"),
+        ("FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_V2", "0x0c"),
+        ("FFX_API_CALLBACK_DESC_TYPE_FRAMEGENERATION_PRESENT_PREMUL_ALPHA", "0x0d"),
+        ("FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION_VERSION", "0x0e"),
+    ):
+        if not re.search(re.escape(macro) + r"\s+FFX_API_MAKE_EFFECT_SUB_ID\(FFX_API_EFFECT_ID_FRAMEGENERATION,\s*" + subid + r"\s*\)", t):
+            raise AssertionError(f"2.4.0 header sub-id != {subid} for {macro}")
+
+    # Our provider's C++ constants must carry the SAME composition.
+    our = hpp.read_text(errors="ignore")
+    for const, subid in (("kDispatchPrepareV2Type", "0x0c"), ("kQueryGPUUsageV2Type", "0x0b"),
+                         ("kCreateVersionDescType", "0x0e"), ("kPresentPremulCallbackDescType", "0x0d")):
+        if not re.search(re.escape(const) + r"\s*=\s*kEffectId\s*\|\s*" + subid + r"\s*;", our):
+            raise AssertionError(f"framegeneration.hpp {const} not set to (kEffectId | {subid}) as AMD's 2.4.0 requires")
+
+    # The swapchain replacement-functions query is a SEPARATE effect id -> not this provider's to read.
+    v = vk.read_text(errors="ignore")
+    if not re.search(r"FFX_API_QUERY_DESC_TYPE_FGSWAPCHAIN_FUNCTIONS_VK\s+FFX_API_MAKE_EFFECT_SUB_ID\(FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN_VK,\s*0x05\s*\)", v):
+        raise AssertionError("swapchain replacement-functions query is not on the SWAPCHAIN effect id (0x05) as pinned")
+
+
 def main():
     failures = []
     for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
@@ -1050,7 +1091,8 @@ def main():
                  test_sdk_framegeneration_api_contract,
                  test_sdk_present_pacing_threading,
                  test_sdk_swapchain_replacement_provider,
-                 test_sdk_interpolation_api_contract):
+                 test_sdk_interpolation_api_contract,
+                 test_sdk_framegeneration_descriptor_layouts):
         name = test.__name__
         try:
             test()

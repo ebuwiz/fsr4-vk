@@ -68,6 +68,25 @@ constexpr ffxStructType_t kRegisterDistortionDescType =
 constexpr ffxStructType_t kHudlessCreateDescType =
     FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION_HUDLESS;  // 0x00020009
 
+// Mined from the AMD 2.4.0 SDK header (Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h), NOT
+// present in the older vendored ffx_frame_generation.h this provider still includes -- so they are declared
+// here by the same effect|sub-id composition the SDK macro uses, and a gate (tests.py::test_sdk_framegeneration_descriptor_layouts) proves these sub-ids equal AMD's 2.4.0 values. These descs are what the contract layer (PrepareV2 path, pre-context GetGPUMemoryUsageV2, version-link, present premul) must read; the interpolated image itself stays refused until the runtime exists.
+constexpr ffxStructType_t kDispatchPrepareV2Type =
+    kEffectId | 0x0c;  // 0x0002000c: ffxDispatchDescFrameGenerationPrepareV2 (camera [3] vectors + reset embedded; supersedes Prepare 0x04 + CameraInfo 0x0a)
+constexpr ffxStructType_t kQueryGPUUsageV2Type =
+    kEffectId | 0x0b;  // 0x0002000b: ffxQueryDescFrameGenerationGetGPUMemoryUsageV2 (app FILLS device/maxRenderSize/formats; out = usage; NULL-context pre-create query)
+constexpr ffxStructType_t kCreateVersionDescType =
+    kEffectId | 0x0e;  // 0x0002000e: ffxCreateContextDescFrameGenerationVersion (version = FFX_FRAMEGENERATION_VERSION; REQUIRED link at create, else new APIs are disabled)
+constexpr ffxStructType_t kPresentPremulCallbackDescType =
+    kEffectId | 0x0d;  // 0x0002000d: ffxCallbackDescFrameGenerationPresentPremulAlpha (linked on the present callback's pNext)
+
+// The Frame Generation SWAPCHAIN is a DIFFERENT effect id (FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN_VK),
+// so its descs are NOT this provider's CanProvide(effect) match -- they reach us as NO_PROVIDER and belong
+// to a separate swapchain provider. Recorded here so the contract work doesn't accidentally read them here:
+// swapchain create 0x01, configure registerUI 0x02, query replacement-functions 0x05, create mode 0x10,
+// swapchain version 0x0a, and the WaitForPresents/InterpolationCommandList/InterpolationTexture query+dispatch
+// descs all hang off the SWAPCHAIN effect id.
+
 // The version id the pinned Frame Generation DLL itself publishes. Measured: a
 // single 8-byte FFX-packed id (low half 4.0.2 == (4<<22)|(0<<12)|2 == 0x01000002,
 // high/module half 0xF6000000) with the string "4.0.2" beside it. It commits to no
