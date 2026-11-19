@@ -11,8 +11,10 @@ ultraperf banks we embed in amd_fidelityfx_upscaler_vk.so. It also confirms the 
 variant names exist in the Vulkan DLL.
 
 It does NOT claim the Vulkan DLL's SHADERS are extractable: the _vk shader set is one compressed proprietary
-container (0 plaintext SPIR-V/DXBC), so nothing new can be pulled out of it statically. Any additional repeating
-128 KB weight banks it finds are REPORTED as candidate assets, never auto-injected (the runtime is image-validated)."""
+container (0 plaintext SPIR-V/DXBC), so nothing new can be pulled out of it statically. It also adjudicates whether
+the DLL carries any model weight BANK beyond the 4 we ship: it does NOT (the +/-128 KB neighbours are pitch-boundary
+overlap or single-occurrence artifacts), and --expect fails loudly if a genuinely replicated 128 KB bank ever appears
+so a future AMD addition surfaces instead of being silently ignored or auto-injected."""
 import argparse
 import hashlib
 import json
@@ -91,37 +93,59 @@ def main():
     spv = raw.count(struct.pack(">I", 0x0731A053)) + raw.count(struct.pack("<I", 0x0731A053))
     print("plaintext SPIR-V in _vk shaders:", spv, "(0 -> _vk shaders are a compressed container, not extractable)")
 
-    # Candidate EXTRA repeating 128 KB banks AMD ships that our pack may not (report only, never auto-add).
-    # Bounded: sample 128 KB windows at +/- bank spacing around each known repeated-bank occurrence, which is
-    # exactly where the extractor's "bank spacing with alignment drift" rule says sibling banks live.
-    def offsets(needle, cap=8):
+    # Adjudicate whether AMD's _vk DLL hides any ADDITIONAL model weight bank beyond the 4 we ship. The bank
+    # pitch is 128 KB + small metadata drift, so naive +/-128 KB neighbour windows land ACROSS a bank boundary
+    # and most "candidates" are overlap artifacts. Classify rigorously instead of reporting a bogus count.
+    def occurrences(needle, cap=64):
         res, i = [], 0
         while len(res) < cap:
             j = raw.find(needle, i)
             if j < 0:
                 break
             res.append(j)
-            i = j + 4
+            i = j + 1
         return res
-    seen = {}
+    known_ranges, pitches = [], {}
+    for label, rel in BANKS.items():
+        f = pack / rel
+        if not f.is_file():
+            continue
+        b = f.read_bytes()
+        occ = occurrences(b)
+        known_ranges += [(o, o + len(b)) for o in occ]
+        if len(occ) > 1:
+            ds = [occ[i + 1] - occ[i] for i in range(len(occ) - 1)]
+            pitches[label] = (min(ds), max(ds))
+    print("model-bank pitch: nominal %d bytes (128 KB); per-bank observed min/max gap = %s" % (BANK, pitches))
+
+    def overlaps_known(w):
+        return any(not (w + BANK <= s or w >= e) for s, e in known_ranges)
+    cand = {}
     for rel in ("fp8/models/4.1.2/weights_standard.bin", "int8/models/4.1.2/weights_standard.bin"):
         f = pack / rel
         if not f.is_file():
             continue
-        for off in offsets(f.read_bytes()):
+        for off in occurrences(f.read_bytes(), cap=8):
             for d in (-2, -1, 1, 2):
                 w = off + d * BANK
                 if 0 <= w and w + BANK <= len(raw):
-                    h = hashlib.sha256(raw[w:w + BANK]).hexdigest()
-                    seen[h] = seen.get(h, 0) + 1
-    known = set()
-    for rel in BANKS.values():
-        f = pack / rel
-        if f.is_file():
-            known.add(hashlib.sha256(f.read_bytes()).hexdigest())
-    extra = {h: c for h, c in seen.items() if c >= 2 and h not in known}
-    if extra:
-        print("CANDIDATE extra repeating 128KB banks (report-only, not auto-added):", len(extra))
+                    cand.setdefault(hashlib.sha256(raw[w:w + BANK]).hexdigest(), set()).add(w)
+    known = {hashlib.sha256((pack / rel).read_bytes()).hexdigest()
+             for rel in BANKS.values() if (pack / rel).is_file()}
+    new_banks = []
+    for h, starts in cand.items():
+        if h in known or len(starts) < 2:      # single-occurrence neighbor = artifact, not a replicated bank
+            continue
+        s0 = next(iter(starts))
+        blk = raw[s0:s0 + BANK]
+        if not overlaps_known(s0) and blk.count(0) < BANK * 0.5:   # 2+ distinct copies, non-zero, bank-free
+            new_banks.append(h)
+    print("additional replicated 128KB model banks beyond the 4 shipped:", len(new_banks),
+          "(0 -> the _vk DLL carries NO weight bank our pack lacks; +/-128KB neighbours are boundary-overlap "
+          "or single-occurrence artifacts and are never auto-injected)")
+    if args.expect and new_banks:
+        problems.append(f"UNEXPECTED replicated model bank(s) in _vk DLL: {len(new_banks)} "
+                        "-> needs AMD reference capture to adjudicate, do NOT auto-inject")
 
     if problems:
         if args.expect:
