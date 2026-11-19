@@ -13,6 +13,7 @@ missing is informational, NOT a failure. The ORDER is only ever read off AMD's t
 canonical schedule (dataflow.py proves none is statically derivable).
 
 Run:  python3 capture-diff.py --pack assets/frame-generation/pack --capture capture.json [--emit-order o.tsv]
+      Works on EITHER pack kind: the FG pack (modules.tsv) or the UPSCALER pack-unified (manifest.json -> its .spv payload digests).
 Modes: --expect-plan (extra must be 0), --complete (also missing must be 0), --selftest (synth round-trip)."""
 import argparse
 import json
@@ -22,20 +23,30 @@ from pathlib import Path
 
 
 def load_plan(pack_dir):
-    """Return ({sha: (stage, entry, wgs)}, [(name, wgs)]) for every COMPUTE module."""
-    plan = {}
-    named = []
-    tsv = Path(pack_dir) / "modules.tsv"
-    if not tsv.is_file():
+    """Return (plan, named). plan = {sha: (stage, entry, wgs)} over every COMPUTE/SPIR-V module; named =
+    [(pack-relative .spv path, wgs)] used by the path-mode selftest. Detects two pack kinds: the FG pack (has
+    modules.tsv) and the UPSCALER pack pack-unified (has manifest.json whose .spv payloads carry the digests)."""
+    pack_dir = Path(pack_dir)
+    plan, named = {}, []
+    tsv = pack_dir / "modules.tsv"
+    if tsv.is_file():
+        for line in tsv.read_text().splitlines()[1:]:
+            p = line.split("\t")
+            if len(p) < 5:
+                continue
+            name, stage, entry, wgs, sha = p[0], p[1], p[2], p[3], p[4]
+            if stage.startswith("compute"):
+                plan[sha] = (stage, entry, wgs)
+                named.append((f"modules/{name}", wgs))  # FG name already ends in .spv; file lives at modules/<name>
         return plan, named
-    for line in tsv.read_text().splitlines()[1:]:
-        p = line.split("\t")
-        if len(p) < 5:
-            continue
-        name, stage, entry, wgs, sha = p[0], p[1], p[2], p[3], p[4]
-        if stage.startswith("compute"):
-            plan[sha] = (stage, entry, wgs)
-            named.append((name, wgs))
+    man = pack_dir / "manifest.json"
+    if man.is_file():
+        for r in json.loads(man.read_text())["payloads"]:
+            f = str(r["file"])
+            if f.endswith(".spv"):
+                plan[r["sha256"]] = ("upscaler", Path(f).name, None)
+                named.append((f, None))
+        return plan, named
     return plan, named
 
 
@@ -118,11 +129,12 @@ def main():
         _, _, extra2, _, _ = analyze(plan, bad, Path("."))
         if not extra2:
             prob.append("digest drift (unknown digest) not detected")
-        # Mode B: shim-style PATH capture (pack/modules/<name>.spv bytes -> hashed to the plan digest).
+        # Mode B: shim-style PATH capture — hash each pack SPIR-V file's bytes to the plan digest. FG files live
+        # at modules/<name>.spv; the upscaler pack's live at their manifest-relative paths (both uncompressed on disk).
         import tempfile
         with tempfile.TemporaryDirectory() as td:
-            mod = Path(args.pack).resolve() / "modules"
-            lines = [f"{mod}/{name}\t{wgs}" for (name, wgs) in sorted(named, key=lambda x: x[0])]
+            root = Path(args.pack).resolve()
+            lines = [f"{root}/{rel}\t{wgs or ''}" for (rel, wgs) in sorted(named, key=lambda x: x[0])]
             cap = Path(td) / "capture.tsv"; cap.write_text("\n".join(lines) + "\n")
             recs, bse = read_capture(cap)
             _, _, ex, mi, _ = analyze(plan, recs, bse)

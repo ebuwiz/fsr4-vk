@@ -1205,6 +1205,27 @@ def test_capture_diff_order_reader_roundtrip():
         raise AssertionError("capture-diff selftest did not confirm round-trip + drift: " + result.stdout)
 
 
+def test_capture_diff_upscaler_pack_roundtrip():
+    # The SAME capture rig must also accept the UPSCALER pack: pack-unified/manifest.json's 504 .spv payload digests
+    # become the identity plan, so a trace of AMD's Vulkan UPSCALER runtime is identity-checked exactly like the FG
+    # pack (extra=0 on a whole-plan capture, unknown digest flagged extra). Proven GPU-free with capture-diff
+    # --selftest on that pack; self-skips when pack-unified is not present (it is a built artifact).
+    tool = ROOT / "tools/capture/frame-generation/capture-diff.py"
+    up = ROOT / "assets/pack-unified"
+    if not (tool.is_file() and (up / "manifest.json").is_file()):
+        print("SKIP upscaler capture-diff: tool or pack-unified/manifest.json absent"); return
+    result = run([sys.executable, tool, "--selftest", "--pack", up])
+    if result.returncode != 0:
+        raise AssertionError("upscaler capture-diff selftest failed: " + (result.stdout + result.stderr))
+    if "selftest PASS" not in result.stdout:
+        raise AssertionError("upscaler capture-diff did not confirm round-trip: " + result.stdout)
+    import json
+    payloads = json.load((up / "manifest.json").open())["payloads"]
+    spv = [p for p in payloads if str(p["file"]).endswith(".spv")]
+    if len(spv) < 504 or len({p["sha256"] for p in spv}) < 504:
+        raise AssertionError("upscaler manifest .spv digests not >=504 distinct")
+
+
 def test_stage_vk_dll_pins_reference_rig():
     # A reference capture needs AMD's FULL Vulkan FG set, not just the provider DLL: loader + upscaler +
     # framegeneration, all MIT-signed in the pinned v2.4.0 submodule (signedbin). tools/capture/frame-generation/
@@ -1291,6 +1312,7 @@ def main():
                  test_sdk_fg_host_contract_enforcement,
                  test_vk_dll_shader_identity,
                  test_capture_diff_order_reader_roundtrip,
+                 test_capture_diff_upscaler_pack_roundtrip,
                  test_stage_vk_dll_pins_reference_rig,
                  test_capture_ledger_unit_runs,
                  test_capture_shim_builds_against_vulkan_headers):
