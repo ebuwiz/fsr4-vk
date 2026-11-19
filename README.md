@@ -392,6 +392,26 @@ The build itself verifies every embedded asset payload and alias. On top of that
   `ENABLE_INTERNAL_UI_DOUBLE_BUFFERING` resource‑lifetime rule; the `WaitForPresentsVK` teardown flush
   before context destroy; and the documented **mutex‑guard** list (the FG+SwapChain contexts are not
   thread‑safe).
+- **How a real host drives FG — grounded by the `FSRFG_Dx12` injector reference (3zwr1/AMDNR).** This
+  working integration (the same family as Hookshot's own-thread present) shows the *exact* runtime sequence
+  and, decisively, **how the ML path is reached without reconstructing any pass order**:
+  `ffxQuery(ffxQueryDescGetVersions)` enumerates the DLL's algorithm versions (`versionIds[]`/`versionNames[]`),
+  then the host **selects** the variant by linking `ffxOverrideVersion.versionId` (the injector's comment:
+  *"0 is non-ML FG and 1 is ML FG"*) — the **DLL bundles the ML dispatch order**, so driving FG is
+  *version negotiation*, not `mlfi` sequencing (this reframes roadmap #4 for *integration*; it does **not**
+  give us the order for a *re-implementation*, which still lacks the ML compute). Further, MLFI is gated by
+  linking a **non-zero** `PrepareCameraInfo` — the injector deliberately *omits* it when the camera is all-zero
+  so *"the driver upgrade dll … falls back to FSR 3 FG."* The documented order the injector follows:
+  `CreateContext(swapchain, …VersionDX12)` → `CreateContext(FG: backendDesc [+ optional Hudless] + …OverrideVersion`
+  after `GetVersions` ) → `Configure(ffxConfigureDescFrameGeneration` with linked `RegisterDistortionField`, `RegisterUiResource`
+  on the swapchain ctx, `HUDLessColor`, `flags`, `allowAsyncWorkloads`, `generationRect` (centered: `left/top=(buffer−interp)/2`,
+  `width/height=interp size`) , `frameGenerationCallback`, `onlyPresentGenerated`, `frameID`, `swapChain` ) →
+  `Configure(ffxConfigureDescGlobalDebug1)` → `Dispatch(ffxDispatchDescFrameGenerationPrepare + linked PrepareCameraInfo)`; the
+  **generate** dispatch runs from inside `frameGenerationCallback` during present. Contract details this pins:
+  `numGeneratedFrames = 0` **cancels** interpolation for that frame; a **duplicate `frameID`** cancels (`frameID`
+  must advance by exactly 1); the injector even uses the **deprecated** `Prepare`+`CameraInfo` (still accepted). Our
+  provider already answers `GetVersions` and models `OverrideVersion`, so it is negotiation-faithful; and it must
+  offer only versions it can actually run — i.e. **classic only**, never advertise an ML id whose compute we lack.
 - **Header finding (from the layout mining).** Our FG provider compiles against the older
   `third_party/fidelityfx-api` header, which **lacks** the 2.4.0 `PrepareV2` (`0x0c`),
   `GetGPUMemoryUsageV2` (`0x0b`), version‑link (`0x0e`) and present‑premul (`0x0d`) descs — so these are

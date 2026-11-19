@@ -1074,6 +1074,34 @@ def test_sdk_framegeneration_descriptor_layouts():
         raise AssertionError("swapchain replacement-functions query is not on the SWAPCHAIN effect id (0x05) as pinned")
 
 
+def test_sdk_fg_version_negotiation():
+    # The working FSRFG_Dx12 injector reference proves how a real host drives FG: enumerate the DLL's
+    # algorithm versions with ffxQueryDescGetVersions (createDescType/outputCount/versionIds/versionNames),
+    # then SELECT classic vs ML by linking ffxOverrideVersion.versionId (its note: 0=non-ML 3.1.7, 1=ML 4.0.0)
+    # -- the DLL bundles the ML order, so NO pass-order reconstruction is needed to DRIVE it -- and the ML
+    # path is further gated by linking a non-zero PrepareCameraInfo (all-zero camera -> the DLL falls back to
+    # FSR-SRFG 3). Pins that this negotiation contract exists in the header AND that our provider already
+    # answers GET_VERSIONS + models the override block. GPU-free; self-skips if the header is absent.
+    api = ROOT / "third_party/fidelityfx-api/api/include/ffx_api.h"
+    prov = ROOT / "src/framegeneration/provider.cpp"
+    hpp = ROOT / "src/framegeneration/framegeneration.hpp"
+    if not (api.is_file() and prov.is_file() and hpp.is_file()):
+        print("SKIP sdk-version-negotiation: FFX api header/provider not present")
+        return
+    t = api.read_text(errors="ignore")
+    for tok in ("FFX_API_QUERY_DESC_TYPE_GET_VERSIONS", "ffxQueryDescGetVersions",
+                "FFX_API_DESC_TYPE_OVERRIDE_VERSION", "ffxOverrideVersion",
+                "versionIds", "versionNames", "createDescType", "outputCount"):
+        if tok not in t:
+            raise AssertionError(f"version-negotiation contract token missing from api header: {tok}")
+    p = prov.read_text(errors="ignore")
+    if "FFX_API_QUERY_DESC_TYPE_GET_VERSIONS" not in p or "versionIds[0]" not in p:
+        raise AssertionError("provider does not answer ffxQueryDescGetVersions as the injector host expects")
+    h = hpp.read_text(errors="ignore")
+    if "kOverrideVersionDescType" not in h or "CreateVersionOverride" not in h or "findVersionOverride" not in h:
+        raise AssertionError("provider does not model ffxOverrideVersion selection")
+
+
 def main():
     failures = []
     for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
@@ -1092,7 +1120,8 @@ def main():
                  test_sdk_present_pacing_threading,
                  test_sdk_swapchain_replacement_provider,
                  test_sdk_interpolation_api_contract,
-                 test_sdk_framegeneration_descriptor_layouts):
+                 test_sdk_framegeneration_descriptor_layouts,
+                 test_sdk_fg_version_negotiation):
         name = test.__name__
         try:
             test()
