@@ -59,6 +59,7 @@ else()
 endif()
 option(FSR4_COMPRESS_SHADERS "Compress embedded shader payloads independently with Zstandard" ON)
 option(FSR4_EMBEDDED_ASSETS "Embed self-contained provider assets (PE or ELF)" ON)
+set(FSR4_GENERATED "${CMAKE_BINARY_DIR}/generated")
 option(FSR4_BUILD_UPSCALER "Build the FSR4 upscaler provider and embed its assets" ON)
 if(FSR4_BUILD_UPSCALER)
 set(FSR4_ASSET_ROOT "${CMAKE_SOURCE_DIR}/assets" CACHE PATH "Verified assets directory")
@@ -67,7 +68,6 @@ if(NOT EXISTS "${FSR4_ASSET_ROOT}/manifest.json")
         "Generated assets are missing. Run tools/setup.py --dll /path/to/dlls. See README.md. "
         "For a custom asset directory, set FSR4_ASSET_ROOT.")
 endif()
-set(FSR4_GENERATED "${CMAKE_BINARY_DIR}/generated")
 set(FSR4_GLSLANG_VALIDATOR "" CACHE FILEPATH "Override the bundled host GLSL compiler")
 set(FSR4_SPIRV_VAL "" CACHE FILEPATH "Override the bundled host SPIR-V validator")
 set(overlay_tool_args)
@@ -168,19 +168,48 @@ if(FSR4_EMBEDDED_ASSETS)
 endif()
 endif()
 option(FSR4_CAPABILITY_PROBE "Build the standalone device capability probes (POSIX hosts)" ON)
+option(FFG4_EMBED_ASSETS "Embed the locally generated Frame Generation pack on Linux" ON)
+set(FFG4_ASSET_ROOT "${CMAKE_SOURCE_DIR}/assets/frame-generation/pack" CACHE PATH
+    "Verified Frame Generation asset pack")
 # --- AMD FidelityFX Frame Generation provider: an independent second family.
 # Separate output target (amd_fidelityfx_framegeneration_vk.{so,dll}). It links
 # ONLY the FFX generic C API headers and Vulkan: no upscaler assets, no upscaler
 # runtime, no model logic. It therefore cannot become an accidental merged provider
 # with the upscaler, and the two outputs coexist independently.
 add_library(amd_fidelityfx_framegeneration_vk SHARED
-    src/framegeneration/provider.cpp src/framegeneration/capabilities.cpp)
+    src/framegeneration/provider.cpp src/framegeneration/capabilities.cpp
+    src/framegeneration/assets.cpp)
 target_include_directories(amd_fidelityfx_framegeneration_vk PRIVATE
-    src src/framegeneration third_party/fidelityfx-api/api/include)
+    src src/framegeneration third_party/fidelityfx-api/api/include
+    third_party/fidelityfx-api/framegeneration/include)
 target_link_libraries(amd_fidelityfx_framegeneration_vk PRIVATE Vulkan::Vulkan ${CMAKE_DL_LIBS})
 set_target_properties(amd_fidelityfx_framegeneration_vk PROPERTIES
     PREFIX "" POSITION_INDEPENDENT_CODE ON
     CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
+if(FFG4_EMBED_ASSETS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(NOT EXISTS "${FFG4_ASSET_ROOT}/manifest.json")
+        message(FATAL_ERROR
+            "Frame Generation assets are missing. Run tools/setup.py --dll /path/to/dlls, "
+            "or configure with -DFFG4_EMBED_ASSETS=OFF and set FFG4_VK_ASSET_ROOT at runtime.")
+    endif()
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/assets/embed-framegeneration.py"
+            "${FFG4_ASSET_ROOT}" "${FSR4_GENERATED}"
+        RESULT_VARIABLE ffg_asset_result)
+    if(NOT ffg_asset_result EQUAL 0)
+        message(FATAL_ERROR "Frame Generation asset embedding/index generation failed")
+    endif()
+    enable_language(ASM)
+    target_compile_definitions(amd_fidelityfx_framegeneration_vk PRIVATE FFG4_EMBEDDED_ASSETS)
+    target_sources(amd_fidelityfx_framegeneration_vk PRIVATE
+        "${FSR4_GENERATED}/framegeneration-assets.S")
+    set_source_files_properties("${FSR4_GENERATED}/framegeneration-assets.S" PROPERTIES
+        OBJECT_DEPENDS
+        "${FSR4_GENERATED}/framegeneration-assets.bin;${FFG4_ASSET_ROOT}/manifest.json")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${FFG4_ASSET_ROOT}/manifest.json"
+        "${CMAKE_SOURCE_DIR}/tools/assets/embed-framegeneration.py")
+endif()
 if(MINGW)
     target_link_options(amd_fidelityfx_framegeneration_vk PRIVATE -static $<$<CONFIG:Release>:-s>)
 endif()
@@ -198,7 +227,8 @@ if(FSR4_CAPABILITY_PROBE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(framegeneration-probe PRIVATE
         amd_fidelityfx_framegeneration_vk Vulkan::Vulkan ${CMAKE_DL_LIBS})
     target_include_directories(framegeneration-probe PRIVATE
-        third_party/fidelityfx-api/api/include)
+        third_party/fidelityfx-api/api/include
+        third_party/fidelityfx-api/framegeneration/include)
     set_target_properties(framegeneration-probe PROPERTIES
         CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
 endif()
@@ -218,6 +248,28 @@ if(FSR4_CAPABILITY_PROBE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
 endif()
 
+# GPU-free self-test for the Frame Generation order/camera/create/generate predicates
+# in src/framegeneration/framegeneration-checks.hpp — the exact checks the provider
+# runs under FFX_FRAMEGENERATION_ENABLE_DEBUG_CHECKING. No device, no assets, no
+# algorithm; it pins the mandatory call order + camera contract so checker drift fails
+# without a game-style dispatch.
+add_executable(framegeneration-check-test tools/framegeneration-check-test.cpp)
+target_include_directories(framegeneration-check-test PRIVATE
+    src/framegeneration
+    third_party/fidelityfx-api/framegeneration/include
+    third_party/fidelityfx-api/api/include)
+set_target_properties(framegeneration-check-test PROPERTIES
+    CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
+
+# GPU-free consistency gate for the Frame Generation pass-plan substrate (roadmap Phase 0):
+# it re-parses the pack's own pipelines.tsv with the executor's layout grammar and proves the
+# independent reconstruction agrees with tools/extract/frame-generation/plan.py's fg-plan.tsv
+# (474 compute modules, 1208 de-duplicated binding groups, a valid order scaffold). Pure std;
+# no Vulkan, no device. Skips (exit 77) when the FG pack/plan have not been generated.
+add_executable(framegeneration-plan-test tools/framegeneration-plan-test.cpp)
+set_target_properties(framegeneration-plan-test PROPERTIES
+    CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
+
 
 if(FSR4_BUILD_UPSCALER AND FSR4_CAPABILITY_PROBE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # The probe links the capability snapshot and nothing else: no assets, no provider,
@@ -236,6 +288,131 @@ if(FSR4_BUILD_UPSCALER AND FSR4_CAPABILITY_PROBE AND CMAKE_SYSTEM_NAME STREQUAL 
     target_include_directories(descriptor-smoke PRIVATE src third_party/fidelityfx-api/upscalers/include)
     set_target_properties(descriptor-smoke PROPERTIES CXX_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN YES)
+    # GPU-free unit test for the documented SR 4.1.2 debug-checker predicates
+    # (src/provider/upscaler-checks.hpp). No assets, no Vulkan, no device: it pins
+    # the warning decision logic that the provider routes via providerMessage, so
+    # drift in the checker is caught without a game-style dispatch.
+    add_executable(upscaler-debugcheck-test tools/upscaler-debugcheck-test.cpp)
+    target_include_directories(upscaler-debugcheck-test PRIVATE
+        src third_party/fidelityfx-api/upscalers/include)
+    set_target_properties(upscaler-debugcheck-test PROPERTIES CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN YES)
+    # GPU-free self-test for the deterministic FSR query helper math (quality->ratio,
+    # display->render resolution, jitter phase-count + R2 offset) in
+    # src/provider/upscaler-queries.hpp — the same functions the provider answers via
+    # ffxQuery. Locks that math against drift with no device and no shader.
+    add_executable(upscaler-query-test tools/upscaler-query-test.cpp)
+    target_include_directories(upscaler-query-test PRIVATE src)
+    set_target_properties(upscaler-query-test PROPERTIES CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN YES)
+endif()
+# Unified post-build gate target so IDEs and CI can run every Linux-feasible validator
+# with one command: `cmake --build build/linux --target check`. It depends on the
+# artifacts below (built first) then defers to tools/build/check.sh — the SAME gate
+# tools/build/linux.sh runs — so the two entry points can never drift apart. EXCLUDE_FROM_ALL
+# keeps the default build fast (the gate is not re-run on every incremental compile); it
+# is UNIX-only because elf-assets.py rejects non-ELF images (the Windows path validates
+# with windows-binary.py instead).
+if(FSR4_BUILD_UPSCALER AND UNIX)
+    add_custom_target(check
+        COMMAND bash "${CMAKE_SOURCE_DIR}/tools/build/check.sh"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Post-build validation gate (SPIR-V, ELF embed, FG ABI, debug-check predicates)"
+        VERBATIM)
+    add_dependencies(check
+        amd_fidelityfx_upscaler_vk
+        cap-probe
+        descriptor-smoke
+        upscaler-debugcheck-test)
+    set_target_properties(check PROPERTIES EXCLUDE_FROM_ALL YES)
+endif()
+# Windows-side sibling of the ELF embed proof. `elf-assets.py` (in the `check` gate)
+# validates the Linux .so; `windows-binary.py` is its exact PE counterpart: it walks the
+# built amd_fidelityfx_upscaler_vk.dll's embedded RCDATA resources, hash-checks every
+# payload against FSR4_ASSET_ROOT's manifest via the build's generated
+# embedding-selection.json (embedded_assets + storage_index), and asserts the exported
+# API is exactly {ffxCreateContext, ffxDestroyContext, ffxConfigure, ffxQuery, ffxDispatch}.
+# Guarded to WIN32 so it is only DEFINED where that binary and selection actually exist
+# (native MSVC or a MinGW-w64 cross build) and never misfires on a Linux configure. 8K
+# is INCLUDED by the build (embed.py gets --include-8k), so --omit-8k is intentionally
+# NOT passed. Registered EXCLUDE_FROM_ALL; CI runs `cmake --build --target check-win`.
+if(FSR4_BUILD_UPSCALER AND WIN32 AND FSR4_EMBEDDED_ASSETS)
+    add_custom_target(check-win
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/validate/windows-binary.py"
+            "$<TARGET_FILE:amd_fidelityfx_upscaler_vk>"
+            "${FSR4_ASSET_ROOT}"
+            --report "${FSR4_GENERATED}/windows-asset-report.json"
+            --embedding-selection "${FSR4_GENERATED}/embedding-selection.json"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Post-build Windows validation gate (PE embed + FFX API exports)"
+        VERBATIM)
+    add_dependencies(check-win amd_fidelityfx_upscaler_vk)
+    set_target_properties(check-win PROPERTIES EXCLUDE_FROM_ALL YES)
+endif()
+# CTest entry points so `ctest --test-dir build/linux --output-on-failure` (and IDE
+# test runners) discover the invariant checks directly, not only via the bash gate.
+# GPU-free tests are expected to pass here; GPU-dependent ones auto-skip on exit
+# code 77 (the tools' "no suitable AMD device" signal), so `ctest` stays green on a
+# GPU-less CI box instead of failing. All these executables live inside
+# FSR4_BUILD_UPSCALER, so the block is guarded to match.
+if(FSR4_BUILD_UPSCALER)
+    enable_testing()
+    add_test(NAME upscaler-debugcheck COMMAND upscaler-debugcheck-test)
+    add_test(NAME cap-probe-synthetic-gates COMMAND cap-probe)
+    set_tests_properties(cap-probe-synthetic-gates PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME descriptor-smoke-transports-byte-identical COMMAND descriptor-smoke)
+    set_tests_properties(descriptor-smoke-transports-byte-identical PROPERTIES
+        SKIP_RETURN_CODE 77)
+    add_test(NAME frame-generation-validators
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/validate/frame-generation/tests.py")
+    set_tests_properties(frame-generation-validators PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        SKIP_REGULAR_EXPRESSION "not a PE")
+    add_test(NAME framegeneration-check-order-camera COMMAND framegeneration-check-test)
+    add_test(NAME upscaler-query-math COMMAND upscaler-query-test)
+    # GPU-free FG pass-plan consistency (Phase 0): the C++ re-parse of pipelines.tsv must agree
+    # with plan.py's fg-plan.tsv. Registered whenever the FG pack exists; the tool self-skips
+    # (exit 77) if the plan has not been generated, so ctest stays green without an FG pack/plan.
+    if(EXISTS "${CMAKE_SOURCE_DIR}/assets/frame-generation/pack/pipelines.tsv")
+        add_test(NAME framegeneration-plan-consistency COMMAND framegeneration-plan-test)
+        set_tests_properties(framegeneration-plan-consistency PROPERTIES
+            SKIP_RETURN_CODE 77
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    endif()
+    # Pin the FG "all 474 compute modules compile under BOTH descriptor transports"
+    # census as a regression. Registered only when the (gitignored, generated) FG asset
+    # pack is present, so a checkout that has not run tools/convert/frame-generation is
+    # green rather than red; a device-less host still skips cleanly via exit code 77.
+    if(EXISTS "${CMAKE_SOURCE_DIR}/assets/frame-generation/pack/pipelines.tsv")
+        add_test(NAME framegeneration-compile-parity-474
+            COMMAND framegeneration-exec --compile-pack --descriptor-buffer-parity --expect-compiled=474)
+        set_tests_properties(framegeneration-compile-parity-474 PROPERTIES
+            SKIP_RETURN_CODE 77
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        # On-device pass-plan drift gate: the executor's driver-backed binding census (the
+        # SAME groups it builds real descriptor-set layouts from, then serializes 1208 of via
+        # vkGetDescriptorEXT) must equal plan.py's fg-plan.tsv. Needs a suitable AMD device
+        # (auto-skips via 77); if the plan is absent the executor reports and skips (77) too.
+        add_test(NAME framegeneration-plan-drift
+            COMMAND framegeneration-exec --compile-pack --descriptor-buffer-parity --expect-plan)
+        set_tests_properties(framegeneration-plan-drift PROPERTIES
+            SKIP_RETURN_CODE 77
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    endif()
+    # On-device Frame Generation host-integration return-code LADDER: ffxCreateContext ->
+    # order-before-configure (PARAMETER) -> GET_VERSIONS (pinned id) -> GPU-memory-usage honest
+    # refusal (RUNTIME_ERROR) -> Configure (OK) -> Prepare (RUNTIME_ERROR) -> Generate
+    # (RUNTIME_ERROR) -> present-callback (NO_PROVIDER) -> destroy (OK). The probe now ASSERTS
+    # every stage's documented code (it previously only printed them and always returned 0), so
+    # provider routing/refusal drift becomes a real gate. Needs a device offering the FG execution
+    # contract; auto-skips (exit 77) on a device-less host, so ctest stays green here and turns
+    # the whole boundary into a FAIL/return-code check on a suitable AMD device.
+    if(FSR4_CAPABILITY_PROBE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test(NAME framegeneration-host-integration-ladder COMMAND framegeneration-probe)
+        set_tests_properties(framegeneration-host-integration-ladder PROPERTIES
+            SKIP_RETURN_CODE 77
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    endif()
 endif()
 if(FSR4_BUILD_UPSCALER AND MINGW)
     target_link_options(amd_fidelityfx_upscaler_vk PRIVATE -static $<$<CONFIG:Release>:-s>)

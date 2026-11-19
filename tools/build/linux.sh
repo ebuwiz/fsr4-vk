@@ -24,3 +24,9 @@ for provider_lib in amd_fidelityfx_framegeneration_vk amd_fidelityfx_upscaler_vk
     fi
     printf 'emitted %s/%s.so\n' "$build_dir" "$provider_lib"
 done
+# Reproducible post-build validation gate: SPIR-V validity, the binary-level
+# embedded-asset proof for the built upscaler .so, and the Frame Generation ABI
+# self-tests. Each asserts exit 0, so `linux.sh` now fails if a build regresses
+# shader validity, drops an asset payload, or breaks the FG entry-point contract
+# — not just if compilation or .so emission fails.
+bash "$(dirname "${BASH_SOURCE[0]}")/check.sh"

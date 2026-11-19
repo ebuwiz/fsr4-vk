@@ -18,8 +18,22 @@
 // blocker instead of faking frame generation. This .so is therefore not a completed
 // Frame Generation equivalent; it is the ABI + capability contract + host boundary
 // that a validated runtime would plug into.
+//
+// Update (roadmap Phase 0, 2026-11-18): the missing precise piece is now the pass
+// PLAN, not the ABI. tools/extract/frame-generation/plan.py reconstructs it from the
+// pack's OWN modules.tsv/pipelines.tsv (474 compute modules: 382 compute-neural mlfi +
+// 92 compute-classic; 1208 de-duplicated binding groups; an intermediate-target +
+// byte-count model). That plan is machine-checked two ways: framegeneration-plan-test
+// re-parses pipelines.tsv independently and must agree (GPU-free), and
+// framegeneration-exec --expect-plan ties the DRIVER-backed binding census to it (on
+// device, measured checked=474 missing=0 mismatch=0). ffxDispatch(Prepare|Frame
+// Generation) STILL refuses: recording passes against that plan is Phase 1-2, and the
+// GPU-memory-usage query (0x00020007) becomes honestly reportable in Phase 3 once the
+// provider actually allocates the plan's intermediate targets.
 
 #include "framegeneration.hpp"
+#include "assets.hpp"
+#include "framegeneration-checks.hpp"
 #include "pipeline-cache.hpp"
 
 #include <cstdio>
@@ -37,6 +51,41 @@ struct FrameGenerationContext {
     ffgvk::CreateBackendVkDesc backend{};
     ffgvk::GpuCapabilities capabilities;
     std::uint64_t versionId = ffgvk::kReferenceVersionId;
+
+    // Frame Generation call-order + camera contract state (see ffx_frame_generation.h
+    // mandatory order: Configure -> Dispatch(Prepare) -> Dispatch(Frame Generation)).
+    // The algorithm itself is not implemented, but the provider tracks the order so the
+    // documented debug checker can reject misuse, and remembers the create flags that
+    // gate the camera/depth validation.
+    bool debugChecking = false;   // FFX_FRAMEGENERATION_ENABLE_DEBUG_CHECKING
+    bool depthInfinite = false;   // FFX_FRAMEGENERATION_ENABLE_DEPTH_INFINITE
+    bool configured = false;
+    bool prepared = false;
+    bool frameGenerationEnabled = true;   // from ffxConfigureDescFrameGeneration
+    bool allowAsyncWorkloads = false;     // from ffxConfigureDescFrameGeneration
+
+    // The host-integration contract captured at ffxConfigure (ffxConfigureDescFrameGeneration):
+    // the swap chain + present/frameGeneration callbacks (and their user contexts) the runtime
+    // would drive, plus the optional HUDLessColor, onlyPresentGenerated, generationRect and the
+    // most recent frameID. Captured NOW so the (future) present phase can invoke them; the compute
+    // algorithm is still refused, so nothing is driven back to the host yet.
+    void* swapChain = nullptr;
+    FfxApiPresentCallbackFunc presentCallback = nullptr;
+    void* presentCallbackUserContext = nullptr;
+    FfxApiFrameGenerationDispatchFunc frameGenerationCallback = nullptr;
+    void* frameGenerationCallbackUserContext = nullptr;
+    struct FfxApiResource hudLessColor{};
+    bool onlyPresentGenerated = false;
+    struct FfxApiRect2D generationRect{};
+    std::uint64_t lastConfiguredFrameId = 0;
+
+    // Optional create/configure FG blocks recognized at the host boundary (lens-distortion is
+    // applied at present time; HUDLess selects a HUD-less back buffer). Stored for the (future)
+    // present phase; the compute algorithm is still refused so nothing is rendered yet.
+    struct FfxApiResource distortionField{};
+    bool distortionRegistered = false;
+    bool hudlessEnabled = false;
+    std::uint32_t hudlessBackBufferFormat = 0u;
 
     // Namespaced, identity-validated Vulkan pipeline cache (see pipeline-cache.hpp).
     // Created on context-construct and serialized on context-destroy so a warm
@@ -186,8 +235,17 @@ ffxReturnCode_t createContext(ffxContext* context, ffxCreateContextDescHeader* h
     if (!header) {
         return FFX_API_RETURN_NO_PROVIDER;
     }
-    if (header->type != ffgvk::kCreateContextDescType) {
+    if (header->type != ffgvk::kCreateDescType) {
         return FFX_API_RETURN_NO_PROVIDER;
+    }
+    // The create descriptor is the SDK's ffxCreateContextDescFrameGeneration, so validate
+    // its OWN arguments (a real display/render resolution + a known surface format) before
+    // trusting the backend block on its pNext chain.
+    if (!ffgcheck::createDescOk(reinterpret_cast<const ffxCreateContextDescFrameGeneration*>(
+        header))
+             .ok) {
+        logLine("create refused: invalid ffxCreateContextDescFrameGeneration arguments");
+        return FFX_API_RETURN_ERROR_PARAMETER;
     }
 
     const auto* backend = ffgvk::findBackend(header);
@@ -199,6 +257,24 @@ ffxReturnCode_t createContext(ffxContext* context, ffxCreateContextDescHeader* h
     if (!backend->device || !backend->physicalDevice || !backend->getDeviceProcAddr) {
         logLine("create refused: Vulkan backend block missing device/physical/resolver");
         return FFX_API_RETURN_ERROR_PARAMETER;
+    }
+
+    // Recognize the optional HUDLess create block (0x00020009) on this create chain: if present
+    // its back-buffer format must be a real surface. Other unknown pNext blocks stay forwarded
+    // past, never rejected (the modular FFX API forwards extensions this provider does not model).
+    const ffxCreateContextDescFrameGenerationHudless* hudless = nullptr;
+    for (const auto* cur = header; cur != nullptr; cur = cur->pNext) {
+        if (cur->type == ffgvk::kHudlessCreateDescType) {
+            hudless = reinterpret_cast<const ffxCreateContextDescFrameGenerationHudless*>(cur);
+            break;
+        }
+    }
+    if (hudless) {
+        const auto hv = ffgcheck::hudlessCreateDescOk(hudless);
+        if (!hv.ok) {
+            logLine("create refused: " + hv.reason);
+            return FFX_API_RETURN_ERROR_PARAMETER;
+        }
     }
 
     const auto* enabled = ffgvk::findEnabledFeatures(header);
@@ -230,7 +306,38 @@ ffxReturnCode_t createContext(ffxContext* context, ffxCreateContextDescHeader* h
     auto* created = new (raw) FrameGenerationContext();
     created->backend = *backend;
     created->capabilities = capabilities;
+    // Remember the create-time flags that gate the documented debug checker: the
+    // depth-infinite bit changes how cameraNear/Far are validated, and the debug
+    // bit turns on argument/order enforcement at dispatch.
+    {
+        const auto* fgCreate =
+            reinterpret_cast<const ffxCreateContextDescFrameGeneration*>(header);
+        created->debugChecking =
+            (fgCreate->flags & FFX_FRAMEGENERATION_ENABLE_DEBUG_CHECKING) != 0u;
+        created->depthInfinite =
+            (fgCreate->flags & FFX_FRAMEGENERATION_ENABLE_DEPTH_INFINITE) != 0u;
+        if (hudless) {
+            created->hudlessEnabled = true;
+            created->hudlessBackBufferFormat = hudless->hudlessBackBufferFormat;
+        }
+    }
     *context = created;
+    try {
+        ffgassets::initializeEmbedded();
+        const auto root = ffgassets::packRoot();
+        if (!ffgassets::exists(root / "manifest.json") ||
+            !ffgassets::exists(root / "mlfi-model.bin") ||
+            !ffgassets::exists(root / "mlfi-graph.json")) {
+            throw std::runtime_error(
+                "Frame Generation pack is incomplete (manifest/model/graph)");
+        }
+    } catch (const std::exception& error) {
+        created->~FrameGenerationContext();
+        deallocate(callbacks, created);
+        *context = nullptr;
+        logLine(std::string("create refused: ") + error.what());
+        return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+    }
     // Phase 6 (cache) groundwork: create the namespaced, identity-pinned pipeline
     // cache up front so any later pipeline creation (once the algorithm runtime
     // lands) reuses it. The provider owns the cache handle but NOT the device.
@@ -263,15 +370,72 @@ ffxReturnCode_t destroyContext(ffxContext* context,
     return FFX_API_RETURN_OK;
 }
 
-ffxReturnCode_t configure(ffxContext* /*context*/,
+ffxReturnCode_t configure(ffxContext* context,
                           const ffxConfigureDescHeader* header) {
     if (!header) {
         return FFX_API_RETURN_ERROR_PARAMETER;
     }
-    // The generic global-debug configure block is accepted; unrecognized blocks are
-    // forwarded past rather than rejected, so hosts sending newer optional blocks
-    // keep working. (ffxConfigure on a null context also operates on global state
-    // per the API, which for this provider is nothing.)
+    auto* created = (context && *context)
+        ? static_cast<FrameGenerationContext*>(*context)
+        : nullptr;
+    // Walk the configure pNext chain. The SDK's Frame Generation configure block
+    // (ffxConfigureDescFrameGeneration, type 0x00020002) carries the swap-chain, the
+    // present + frame-generation callbacks, and the enable/async booleans; recognizing
+    // it sets the mandatory "configure before prepare/generate" flag. Key-value and
+    // other optional blocks are forwarded past, never rejected, so hosts using newer
+    // configure shapes keep working.
+    for (const auto* current = header; current != nullptr; current = current->pNext) {
+        if (current->type == ffgvk::kConfigureDescType) {
+            if (!created) {
+                continue;
+            }
+            const auto* cfg =
+                reinterpret_cast<const ffxConfigureDescFrameGeneration*>(current);
+            const auto v = ffgcheck::configureDescOk(cfg);
+            if (!v.ok) {
+                logLine("configure refused: " + v.reason);
+                return FFX_API_RETURN_ERROR_PARAMETER;
+            }
+            created->configured = true;
+            created->frameGenerationEnabled = cfg->frameGenerationEnabled;
+            created->allowAsyncWorkloads = cfg->allowAsyncWorkloads;
+            // Remember the full host-integration contract so the (future) present phase can drive
+            // these callbacks. Validated above (when enabled, the swap chain + both callbacks are
+            // required), so this replaces the earlier debug-only callback presence check.
+            created->swapChain = cfg->swapChain;
+            created->presentCallback = cfg->presentCallback;
+            created->presentCallbackUserContext = cfg->presentCallbackUserContext;
+            created->frameGenerationCallback = cfg->frameGenerationCallback;
+            created->frameGenerationCallbackUserContext = cfg->frameGenerationCallbackUserContext;
+            created->hudLessColor = cfg->HUDLessColor;
+            created->onlyPresentGenerated = cfg->onlyPresentGenerated;
+            created->generationRect = cfg->generationRect;
+            created->lastConfiguredFrameId = cfg->frameID;
+        }
+        // Register a lens-distortion field (0x00020008): validate + remember it for the (future)
+        // present phase. A null resource is refused precisely, never silently ignored.
+        if (current->type == ffgvk::kRegisterDistortionDescType) {
+            if (!created) {
+                continue;
+            }
+            const auto* d =
+                reinterpret_cast<const ffxConfigureDescFrameGenerationRegisterDistortionFieldResource*>(
+                    current);
+            const auto dv = ffgcheck::registerDistortionOk(d);
+            if (!dv.ok) {
+                logLine("configure refused: " + dv.reason);
+                return FFX_API_RETURN_ERROR_PARAMETER;
+            }
+            created->distortionField = d->distortionField;
+            created->distortionRegistered = true;
+        }
+        // A Frame Generation key-value configure block (0x00020006): this SDK's FfxApiConfigureFrameGeneration
+        // enum has NO defined keys, so there is nothing recognized to apply. Accept the block (the
+        // modular API forbids rejecting a well-formed optional descriptor) rather than reject it.
+        if (current->type == ffgvk::kConfigureKeyValueDescType) {
+            continue;
+        }
+    }
     return FFX_API_RETURN_OK;
 }
 
@@ -292,7 +456,7 @@ ffxReturnCode_t query(ffxContext* context, ffxQueryDescHeader* header) {
             // Advertise exactly this provider's one supported version id so a host
             // can pin it; it names no algorithm model family.
             auto* versions = reinterpret_cast<ffxQueryDescGetVersions*>(current);
-            if (versions->createDescType != ffgvk::kCreateContextDescType) {
+            if (versions->createDescType != ffgvk::kCreateDescType) {
                 return FFX_API_RETURN_NO_PROVIDER;
             }
             if (!versions->outputCount) {
@@ -310,6 +474,15 @@ ffxReturnCode_t query(ffxContext* context, ffxQueryDescHeader* header) {
             *versions->outputCount = 1;
             return FFX_API_RETURN_OK;
         }
+        if (current->type == ffgvk::kQueryGPUUsageType) {
+            // The SDK exposes GPU memory usage for this effect (ffxQueryDescFrameGenerationGetGPUMemoryUsage,
+            // type 0x00020007). This slice allocates no algorithm resources, so a
+            // usage number would be a fabrication: refuse honestly instead of returning
+            // a misleading zero the host might size VRAM against.
+            logLine("query refused: Frame Generation GPU memory usage is not reportable "
+                    "until the interpolation/ML/present runtime is implemented");
+            return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+        }
     }
     // Unknown query descriptors are reported, never answered wrongly.
     return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
@@ -319,19 +492,75 @@ ffxReturnCode_t dispatch(ffxContext* context, const ffxDispatchDescHeader* heade
     if (!context || !*context || !header) {
         return FFX_API_RETURN_ERROR_PARAMETER;
     }
-    if (header->type != ffgvk::kDispatchDescType) {
-        return FFX_API_RETURN_NO_PROVIDER;
+    auto* created = static_cast<FrameGenerationContext*>(*context);
+
+    // ffxDispatchDescFrameGenerationPrepare (type 0x00020004). Validate the SDK's own
+    // arguments; with FFX_FRAMEGENERATION_ENABLE_DEBUG_CHECKING set, also require the
+    // linked camera-info block (0x0002000a) with a valid orthonormal basis and enforce
+    // the frameTimeDelta-in-milliseconds expectation. This mirrors AMD's debug checker
+    // exactly and is what Step 4's "mandatory order + camera validation" delivers.
+    if (header->type == ffgvk::kDispatchPrepareType) {
+        const auto* prepare =
+            reinterpret_cast<const ffxDispatchDescFrameGenerationPrepare*>(header);
+        const auto ord = ffgcheck::prepareOrderOk(created->configured);
+        if (!ord.ok) {
+            logLine("prepare refused: " + ord.reason);
+            return FFX_API_RETURN_ERROR_PARAMETER;
+        }
+        const auto v = ffgcheck::prepareDescOk(prepare, created->depthInfinite,
+                                               created->debugChecking);
+        if (!v.ok) {
+            logLine("prepare refused: " + v.reason);
+            return FFX_API_RETURN_ERROR_PARAMETER;
+        }
+        if (created->debugChecking) {
+            const auto* cam = ffgcheck::findCameraInfo(header);
+            std::string reason;
+            if (!ffgcheck::cameraBasisOk(cam, reason)) {
+                logLine("prepare refused: " + reason);
+                return FFX_API_RETURN_ERROR_PARAMETER;
+            }
+        }
+        created->prepared = true;
+        // The Prepare pass records into the host command list AND launches the dilate/optical-
+        // flow compute, and the generate pass runs the interpolation + ML graph + swap-chain
+        // present — NONE of which is implemented or image-quality-validated in this slice.
+        // So after ACCEPTING a well-formed, in-order, camera-valid Prepare, still refuse the
+        // algorithm rather than fabricate one.
+        logLine("prepare accepted (order + camera valid) but dispatch pending: the "
+                "Frame Generation interpolation/ML/present runtime is not implemented in "
+                "this provider slice; refusing to fake frame generation. See README "
+                "host-integration boundary.");
+        return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
     }
-    // The Frame Generation interpolation/prepare passes and the swap-chain present
-    // (measured: 382 ML-neural inference modules, 92 classic compute passes, and a
-    // mainVS/mainPS/7 'main' raster blit) are NOT implemented or validated in this
-    // slice. Refuse with the exact boundary rather than fabricating a blend, a
-    // motion-blur pass or a made-up optical-flow stand-in.
-    logLine("dispatch refused: Frame Generation interpolation + present runtime not "
-            "implemented in this provider slice; refusing to fake frame generation. "
-            "Host-integration boundary (swap-chain present / pacing) is documented "
-            "in README.");
-    return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+
+    // ffxDispatchDescFrameGeneration (type 0x00020003). Validate 1..3 generated frames
+    // + luminance range; with the debug checker, require a preceding Prepare (mandatory
+    // order). Then the same honest algorithm refusal.
+    if (header->type == ffgvk::kDispatchGenerateType) {
+        const auto* generate =
+            reinterpret_cast<const ffxDispatchDescFrameGeneration*>(header);
+        const auto v = ffgcheck::generateDescOk(generate);
+        if (!v.ok) {
+            logLine("generate refused: " + v.reason);
+            return FFX_API_RETURN_ERROR_PARAMETER;
+        }
+        const auto ord = ffgcheck::generateOrderOk(created->configured, created->prepared);
+        if (!ord.ok) {
+            logLine("generate refused: " + ord.reason);
+            return FFX_API_RETURN_ERROR_PARAMETER;
+        }
+        logLine("dispatch refused: Frame Generation interpolation + present runtime not "
+                "implemented in this provider slice; refusing to fake frame generation. "
+                "Host-integration boundary (swap-chain present / pacing) is documented "
+                "in README.");
+        return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+    }
+
+    // Present-callback (0x00020005), key-value configure, camera-info outside a Prepare
+    // chain, or any other descriptor is not a dispatch this provider can serve: report
+    // no provider rather than guess a type.
+    return FFX_API_RETURN_NO_PROVIDER;
 }
 
 } // namespace ffgprovider

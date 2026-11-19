@@ -3,6 +3,8 @@
 // See LICENSE in the project root.
 
 #include "provider/provider.hpp"
+#include "provider/upscaler-checks.hpp"
+#include "provider/upscaler-queries.hpp"
 #include "runtime/rcas.hpp"
 
 #if defined(__linux__)
@@ -460,24 +462,12 @@ const ProviderVersion* selectVersion(std::uint64_t id,
 
 namespace fsr4provider {
 namespace {
-float upscaleRatio(std::uint32_t qualityMode) {
-    constexpr float ratios[] = {1.0f, 1.5f, 1.7f, 2.0f, 3.0f};
-    return qualityMode < std::size(ratios) ? ratios[qualityMode] : 0.0f;
-}
-
-float radicalInverse(std::uint32_t index, std::uint32_t base) {
-    float value = 0.0f;
-    const float inverseBase = 1.0f / static_cast<float>(base);
-    float fraction = inverseBase;
-
-    while (index) {
-        value += static_cast<float>(index % base) * fraction;
-        index /= base;
-        fraction *= inverseBase;
-    }
-
-    return value;
-}
+// The pure upscaler helper math now lives in provider/upscaler-queries.hpp (fsr4query::)
+// so the GPU-free unit test and the provider share one definition: quality->ratio,
+// display->render dimension, and the jitter phase-count / R2 offset sequence. upscaleRatio
+// stays reachable unqualified for the two ratio call sites; the render/jitter cases
+// call fsr4query:: directly.
+using fsr4query::upscaleRatio;
 
 ffxReturnCode_t queryUpscale(ffxContext* context, ffxQueryDescHeader* header) {
     switch (header->type) {
@@ -514,9 +504,9 @@ ffxReturnCode_t queryUpscale(ffxContext* context, ffxQueryDescHeader* header) {
         }
 
         *query->pOutRenderWidth =
-            static_cast<std::uint32_t>(std::ceil(static_cast<float>(query->displayWidth) / ratio));
+            fsr4query::renderDimension(query->displayWidth, ratio);
         *query->pOutRenderHeight =
-            static_cast<std::uint32_t>(std::ceil(static_cast<float>(query->displayHeight) / ratio));
+            fsr4query::renderDimension(query->displayHeight, ratio);
         return FFX_API_RETURN_OK;
     }
     case FFX_API_QUERY_DESC_TYPE_UPSCALE_GETJITTERPHASECOUNT: {
@@ -526,9 +516,8 @@ ffxReturnCode_t queryUpscale(ffxContext* context, ffxQueryDescHeader* header) {
             return FFX_API_RETURN_ERROR_PARAMETER;
         }
 
-        const float ratio =
-            static_cast<float>(query->displayWidth) / static_cast<float>(query->renderWidth);
-        *query->pOutPhaseCount = static_cast<std::int32_t>(8.0f * ratio * ratio);
+        *query->pOutPhaseCount =
+            fsr4query::jitterPhaseCount(query->renderWidth, query->displayWidth);
         return FFX_API_RETURN_OK;
     }
     case FFX_API_QUERY_DESC_TYPE_UPSCALE_GETJITTEROFFSET: {
@@ -538,10 +527,9 @@ ffxReturnCode_t queryUpscale(ffxContext* context, ffxQueryDescHeader* header) {
             return FFX_API_RETURN_ERROR_PARAMETER;
         }
 
-        const std::uint32_t sample =
-            static_cast<std::uint32_t>(query->index % query->phaseCount) + 1;
-        *query->pOutX = radicalInverse(sample, 2) - 0.5f;
-        *query->pOutY = radicalInverse(sample, 3) - 0.5f;
+        const auto offset = fsr4query::jitterOffset(query->index, query->phaseCount);
+        *query->pOutX = offset.x;
+        *query->pOutY = offset.y;
         return FFX_API_RETURN_OK;
     }
     case FFX_API_QUERY_DESC_TYPE_UPSCALE_GET_RESOURCE_REQUIREMENTS: {
@@ -565,7 +553,13 @@ ffxReturnCode_t queryUpscale(ffxContext* context, ffxQueryDescHeader* header) {
             return FFX_API_RETURN_ERROR_PARAMETER;
         }
 
-        return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
+        // The provider owns no persistent GPU resources: all surfaces are host-supplied at
+        // dispatch and the FSR4 intermediate targets are allocated through the CALLER's allocator.
+        // The honest effect-owned amount is therefore {0,0} -- answered, not refused.
+        const auto owned = fsr4query::gpuMemoryUsage();
+        query->gpuMemoryUsageUpscaler->totalUsageInBytes = owned.totalUsageInBytes;
+        query->gpuMemoryUsageUpscaler->aliasableUsageInBytes = owned.aliasableUsageInBytes;
+        return FFX_API_RETURN_OK;
     }
     case FFX_API_QUERY_DESC_TYPE_UPSCALE_GPU_MEMORY_USAGE_V2: {
         auto* query = reinterpret_cast<ffxQueryDescUpscaleGetGPUMemoryUsageV2*>(header);
@@ -574,7 +568,13 @@ ffxReturnCode_t queryUpscale(ffxContext* context, ffxQueryDescHeader* header) {
             return FFX_API_RETURN_ERROR_PARAMETER;
         }
 
-        return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
+        // V2 carries host-filled device/maxRenderSize/maxUpscaleSize/flags that DLLs with size-
+        // dependent internal allocations use; this provider allocates none internally, so its owned
+        // usage is {0,0} independent of those inputs. Same truthful answer for any size.
+        const auto owned = fsr4query::gpuMemoryUsage();
+        query->gpuMemoryUsageUpscaler->totalUsageInBytes = owned.totalUsageInBytes;
+        query->gpuMemoryUsageUpscaler->aliasableUsageInBytes = owned.aliasableUsageInBytes;
+        return FFX_API_RETURN_OK;
     }
     default:
         return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
@@ -1164,6 +1164,20 @@ ffxReturnCode_t dispatch(ffxContext* context, const ffxDispatchDescHeader* heade
                 providerMessage(*provider,
                                 FFX_API_MESSAGE_TYPE_WARNING,
                                 "[exposure] invalid pre-exposure replaced with neutral value=1.0");
+            }
+
+            // Documented FSR 4.1.2 debug checker (predicates live in
+            // provider/upscaler-checks.hpp), routed through providerMessage / FFX_API_MESSAGE_TYPE_WARNING
+            // so both the app's fpMessage callback and the runtime log see them. Emitted once (first
+            // dispatch) to avoid per-frame log spam; the whole check is inert unless the host requested
+            // FFX_UPSCALE_ENABLE_DEBUG_CHECKING.
+            if (provider->first_dispatch) {
+                for (const auto& warning :
+                     fsr4provider::upscaleDebugCheckerWarnings(
+                         provider->flags, dispatch_description.cameraFar,
+                         dispatch_description.frameTimeDelta)) {
+                    providerMessage(*provider, FFX_API_MESSAGE_TYPE_WARNING, warning);
+                }
             }
 
             auto* captured_frame = beginFrameCapture(*provider,

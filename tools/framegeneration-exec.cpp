@@ -42,6 +42,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <algorithm>
+#include <fstream>
+#include <map>
+#include <utility>
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <unistd.h>
@@ -272,6 +276,15 @@ struct PackCompile {
     uint32_t db_serialized_ok = 0;
     uint32_t db_serialized_nonzero = 0;
     uint64_t db_footprint_bytes = 0;
+    // Pass-plan drift gate (Phase 0 <-> executor binding census). When an fg-plan.tsv is
+    // supplied, the executor reconstructs the SAME de-duplicated binding groups it feeds the
+    // driver for each compute module and compares them, per module, to plan.py's plan. A
+    // missing/mismatched module means the reconstructed plan no longer matches what the device
+    // actually accepts -> fail the run instead of shipping a stale plan.
+    uint32_t plan_checked = 0;
+    uint32_t plan_missing = 0;
+    uint32_t plan_mismatch = 0;
+    std::string first_plan_mismatch;
     std::string first_db_failure;
     std::string first_pop_failure;
     VkResult first_failure = VK_SUCCESS;
@@ -287,13 +300,29 @@ static VkDescriptorType vkTypeFor(const std::string& code) {
     return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 }
 
+// Reverse of vkTypeFor: rebuild the plan's canonical binding token from the VkDescriptorType
+// the driver actually sees, so the pass-plan (plan.py, reads pipelines.tsv) and this executor
+// (reads the same grammar while constructing real descriptor-set layouts) can be compared string-for-string. Two
+// independent parsers must agree, or the reconstructed plan has drifted from what the device accepts.
+static std::string codeFor(VkDescriptorType type) {
+    switch (type) {
+        case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: return "SB";
+        case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER: return "UB";
+        case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: return "CIS";
+        case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: return "SI";
+        case VK_DESCRIPTOR_TYPE_SAMPLER: return "SMP";
+        default: return "SB";
+    }
+}
+
 static PackCompile compilePackCompute(VkPhysicalDevice physical, VkDevice device,
                                       const std::string& packDir,
                                       const ffgvk::CacheIdentity& identity,
                                       const std::string& cachePath,
                                       bool descriptorBufferTransport,
                                       bool writeMode,
-                                      const DbSizes& db) {
+                                      const DbSizes& db,
+                                      const std::map<std::string, std::string>* planGroups) {
     PackCompile stats;
     std::ifstream index(packDir + "/pipelines.tsv");
     if (!index) {
@@ -536,6 +565,41 @@ static PackCompile compilePackCompute(VkPhysicalDevice physical, VkDevice device
         std::vector<Slot> parsed;
         for (const auto& g : groups) {
             parsed.push_back({g.set, g.binding, g.type, g.arrayed});
+        }
+        if (planGroups) {
+            // Rebuild the canonical, (set,binding)-sorted binding-group string from the SAME
+            // de-duplicated groups this executor turns into real descriptor-set layouts, and
+            // compare it to plan.py's entry for this module (see fg-plan.tsv).
+            std::vector<G> canon = groups;
+            std::sort(canon.begin(), canon.end(), [](const G& x, const G& y) {
+                if (x.set != y.set) {
+                    return x.set < y.set;
+                }
+                return x.binding < y.binding;
+            });
+            std::string cs;
+            for (const auto& g : canon) {
+                if (!cs.empty()) {
+                    cs += ';';
+                }
+                cs += std::to_string(g.set) + ':' + std::to_string(g.binding) + ':' + codeFor(g.type);
+                if (g.arrayed) {
+                    cs += ":a";
+                }
+            }
+            ++stats.plan_checked;
+            const auto it = planGroups->find(name);
+            if (it == planGroups->end()) {
+                ++stats.plan_missing;
+                if (stats.first_plan_mismatch.empty()) {
+                    stats.first_plan_mismatch = "missing " + name;
+                }
+            } else if (it->second != cs) {
+                ++stats.plan_mismatch;
+                if (stats.first_plan_mismatch.empty()) {
+                    stats.first_plan_mismatch = name;
+                }
+            }
         }
         std::vector<VkDescriptorSetLayout> setLayouts(maxSet + 1, VK_NULL_HANDLE);
         std::vector<VkDescriptorSetLayoutBinding> bindings;
@@ -1058,6 +1122,11 @@ int main(int argc, char** argv) {
     bool doCompile = !getEnv("FFG4_VK_COMPILE_PACK").empty();
     bool doParity = !getEnv("FFG4_VK_DB_PARITY").empty();
     bool doWrite = !getEnv("FFG4_VK_WRITE_DESC").empty();
+    uint32_t expectCompiled = 0;
+    bool haveExpect = false;
+    bool havePlan = false;
+    std::string planPath;
+    std::map<std::string, std::string> planGroups;
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--compile-pack") {
             doCompile = true;
@@ -1068,18 +1137,72 @@ int main(int argc, char** argv) {
         if (std::string(argv[i]) == "--write-descriptors") {
             doWrite = true;
         }
+        // `--expect-plan[=<fg-plan.tsv>]`: gate the reconstructed pass-plan (plan.py) against
+        // the executor's own per-module binding census. Default file is <packDir>/fg-plan.tsv.
+        if (std::string(argv[i]) == "--expect-plan") {
+            havePlan = true;
+        } else if (std::string(argv[i]).rfind("--expect-plan=", 0) == 0) {
+            havePlan = true;
+            planPath = std::string(argv[i]).substr(std::string("--expect-plan=").size());
+        }
+        // `--expect-compiled=N` (the `=` form keeps the earlier positional loop from
+        // reading N as a device-name filter substring). Pinned by ctest so a pack/shader
+        // regression that drops a module's compilability fails the run, not just prints.
+        if (std::string(argv[i]).rfind("--expect-compiled=", 0) == 0) {
+            const std::string key = "--expect-compiled=";
+            try {
+                expectCompiled = (uint32_t)std::stoul(argv[i] + key.size());
+                haveExpect = true;
+            } catch (...) {
+                std::printf("ffg4-exec EXPECT malformed --expect-compiled value; ignored\n");
+            }
+        }
     }
     if (doWrite) {
         doCompile = true;  // population census rides the descriptor-set pass
+    }
+    std::map<std::string, std::string>* planPtr = nullptr;
+    if (havePlan) {
+        const std::string planFile = planPath.empty() ? (packDir + "/fg-plan.tsv") : planPath;
+        std::ifstream pf(planFile);
+        if (!pf) {
+            std::printf("ffg4-exec PLAN SKIP: no fg-plan.tsv at %s (run plan.py first)\n",
+                        planFile.c_str());
+            return 77;
+        }
+        auto splitTab = [](const std::string& s, char d) {
+            std::vector<std::string> out;
+            std::size_t start = 0;
+            while (true) {
+                const auto p = s.find(d, start);
+                if (p == std::string::npos) {
+                    out.push_back(s.substr(start));
+                    break;
+                }
+                out.push_back(s.substr(start, p - start));
+                start = p + 1;
+            }
+            return out;
+        };
+        std::string ln;
+        std::getline(pf, ln);  // header
+        while (std::getline(pf, ln)) {
+            const auto c = splitTab(ln, '\t');
+            if (c.size() < 10) {
+                continue;
+            }
+            planGroups[c[0]] = c[9];  // name ... groups column
+        }
+        planPtr = &planGroups;
     }
     const DbSizes dbSizes = queryDescriptorSizes(chosen);
     PackCompile cc;
     PackCompile ccDb;
     if (doCompile) {
-        cc = compilePackCompute(chosen, device, packDir, identity, cachePath, false, doWrite, dbSizes);
+        cc = compilePackCompute(chosen, device, packDir, identity, cachePath, false, doWrite, dbSizes, planPtr);
     }
     if (doParity) {
-        ccDb = compilePackCompute(chosen, device, packDir, identity, cachePath, true, doWrite, dbSizes);
+        ccDb = compilePackCompute(chosen, device, packDir, identity, cachePath, true, doWrite, dbSizes, planPtr);
     }
 
     std::printf(
@@ -1109,6 +1232,12 @@ int main(int argc, char** argv) {
             ccDb.skipped_unified, ccDb.skipped_unresolved,
             ccDb.first_failure_module.empty() ? "-" : ccDb.first_failure_module.c_str(),
             (int)ccDb.first_failure);
+    }
+    if (havePlan) {
+        const PackCompile& pc = doCompile ? cc : ccDb;
+        std::printf("ffg4-exec PLAN groups_loaded=%zu checked=%u missing=%u mismatch=%u first=%s\n",
+            planGroups.size(), pc.plan_checked, pc.plan_missing, pc.plan_mismatch,
+            pc.first_plan_mismatch.empty() ? "-" : pc.first_plan_mismatch.c_str());
     }
     if (doWrite) {
         std::printf(
@@ -1142,5 +1271,33 @@ int main(int argc, char** argv) {
     vkDestroyDevice(device, nullptr);
     vkDestroyInstance(instance, nullptr);
     std::remove(cachePath.c_str());
-    return warmPipeline ? 0 : 2;
+
+    // --expect-compiled=N (mirrors inventory.py's --expect drift gates). If either
+    // requested transport fails to create at least N compute pipelines, or reports
+    // any failure, exit 3 so a pack/SPIR-V regression that silently drops a module's
+    // compilability fails the run instead of merely printing a smaller created= count.
+    // Only meaningful when --compile-pack / --descriptor-buffer-parity were requested.
+    int result = warmPipeline ? 0 : 2;
+    if (haveExpect) {
+        const bool sets_ok = doCompile && cc.failed == 0 && cc.created >= expectCompiled;
+        const bool db_ok = doParity && ccDb.failed == 0 && ccDb.created >= expectCompiled;
+        if (!sets_ok && !db_ok) {
+            std::printf(
+                "ffg4-exec EXPECT compiled>=%u NOT MET: "
+                "descriptor-set created=%u failed=%u | descriptor-buffer created=%u failed=%u\n",
+                expectCompiled, doCompile ? cc.created : 0u, doCompile ? cc.failed : 0u,
+                doParity ? ccDb.created : 0u, doParity ? ccDb.failed : 0u);
+            if (result == 0) result = 3;
+        }
+    }
+    if (havePlan) {
+        const PackCompile& pc = doCompile ? cc : ccDb;
+        if (pc.plan_checked == 0u || pc.plan_missing != 0u || pc.plan_mismatch != 0u) {
+            std::printf(
+                "ffg4-exec EXPECT plan NOT MET: checked=%u missing=%u mismatch=%u\n",
+                pc.plan_checked, pc.plan_missing, pc.plan_mismatch);
+            result |= 4;
+        }
+    }
+    return result;
 }

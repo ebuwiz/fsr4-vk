@@ -149,9 +149,151 @@ device is AMD, reports itself integrated and matches no table ID, it warns with 
 exact `device_id=` the table would need — that is the value to report so the case
 becomes a measured rule rather than a permanent override.
 
+## Upscaler API compliance (AMD FSR Upscaling 4.1.2)
+
+This provider implements the documented `ffx_upscale.h` contract directly from the pinned
+headers, so a host can pin the behavior against AMD's own `amd_fidelityfx_upscaler_vk.dll`
+(which ffx-vk-linux shows runs on native Linux through AMD's Vulkan DLL).
+
+- **Quality modes** (`ffxQueryDescUpscaleGetUpscaleRatioFromQualityMode` /
+  `…GetRenderResolutionFromQualityMode`): NativeAA 1.0x, Quality 1.5x, Balanced 1.7x,
+  Performance 2.0x, UltraPerformance 3.0x — the same ladder the asset pack carries
+  (`native`/`quality`/`balanced`/`performance`/`ultraperf` presets).
+- **Deterministic `ffxQuery` helpers are answered, not stubbed**: the upscaler ratio, the
+  display→render resolution, `ffxQueryDescUpscaleGetJitterPhaseCount` and
+  `…GetJitterOffset` (the R2 low-discrepancy sequence) are computed from a single
+  shared source (`src/provider/upscaler-queries.hpp`) and pinned by the GPU-free
+  `upscaler-query-test`. Our vendored `ffx_upscale.h` is AMD's newer (2025) revision — a
+  superset of the 2024 header (it adds `NON_LINEAR_COLORSPACE 1<<8`, `DEBUG_VISUALIZATION
+  1<<9`, `GPU_MEMORY_USAGE_V2 0x00010009`, `GET_RESOURCE_REQUIREMENTS 0x0001000a`); the
+  GPU-memory-usage V1/V2 queries (`0x00010008`/`0x00010009`) are now **answered with the provider's
+  true owned amount**: `fsr4query::gpuMemoryUsage()` returns `{0, 0}` because this provider retains
+  no persistent GPU resources (every surface is host-supplied at dispatch and FSR4's intermediate
+  targets are allocated through the caller's allocator) — the honest value, not a fabricated size.
+  (The separate Frame Generation provider's GPU-memory-usage remains an honest refusal, because
+  *that* algorithm is unimplemented and reporting a number would be fabrication.)
+- **Create-context flags honored** (`ffxCreateContextDescUpscale.flags`): HDR, display-resolution
+  motion vectors, motion-vector jitter cancellation, depth-inverted, depth-infinite, auto-exposure,
+  dynamic-resolution, non-linear colorspace, debug-checking, debug-visualization.
+- **Per-dispatch inputs honored** (`ffxDispatchDescUpscale`): color/depth/motion/exposure/reactive/
+  transparency inputs, `jitterOffset`, `motionVectorScale`, `enableSharpening`/`sharpness` (RCAS),
+  `preExposure` (non-positive → neutral 1.0 + a `[exposure]` warning), `reset`, `cameraNear`/`cameraFar`/
+  `cameraFovAngleVertical`, and the colorspace flags `FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_SRGB` /
+  `…_PQ` (mutually exclusive, applied via `selectColorSpace`), plus `FFX_UPSCALE_FLAG_DRAW_DEBUG_VIEW`.
+- **Debug checker** (`FFX_UPSCALE_ENABLE_DEBUG_CHECKING`): when the host requests it, the runtime
+  emits the SDK's warnings through the app's `fpMessage`/`FFX_API_MESSAGE_TYPE_WARNING` channel (first
+  dispatch, once, to avoid per-frame spam): the depth separation-artifact warning for
+  `DEPTH_INVERTED` + `DEPTH_INFINITE` with a very low `cameraFar`, and the `frameTimeDelta < 1.0f`
+  (should be milliseconds, ~16.6f for 60fps) warning. Off unless requested — release path unchanged.
+- **Device gating** matches AMD's documented requirement (RX 9000/7000/6000 series or the AMD
+  Ryzen AI/Z2 integrated-graphics processors): the model ladder walks INT8 → FP8 and refuses with
+  named blockers where neither is offered (see `## Checks` and the runtime levers).
+
+## Host integration (upscaler)
+
+The provider is a **command-buffer recorder, not a scheduler**. Given a host-supplied
+`VkCommandBuffer`, it records every FSR4 pass onto that one buffer and sequences them
+itself — inserting `vkCmdPipelineBarrier2` / `vkCmdPipelineBarrier` between passes with
+explicit source/destination stage and access masks (for the optional pixel readback, a
+`TRANSFER_WRITE → HOST_READ` memory barrier), and performing the layout transitions on
+the host's input images. Because the ordering lives inside the recorded buffer, the
+sequence stays valid on whatever queue the host submits it to. The provider never calls
+`vkCmd*/vkQueue*` submission, never chooses a queue, never touches cross-frame semaphores,
+and never presents: **queue selection, `VkSubmitInfo`, frame-to-frame semaphores and
+presentation are entirely the host's responsibility.**
+
+Queueing guidance for a host embedding this (measurements from the experimental
+[ffx-vk-linux](https://github.com/DuIslingr/ffx-vk-linux) project, *not* a claim that this
+`.so` schedules work by itself):
+
+- **Keep FSR4 on the graphics queue.** Measured there: FSR4 async-compute (moving the
+  passes to a dedicated compute queue) gained ~0 on an RX-class card and *added* 0.1–0.2 ms
+  of sync overhead. (FSR3 async gained ~+40%, but that does not carry to FSR4.) So run
+  this provider's recorded buffer on the main graphics queue unless you have your own
+  measurement showing otherwise.
+- **If you reuse one command buffer across queues**, create it `VK_SHARING_MODE_CONCURRENT`
+  and drive frame-to-frame ordering with **timeline semaphores** and **double-buffered per-frame
+  inputs**; that is what keeps a shared buffer validation-clean when a queue consumes it.
+- **Determinism check you can lean on:** this repo's `descriptor-smoke` target already
+  proves — on the target GPU — that the two descriptor transports (conventional descriptor-set
+  vs `VK_EXT_descriptor_buffer`) produce **byte-identical** INT8 (and FP8 where supported)
+  output through the same shaders across repeated submits. A host can replay that as a
+  3-frame byte-identical readback to catch any non-determinism in its own queueing/pacing.
+
 ## Checks
 
 The build itself verifies every embedded asset payload and alias. On top of that:
+
+- `ctest --test-dir build/linux --output-on-failure` is the standard discovery entry
+  for the **compiled** invariant tests, complementing the bash gate. It runs
+  `upscaler-debugcheck` (the FSR 4.1.2 debug-checker predicates), `upscaler-query-math`
+  (the deterministic FSR helper math: quality→ratio, display→render resolution, jitter
+  phase-count + R2 offset, from `src/provider/upscaler-queries.hpp`), `cap-probe-synthetic-gates`
+  (the INT8 → FP8 ladder + every device-class spelling + RDNA2 identity edges),
+  `descriptor-smoke-transports-byte-identical` (conventional descriptor-set ↔ `VK_EXT_descriptor_buffer`
+  byte-identity through the real shaders), `frame-generation-validators`
+  (`tools/validate/frame-generation/tests.py`: FG ABI + honest refusal),
+  `framegeneration-check-order-camera` (`framegeneration-check-test`: the GPU-free
+  Frame Generation mandatory-order + camera-info + create/generate predicates), and
+  `framegeneration-compile-parity-474` (`framegeneration-exec --compile-pack
+  --descriptor-buffer-parity --expect-compiled=474`: pins that **all 474 FG compute modules
+  compile under BOTH descriptor transports**, exiting non-zero if a pack/SPIR-V regression
+  drops any). It is registered only when the generated (gitignored) FG asset pack is present, and covers
+   the two FG pass-plan gates: `framegeneration-plan-consistency`
+   (`framegeneration-plan-test`: the GPU-free proof that an independent C++ re-parse of the
+   pack's `pipelines.tsv` agrees, module-for-module, with the FG pass-plan that
+   `tools/extract/frame-generation/plan.py` reconstructs: same 474 compute modules, same 1208
+   de-duplicated binding groups, valid order scaffold) and `framegeneration-plan-drift`
+   (`framegeneration-exec --compile-pack --descriptor-buffer-parity --expect-plan`: ties the
+   driver-backed per-module binding census to that plan on a real device, measured
+   `checked=474 missing=0 mismatch=0`) and `framegeneration-host-integration-ladder`
+   (`framegeneration-probe`: on a device that offers the Frame Generation execution contract it now
+   **asserts** — not merely prints — the entire documented host-integration return-code ladder
+   (`ffxCreateContext`=OK → Prepare-before-Configure=parameter → GET_VERSIONS=pinned `0xF600000001000002`
+   → GPU-memory-usage=honest runtime refusal → Configure=OK → Prepare=runtime-pending →
+   Generate=runtime-pending → present-callback=no-provider → destroy=OK), and **skips** any device that
+   does not meet the contract (e.g. one lacking `VK_KHR_cooperative_matrix`), so a provider routing/refusal
+   drift fails the gate on a suitable AMD device while a device-less host stays green via exit 77.
+   Measured on the AMD Radeon RX 9070 XT: every stage returned its documented code.
+  The device-dependent entries auto-skip on exit code **77** — the tools' own "no suitable
+  AMD device" signal — so `ctest` stays green on a GPU-less CI host instead of failing. Verified
+  on the target device: **9/9 passed**.
+
+- `bash tools/build/linux.sh` now ends by running `tools/build/check.sh`, a
+  post-build validation gate in which every check asserts exit 0 (a red run is a
+  real regression — invalid SPIR-V, a dropped asset payload, or a broken Frame
+  Generation entry-point contract — not merely a compile failure). The gate runs
+  the four checks feasible on any Linux host: `shaders.py` on the native pack
+  (504 reconstructed modules), `elf-assets.py` (binary-level asset proof),
+  `frame-generation/tests.py` (ABI + honest refusal), and the GPU-free
+  `upscaler-debugcheck-test` (the FSR 4.1.2 debug-checker predicates) and then the compiled
+  `ctest` set (so one command covers both the validators and the compiled invariant tests;
+  GPU-dependent ctest entries auto-skip on exit 77). `windows-binary.py`
+  (needs the Windows PE / MinGW-w64 build) and `ab-frames.py` (needs two live frame
+  captures) are deliberately outside this Linux gate and run on the Windows/capture path
+  instead — `cmake --build --target check-win`, defined only under `WIN32` (inert on a
+  Linux configure), wraps `windows-binary.py` on the built `amd_fidelityfx_upscaler_vk.dll`
+  plus the build's generated `embedding-selection.json`: the PE sibling of `elf-assets.py`
+  (RCDATA payload hashes + exactly the five FFX API exports).
+- The **binary-level** asset proof is `elf-assets.py`, and its `--storage-index`
+  argument is required, not optional. Correct form:
+
+  ```sh
+  python3 tools/validate/elf-assets.py \
+      build/linux/amd_fidelityfx_upscaler_vk.so assets/pack-unified \
+      build/linux/generated/elf-asset-report.json \
+      --storage-index build/linux/generated/embedded-storage.json
+  ```
+
+  It opens the `.so`'s `fsr4_embedded_assets_begin` ELF symbol, decompresses the
+  embedded bytes with the same per-payload Zstandard index the build wrote
+  (`generated/embedded-storage.json`), and hash-checks every payload against
+  `assets/pack-unified/manifest.json` — expect `complete=true`, `payloads_verified=508`,
+  `spirv_payloads=504`, `compressed_payloads=504`, `windows_payloads=0`,
+  `omitted_shader_tiers=[]`, `read_only` and `private_data_symbol`. Without
+  `--storage-index` it re-derives *uncompressed* sizes and reports a spurious
+  "Embedded packed payload mismatch", so a healthy build looks red: always pass the
+  index the build generated.
 
 - `cmake --build build/linux --target format-check` checks owned C/C++ sources against
   `tools/format.py` without touching files; drop `-check` to apply. This needs a
@@ -199,6 +341,14 @@ The build itself verifies every embedded asset payload and alias. On top of that
   behind them, no inbound pointer to any of them, and only DXBC signature semantics among
   the pointed-at variant strings — so Lite/Navi2 are provider variants keyed by compiled
   constants here, not a separate family of model assets and not a table you can read.
+- `./build/linux/upscaler-debugcheck-test` is a GPU-free unit test for the FSR 4.1.2
+  debug-checker predicates in `src/provider/upscaler-checks.hpp` — the same warnings the
+  provider routes through `providerMessage` / `FFX_API_MESSAGE_TYPE_WARNING` on the first
+  dispatch when the host sets `FFX_UPSCALE_ENABLE_DEBUG_CHECKING` (the SDK's depth-separation
+  warning for `DEPTH_INVERTED`+`DEPTH_INFINITE` with a very low `cameraFar`, and the
+  `frameTimeDelta < 1.0f` warning). It asserts the checker is silent unless requested, fires
+  each warning on its own condition and both together, and stays silent for a well-formed
+  frame — no Vulkan, no assets, no device, so the checker's decision logic cannot drift silently.
 - Captures are compared frame by frame: `python3 tools/validate/ab-frames.py <capture_a> <capture_b>`.
   Add `--relax-variant` when the two runs differ by more than the descriptor transport,
   which is how an INT8/FP8 A/B is paired, since the two models select different wave
@@ -236,6 +386,14 @@ never committed): `modules/<container-hash>.spv`, a `manifest.json` that pins th
 source SHA + embedded execution contract and per-module Vulkan facts (entry, stage,
 workgroup size, SPIR-V SHA), and a 5-column `modules.tsv` line index the C++
 runtime can read without a JSON parser.
+
+The extraction workflow additionally reverses the ML payload from the pinned PE:
+`tools/extract/frame-generation/reverse.py` verifies two complete
+`mlfi_<tier>_pass0..190` chains, extracts the aligned 9,437,184-byte model with
+SHA-256 `6345f9ef4bbead6a942a7379d17caeaaf01d6142aa3dccae4695e56f68627dbe`,
+and records PE record references in `mlfi-graph.json`. The Linux provider embeds
+the verified SPIR-V pack, graph and model into
+`amd_fidelityfx_framegeneration_vk.so`; generated bytes remain gitignored.
 
 `inventory.py` validates the PE image, the exact SHA-256 and pins SDK version
 4.0.2.4555 before extracting anything, fails on unsupported container layouts
@@ -403,7 +561,13 @@ This change delivers and **tests**: the provider ABI, caller-owned-device
 capability detection, version advertisement (`0xF600000001000002`, the DLL's
 own published id), the measured execution contract, a reproducible Frame Generation
 **asset pack**, a namespaced identity-validated **pipeline cache** (`fg4` vs the
-upscaler's `fs4`), and the clean refusal of anything not yet implemented. It does **not**
+upscaler's `fs4`), and the clean refusal of anything not yet implemented. The SDK's
+real Frame Generation descriptor types are now vendored (`ffx_frame_generation.h`:
+create `0x00020001`, configure `0x00020002`, Prepare `0x00020004`, generate
+`0x00020003`, linked camera-info `0x0002000a`) and the provider validates the create
+descriptor's own arguments; under `FFX_FRAMEGENERATION_ENABLE_DEBUG_CHECKING` it enforces
+the mandatory call order (Configure → Prepare → generate) and the orthonormal camera
+basis, THEN still refuses the algorithm. It does **not**
 yet implement or image-quality-validate the optical-flow / ML / present runtime, so
 **`ffxDispatch` refuses with a named blocker rather than fabricating** a blend, a
 motion-blur pass or a made-up optical-flow stand-in. Therefore `amd_fidelityfx_framegeneration_vk.so`
@@ -415,11 +579,26 @@ the interpolation and ML graphs from the pack, the FG-side descriptor-set ↔ de
 **output byte-identity at dispatch** (the analog of the upscaler `descriptor-smoke`, which needs
 host binding), swap-chain present/pacing, benchmarking, and reference image-quality (PSNR/SSIM/flicker
 vs the DX12 baseline) — are implemented and measured; note pipeline *creation* and both-transport
-*acceptance* for **all 474** FG compute modules are already implemented and measured.
+*acceptance* for **all 474** FG compute modules are already implemented and measured. Two
+  more boundaries are now delivered and machine-checked. `ffxConfigure`
+  (`ffxConfigureDescFrameGeneration`, 0x00020002) validates **and captures** the full host-
+  integration contract the present phase needs — swap chain, present + frame-generation
+  callbacks (+ their user contexts), `HUDLessColor`, `onlyPresentGenerated`, `generationRect`,
+  `frameID` — and the documented **Configure → Prepare → generate** order is enforced generally
+  (not only under debug), pinned GPU-free by `framegeneration-check-test`. The reconstructed FG
+  pass-plan (Phase 0) is cross-checked three ways (`framegeneration-plan-test` independent re-
+  parse; `framegeneration-exec --expect-plan` driver-backed census; `plan.py`). The compute half
+  — recording the 92 classic + 382 `mlfi` passes with their semantic buffer wiring — stays gated
+  on a DLL-grounded FG dispatch/dataflow extractor (the analog of the upscaler's
+  `tools/extract/{dispatch,endpoints}.py`), so `ffxQuery(…GetGPUMemoryUsage)` (0x00020007)
+  remains an honest refusal until the provider actually allocates the plan's intermediate
+  targets.
 
 `tools/framegeneration-probe.cpp` produces the compatibility matrix on real
 hardware. Measured on the primary target: AMD RX 9070 XT (RADV GFX1201) meets
-the contract (create OK, advertises the id, dispatch refused pending runtime);
+the contract (real FG create descriptor accepted, advertises the id, a valid
+ Prepare is accepted — order + camera basis — then the algorithm dispatch is refused
+ pending runtime);
 the Intel integrated (RPL-S) device is refused with
 `missing enabled feature VK_KHR_cooperative_matrix (156 ML Frame Generation
 neural modules use CooperativeMatrixKHR)`.

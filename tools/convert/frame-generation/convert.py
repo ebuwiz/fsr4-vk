@@ -39,6 +39,7 @@ COMPONENT = "frame-generation"
 SOURCE_SHA256 = "e6843252f58b0341a0d80f6a20bc0d840643ee95bc48c22cac08745344577bb6"
 INVENTORY_TOOL = ROOT / "tools/extract/frame-generation/inventory.py"
 INSPECT_TOOL = ROOT / "tools/shader-inspect.py"
+REVERSE_TOOL = ROOT / "tools/extract/frame-generation/reverse.py"
 
 # The containers are Shader Model 6.6 immediate shader graphs (ISG1/OSG1). Measured
 # on the pinned DLL they translate with only the base bindless flags; they carry
@@ -320,6 +321,44 @@ def main(argv=None):
                 f"{(failure.get('error') or '')[:200]}\n"
             )
         return 1
+    reverse = run([
+        sys.executable,
+        REVERSE_TOOL,
+        "--dll",
+        args.dll,
+        "--inventory",
+        manifest_path,
+        "--pack",
+        pack_dir,
+        "--output",
+        pack_dir / "mlfi-graph.json",
+        "--extract-model",
+        pack_dir / "mlfi-model.bin",
+    ])
+    sys.stdout.write(reverse.stdout or "")
+    if reverse.returncode != 0:
+        sys.stderr.write(reverse.stderr or "")
+        parser.error("Frame Generation PE reverse failed")
+    graph = json.loads((pack_dir / "mlfi-graph.json").read_text())
+    model_path = pack_dir / "mlfi-model.bin"
+    model_sha = hashlib.sha256(model_path.read_bytes()).hexdigest()
+    pack["mlfi_graph"] = {
+        "file": "mlfi-graph.json",
+        "sha256": hashlib.sha256(
+            (pack_dir / "mlfi-graph.json").read_bytes()
+        ).hexdigest(),
+    }
+    pack["mlfi_model"] = {
+        "file": "mlfi-model.bin",
+        "size": model_path.stat().st_size,
+        "sha256": model_sha,
+        "rva": graph["model"]["rva"],
+    }
+    if model_sha != graph["model"]["sha256"]:
+        parser.error("Frame Generation model extraction hash drifted")
+    (pack_dir / "manifest.json").write_text(
+        json.dumps(pack, indent=1, sort_keys=True) + "\n"
+    )
     return 0
 
 

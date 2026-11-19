@@ -21,6 +21,7 @@
 
 #include "ffx_api.h"
 #include "ffx_api_types.h"
+#include "ffx_frame_generation.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -33,6 +34,16 @@
 #if defined(__unix__) || defined(__APPLE__)
 #include <unistd.h>
 #endif
+
+// No-op host callbacks for the probe's ffxConfigure host-integration contract. The provider
+// validates + remembers these for the (future) present phase but does NOT drive them back while
+// the compute algorithm is refused, so their bodies are never invoked in this probe.
+static ffxReturnCode_t probePresentCallback(ffxCallbackDescFrameGenerationPresent*, void*) {
+    return FFX_API_RETURN_OK;
+}
+static ffxReturnCode_t probeFrameGenerationCallback(ffxDispatchDescFrameGeneration*, void*) {
+    return FFX_API_RETURN_OK;
+}
 
 // The Vulkan backend block a host attaches to ffxCreateContext (descriptor type 3).
 struct FfgBackendDesc {
@@ -110,6 +121,18 @@ int main() {
     }
 
     int ran = 0;
+    // Accumulate return-code mismatches across the whole documented host-integration
+    // ladder so the probe FAILS (non-zero) if the provider's routing/refusal drifts, instead
+    // of merely printing codes (the previous probe returned 0 no matter what a stage did).
+    int ladderFailures = 0;
+    auto expect = [&](const char* stage, int got, int want) {
+        const bool ok = (got == want);
+        std::printf("  %s = %d (expected %d)%s\n", stage, got, want,
+                    ok ? "" : "   <-- MISMATCH");
+        if (!ok) {
+            ++ladderFailures;
+        }
+    };
     for (const auto& physical : physicals) {
         VkPhysicalDeviceProperties props{};
         vkGetPhysicalDeviceProperties(physical, &props);
@@ -185,7 +208,10 @@ int main() {
             std::printf("  device-create-skipped: a contract extension/feature is unavailable\n");
             continue;
         }
-        ran++;
+        // `ran` is incremented below ONLY once a device actually satisfies the Frame Generation
+        // execution contract (ffxCreateContext == OK). A device that merely created a VkDevice but
+        // is refused for a missing feature must NOT count, so the probe skips (exit 77) unless a
+        // real contract device ran -- and passed -- the full host-integration ladder.
 
         FfgEnabledFeaturesDesc enabled{{7u, nullptr},
                                        VK_TRUE,
@@ -203,7 +229,18 @@ int main() {
                                        VK_TRUE,
                                        VK_TRUE};
         FfgBackendDesc backend{{3u, &enabled.header}, device, physical, vkGetDeviceProcAddr};
-        ffxApiHeader create{0x00020000u, &backend.header};
+        // Real SDK Frame Generation create descriptor (type 0x00020001) with the
+        // backend + enabled-feature blocks on its pNext chain, plus valid create
+        // arguments (display/render size + a known surface format). DEBUG_CHECKING is
+        // on so the provider's mandatory-order + camera checks are exercised downstream.
+        ffxCreateContextDescFrameGeneration createDesc{};
+        createDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION;
+        createDesc.header.pNext = &backend.header;
+        createDesc.flags = FFX_FRAMEGENERATION_ENABLE_DEBUG_CHECKING;
+        createDesc.displaySize = {1920u, 1080u};
+        createDesc.maxRenderSize = {1920u, 1080u};
+        createDesc.backBufferFormat = 1u;  // a known FfxApiSurfaceFormat, not UNKNOWN
+        auto* create = &createDesc.header;
 
         // Point the provider's namespaced pipeline cache at a probe-known temp
         // path so the cold (create+save) -> warm (reload) round-trip is observable
@@ -215,28 +252,132 @@ int main() {
         setenv("FFG4_VK_PIPELINE_CACHE", cachePath.c_str(), 1);
 
         ffxContext context{};
-        const ffxReturnCode_t created = ffxCreateContext(&context, &create, nullptr);
-        std::printf("  ffxCreateContext=%d\n", created);
+        const ffxReturnCode_t created = ffxCreateContext(&context, create, nullptr);
+        if (created != FFX_API_RETURN_OK || !context) {
+            // A device that does NOT satisfy the Frame Generation execution contract (for
+            // example one lacking VK_KHR_cooperative_matrix, used by the 156 ML neural modules)
+            // is honestly refused by ffxCreateContext with a runtime error. That is the CORRECT
+            // behaviour for a non-contract device, so skip it (and do not count it) rather than
+            // assert the ladder against it; only a contract-capable device runs the ladder below.
+            std::printf("  device skipped: does not offer the FG execution contract "
+                        "(ffxCreateContext=%d)\n",
+                        (int)created);
+            vkDestroyDevice(device, nullptr);
+            continue;
+        }
+        ++ran;  // counts only devices that meet the contract and therefore run the ladder
+        expect("ffxCreateContext", (int)created, (int)FFX_API_RETURN_OK);
         if (created == FFX_API_RETURN_OK && context) {
+            // (a) Mandatory order BEFORE configure: a Prepare must be refused as a
+            // parameter error (Configure -> Prepare), never silently accepted.
+            ffxDispatchDescFrameGenerationPrepare early{};
+            early.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE;
+            early.header.pNext = nullptr;
+            early.renderSize = {1920u, 1080u};
+            early.frameTimeDelta = 16.6f;
+            expect("ffxDispatch(Prepare) before Configure",
+                   (int)ffxDispatch(&context, &early.header),
+                   (int)FFX_API_RETURN_ERROR_PARAMETER);
             uint64_t capacity = 4;
             uint64_t ids[4]{};
             const char* names[4]{};
             ffxQueryDescGetVersions versions{
-                {FFX_API_QUERY_DESC_TYPE_GET_VERSIONS, nullptr}, 0x00020000u, 0,
+                {FFX_API_QUERY_DESC_TYPE_GET_VERSIONS, nullptr},
+                FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION, 0,
                 &capacity, ids, names};
             ffxQuery(&context, &versions.header);
             std::printf("  provider advertises version id(s):");
             for (uint64_t index = 0; index < capacity; ++index) {
                 std::printf(" 0x%llX", (unsigned long long)ids[index]);
             }
-            // Pass a real (unknown-to-this-provider) dispatch header so the
-            // refusal that surfaces is the runtime-pending boundary, not a
-            // null-parameter error: expected return is 3 (RUNTIME_ERROR).
-            ffxDispatchDescHeader dummy{0x00020001u, nullptr};
-            const int dispatchCode = (int)ffxDispatch(&context, &dummy);
-            std::printf("  ffxDispatch=%d (expected 3=runtime-error: runtime pending)\n",
-                        dispatchCode);
-            ffxDestroyContext(&context, nullptr);
+            // (b) Exactly the pinned Frame Generation version id (0xF600000001000002
+            //     == effect module 0xF6 + packed 4.0.2) must be advertised at ids[0].
+            expect("ffxQuery(GET_VERSIONS).versionIds[0] == 0xF600000001000002",
+                   ids[0] == 0xF600000001000002ULL ? 1 : 0, 1);
+            // (c) FG GPU-memory-usage (0x00020007) is an HONEST refusal while the
+            // interpolation/ML/present runtime is unimplemented: RUNTIME_ERROR, never a
+            // fabricated size and never OK.
+            FfxApiEffectMemoryUsage fgUsage{};
+            ffxQueryDescFrameGenerationGetGPUMemoryUsage gpuQ{};
+            gpuQ.header.type = FFX_API_QUERY_DESC_TYPE_FRAMEGENERATION_GPU_MEMORY_USAGE;
+            gpuQ.header.pNext = nullptr;
+            gpuQ.gpuMemoryUsageFrameGeneration = &fgUsage;
+            expect("ffxQuery(GPU_MEMORY_USAGE)",
+                   (int)ffxQuery(&context, &gpuQ.header),
+                   (int)FFX_API_RETURN_ERROR_RUNTIME_ERROR);
+            // Follow the SDK's mandatory order: ffxConfigure(ffxConfigureDescFrameGeneration, 0x0002
+            // 0x0002) BEFORE any Prepare. Hand over the host-integration contract (a swap chain +
+            // present/frameGeneration callbacks) the provider validates and remembers for the
+            // present phase; frameGenerationEnabled=true means the contract requires them.
+            char swapChainToken = 0;
+            ffxConfigureDescFrameGeneration configure{};
+            configure.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
+            configure.header.pNext = nullptr;
+            configure.swapChain = &swapChainToken;
+            configure.presentCallback = probePresentCallback;
+            configure.presentCallbackUserContext = nullptr;
+            configure.frameGenerationCallback = probeFrameGenerationCallback;
+            configure.frameGenerationCallbackUserContext = nullptr;
+            configure.frameGenerationEnabled = true;
+            configure.allowAsyncWorkloads = false;
+            configure.flags = 0u;
+            configure.onlyPresentGenerated = false;
+            configure.generationRect = {0, 0, 0, 0};  // whole-frame sentinel
+            configure.frameID = 7u;
+            const int configureCode = (int)ffxConfigure(&context, &configure.header);
+            expect("ffxConfigure(host contract)", configureCode, (int)FFX_API_RETURN_OK);
+            // Drive a VALID Frame Generation Prepare (type 0x00020004) with the
+            // linked camera-info block (0x0002000a) carrying an orthonormal basis.
+            // With DEBUG_CHECKING on, the provider accepts the order + camera contract
+            // and THEN refuses the (unimplemented) algorithm, so the surfaced return is
+            // 3 (RUNTIME_ERROR / runtime pending) — not a parameter error.
+            ffxDispatchDescFrameGenerationPrepare prepare{};
+            prepare.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE;
+            prepare.renderSize = {1920u, 1080u};
+            prepare.frameTimeDelta = 16.6f;
+            prepare.cameraNear = 0.1f;
+            prepare.cameraFar = 1000.0f;
+            prepare.cameraFovAngleVertical = 1.0f;
+            prepare.jitterOffset = {0.0f, 0.0f};
+            prepare.motionVectorScale = {1.0f, 1.0f};
+            prepare.flags = 0u;
+            prepare.commandList = nullptr;
+            ffxDispatchDescFrameGenerationPrepareCameraInfo cam{};
+            cam.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_CAMERAINFO;
+            const float up[3] = {0.0f, 1.0f, 0.0f};
+            const float right[3] = {1.0f, 0.0f, 0.0f};
+            const float fwd[3] = {0.0f, 0.0f, -1.0f};
+            for (int i = 0; i < 3; ++i) {
+                cam.cameraUp[i] = up[i];
+                cam.cameraRight[i] = right[i];
+                cam.cameraForward[i] = fwd[i];
+            }
+            prepare.header.pNext = &cam.header;
+            const int dispatchCode = (int)ffxDispatch(&context, &prepare.header);
+            expect("ffxDispatch(Prepare) after Configure", dispatchCode,
+                   (int)FFX_API_RETURN_ERROR_RUNTIME_ERROR);
+            // (d) A VALID Generate (0x00020003) AFTER Prepare must hit the same honest
+            // RUNTIME_ERROR (interpolation/ML/present refused), not a parameter error and
+            // not OK -- this is the frame-generation dispatch a real host would issue.
+            ffxDispatchDescFrameGeneration generate{};
+            generate.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION;
+            generate.header.pNext = nullptr;
+            generate.numGeneratedFrames = 1u;
+            generate.minMaxLuminance[0] = 0.0f;
+            generate.minMaxLuminance[1] = 1000.0f;
+            expect("ffxDispatch(FrameGeneration) after Prepare",
+                   (int)ffxDispatch(&context, &generate.header),
+                   (int)FFX_API_RETURN_ERROR_RUNTIME_ERROR);
+            // (e) The present-callback block (0x00020005) is host-driven, never a provider
+            // dispatch: report NO_PROVIDER rather than guess a type for it.
+            ffxCallbackDescFrameGenerationPresent presentCb{};
+            presentCb.header.type = FFX_API_CALLBACK_DESC_TYPE_FRAMEGENERATION_PRESENT;
+            presentCb.header.pNext = nullptr;
+            expect("ffxDispatch(present-callback)",
+                   (int)ffxDispatch(&context, &presentCb.header),
+                   (int)FFX_API_RETURN_NO_PROVIDER);
+            const int destroyed = (int)ffxDestroyContext(&context, nullptr);
+            expect("ffxDestroyContext", destroyed, (int)FFX_API_RETURN_OK);
 
             // Cycle 1 destroyed the context, which serialized the cache container
             // to cachePath. Create a second context: the provider must LOAD that
@@ -244,7 +385,7 @@ int main() {
             // this GPU + driver) matches, i.e. a warm start. We verify the on-disk
             // container proves the namespacing + identity validation.
             ffxContext warm{};
-            if (ffxCreateContext(&warm, &create, nullptr) == FFX_API_RETURN_OK &&
+            if (ffxCreateContext(&warm, create, nullptr) == FFX_API_RETURN_OK &&
                 warm) {
                 std::ifstream file(cachePath, std::ios::binary);
                 std::vector<unsigned char> data((std::istreambuf_iterator<char>(file)),
@@ -270,5 +411,14 @@ int main() {
         std::printf("no device offered the Frame Generation execution contract\n");
         return 77;
     }
+    if (ladderFailures != 0) {
+        std::printf("Frame Generation host-integration ladder FAILED: %d unexpected return "
+                    "code(s)\n",
+                    ladderFailures);
+        return 1;
+    }
+    std::printf("Frame Generation host-integration ladder: every stage returned its documented "
+                "code (create / order-before-configure / versions / gpu-usage refusal / configure / "
+                "prepare / generate / present-callback / destroy)\n");
     return 0;
 }

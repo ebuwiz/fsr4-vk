@@ -26,6 +26,7 @@
 
 #include "ffx_api.h"
 #include "ffx_api_types.h"
+#include "ffx_frame_generation.h"
 
 #include <cstdint>
 #include <string>
@@ -40,8 +41,32 @@ constexpr ffxStructType_t kBackendVkInstanceDescType = 4u; // optional instance 
 constexpr ffxStructType_t kOverrideVersionDescType = 5u;   // version override block
 constexpr ffxStructType_t kGetProviderVersionQueryType = 6u; // provider-version query
 constexpr ffxStructType_t kEnabledFeaturesDescType = 7u; // host-declared enabled device features
-constexpr ffxStructType_t kCreateContextDescType = 0x00020000u;
-constexpr ffxStructType_t kDispatchDescType = 0x00020001u;
+
+// Corrected to the SDK's own Frame Generation descriptor type ids (see vendored
+// ffx_frame_generation.h). The previous pair mislabeled them: 0x00020000 is the
+// Frame Generation EFFECT id, and 0x00020001 is the create-desc type — so a real
+// host's ffxCreateContext(ffxCreateContextDescFrameGeneration) (type 0x00020001)
+// was being refused as NO_PROVIDER, and a generate dispatch (0x00020003) was
+// never recognized. These are the ids the loader and host actually pass.
+constexpr ffxStructType_t kEffectId = FFX_API_EFFECT_ID_FRAMEGENERATION;                        // 0x00020000
+constexpr ffxStructType_t kCreateDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION;    // 0x00020001
+constexpr ffxStructType_t kConfigureDescType = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;      // 0x00020002
+constexpr ffxStructType_t kDispatchGenerateType = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION;    // 0x00020003
+constexpr ffxStructType_t kDispatchPrepareType =
+    FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE;  // 0x00020004
+constexpr ffxStructType_t kPrepareCameraInfoType =
+    FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_CAMERAINFO;  // 0x0002000a
+constexpr ffxStructType_t kQueryGPUUsageType =
+    FFX_API_QUERY_DESC_TYPE_FRAMEGENERATION_GPU_MEMORY_USAGE;  // 0x00020007
+// Optional create/configure blocks the vendored header defines; handled at the host boundary
+// (recognized + validated + stored) instead of silently forwarded past, while the compute
+// algorithm is still refused.
+constexpr ffxStructType_t kConfigureKeyValueDescType =
+    FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION_KEYVALUE;  // 0x00020006
+constexpr ffxStructType_t kRegisterDistortionDescType =
+    FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION_REGISTERDISTORTIONRESOURCE;  // 0x00020008
+constexpr ffxStructType_t kHudlessCreateDescType =
+    FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION_HUDLESS;  // 0x00020009
 
 // The version id the pinned Frame Generation DLL itself publishes. Measured: a
 // single 8-byte FFX-packed id (low half 4.0.2 == (4<<22)|(0<<12)|2 == 0x01000002,

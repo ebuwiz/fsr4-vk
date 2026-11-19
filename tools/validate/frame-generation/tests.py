@@ -220,6 +220,22 @@ def test_pack_manifest_shape():
         raise AssertionError("pack identity not pinned to frame-generation 4.0.2.4555")
     if pack["source_sha256"] != EXPECTED_SHA:
         raise AssertionError("pack does not carry the pinned DLL source SHA")
+    model = pack.get("mlfi_model") or {}
+    model_path = PACK / model.get("file", "")
+    if not model_path.is_file():
+        raise AssertionError("pack lacks the reverse-engineered ML model")
+    if model.get("size") != 9437184:
+        raise AssertionError("unexpected ML model size")
+    if hashlib.sha256(model_path.read_bytes()).hexdigest() != model.get("sha256"):
+        raise AssertionError("ML model hash drifted")
+    graph = pack.get("mlfi_graph") or {}
+    graph_path = PACK / graph.get("file", "")
+    if not graph_path.is_file():
+        raise AssertionError("pack lacks the ML graph")
+    graph_data = json.loads(graph_path.read_text())
+    for tier in ("4k", "8k"):
+        if len(graph_data.get("chains", {}).get(tier, [])) != 191:
+            raise AssertionError(f"{tier} ML graph is not a complete 191-pass chain")
     contract = pack["execution_contract"]
     if contract.get("blockers"):
         raise AssertionError(f"pack contract has unexpected blockers: {contract['blockers']}")

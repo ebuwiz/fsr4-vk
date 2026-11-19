@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -121,13 +122,27 @@ def validate_framegeneration_pack(pack):
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if digest != record.get("spirv_sha256"):
             raise ValueError("Frame Generation pack changed: " + name)
+    model = manifest.get("mlfi_model") or {}
+    graph = manifest.get("mlfi_graph") or {}
+    model_path = pack / model.get("file", "")
+    graph_path = pack / graph.get("file", "")
+    if not model_path.is_file() or not graph_path.is_file():
+        raise ValueError("Frame Generation pack is missing ML model/graph data")
+    if hashlib.sha256(model_path.read_bytes()).hexdigest() != model.get("sha256"):
+        raise ValueError("Frame Generation ML model changed")
+    if hashlib.sha256(graph_path.read_bytes()).hexdigest() != graph.get("sha256"):
+        raise ValueError("Frame Generation ML graph changed")
 
 
 def prepare_framegeneration(args, dlls, pack):
     if pack.exists():
-        validate_framegeneration_pack(pack)
-        print("Verified Frame Generation assets:", pack.resolve())
-        return
+        try:
+            validate_framegeneration_pack(pack)
+            print("Verified Frame Generation assets:", pack.resolve())
+            return
+        except ValueError:
+            if not dlls:
+                raise
     if not dlls:
         raise ValueError(
             "Provide --dll /path/to/dlls for the first Frame Generation extraction"
@@ -149,6 +164,8 @@ def prepare_framegeneration(args, dlls, pack):
             "--jobs", 4,
         )
         validate_framegeneration_pack(work / "pack")
+        if pack.exists():
+            shutil.rmtree(pack)
         (work / "pack").rename(pack)
     print("Prepared Frame Generation 4.0.2 assets:", pack.resolve())
 
