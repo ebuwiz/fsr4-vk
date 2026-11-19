@@ -807,6 +807,78 @@ def test_sdk_shared_fsr3_fg_resources():
                 raise AssertionError(f"shared FSR3 slot {triple}_{i} absent from SDK")
 
 
+def test_sdk_spd_inpainting_pyramid_setup():
+    # MINE AMD's inpainting-pyramid SPD (single-pass downsampling) dispatch-sizing ground truth: the
+    # CPU calls ffxSpdSetup(rectInfo) to derive dispatchThreadGroupCountXY / workGroupOffset /
+    # numWorkGroupsAndMips, copies them into the INPAINTING_PYRAMID constant buffer (cbInpaintingPyramid),
+    # then dispatches the two pyramid passes (game-vector-field on render size, inpainting on display size).
+    # Pinning the exact formula (64px work-group offset, numWorkGroups = dtgc.x*dtgc.y, mips capped at 12)
+    # so a classic-path implementation that reproduces the pyramid geometry is provably aligned with AMD.
+    # GPU-free; self-skips when the SDK submodule is not populated.
+    fg = ROOT / "third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3"
+    if not fg.is_dir():
+        print("SKIP sdk-spd: FFX SDK submodule not populated")
+        return
+    spd = (fg / "include/gpu/spd/ffx_spd.h").read_text(errors="ignore")
+    fi = (fg / "internal/ffx_frameinterpolation.cpp").read_text(errors="ignore")
+
+    # ffxSpdSetup signature + the exact sizing math.
+    if "ffxSpdSetup(" not in spd:
+        raise AssertionError("ffxSpdSetup not defined in SDK SPD header")
+    for rx in (r"workGroupOffset\[0\]\s*=\s*rectInfo\[0\]\s*/\s*64",
+               r"numWorkGroupsAndMips\[0\]\s*=\s*\(dispatchThreadGroupCountXY\[0\]\)\s*\*",
+               r"FfxFloat32\(12\)",
+               r"floor\(log2\("):
+        if not re.search(rx, spd):
+            raise AssertionError(f"ffxSpdSetup sizing formula token missing/drifted: {rx}")
+
+    # FG drives it twice (one per pyramid pass) and fills the inpainting-pyramid constant buffer.
+    if fi.count("ffxSpdSetup(") < 2:
+        raise AssertionError(f"expected >=2 ffxSpdSetup drives in FG cpp, found {fi.count('ffxSpdSetup(')}")
+    for tok in ("inpaintingPyramidContants.numworkGroups", "inpaintingPyramidContants.mips",
+                "inpaintingPyramidContants.workGroupOffset",
+                "FFX_FRAMEINTERPOLATION_PASS_INPAINTING_PYRAMID",
+                "FFX_FRAMEINTERPOLATION_PASS_GAME_VECTOR_FIELD_INPAINTING_PYRAMID"):
+        if tok not in fi:
+            raise AssertionError(f"FG inpainting-pyramid constant-buffer/pass token missing: {tok}")
+
+
+def test_sdk_present_swapchain_contract():
+    # MINE AMD's Vulkan present/pacing/UI-composition host-integration algorithm from
+    # fsr3/vk/FrameInterpolationSwapchainVK.* -- the exact present behaviour the classic path must
+    # reproduce at Present (previously only a 'no provider' return-code was knowable). Pins the two
+    # composition modes, the game<->present queue-family ownership transfer, the UNDEFINED->PRESENT_SRC
+    # layout transition, the premul-alpha UI flag, and the UI-resource / maximum-frame-latency VK APIs.
+    # GPU-free; self-skips when the SDK submodule is not populated.
+    vk = ROOT / "third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration/fsr3/vk"
+    if not vk.is_dir():
+        print("SKIP sdk-present: FFX SDK submodule not populated")
+        return
+    h = (vk / "FrameInterpolationSwapchainVK.h").read_text(errors="ignore")
+    c = (vk / "FrameInterpolationSwapchainVK.cpp").read_text(errors="ignore")
+    for tok in ("enum class FGSwapchainCompositionMode", "IFrameInterpolationSwapChainVK",
+                "FrameInterpolationSwapChainVK", "class FrameInterpolationSwapChainVK"):
+        if tok not in h:
+            raise AssertionError(f"VK swapchain type/enum missing from SDK header: {tok}")
+    for tok in ("eComposeOnPresentQueue", "eComposeOnGameQueue",
+                "queueFamilyOwnershipTransferGameToPresent",
+                "VK_IMAGE_LAYOUT_PRESENT_SRC_KHR",
+                "FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_USE_PREMUL_ALPHA",
+                "ffxRegisterFrameinterpolationUiResourceVK", "ffxGetMaximumFrameLatencyVK",
+                "ffxSetFrameGenerationConfigToSwapchainVK"):
+        if tok not in c:
+            raise AssertionError(f"VK present/pacing contract token missing from SDK source: {tok}")
+    # The UI-composition (incl. premul-alpha) + debug-pacing present VS/PS programs are AMD source
+    # (HLSL-in-C blob headers under fsr3/vk). Count, not exact spelling, so a rename can't slip past.
+    names = [p.name for p in vk.iterdir() if p.suffix == ".h"]
+    ui = [n for n in names if "UiComposition" in n and ("VS" in n or "PS" in n)]
+    dbg = [n for n in names if "DebugPacing" in n and ("VS" in n or "PS" in n)]
+    if len(ui) < 4:   # UiComposition VS/PS + UiCompositionPremul VS/PS
+        raise AssertionError(f"SDK VK UI-composition present programs < 4: {ui}")
+    if len(dbg) < 2:  # DebugPacing VS/PS
+        raise AssertionError(f"SDK VK debug-pacing present programs < 2: {dbg}")
+
+
 def main():
     failures = []
     for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
@@ -818,7 +890,9 @@ def main():
                  test_sdk_ground_truth,
                  test_sdk_classic_controlflow_order,
                  test_sdk_opticalflow_binding_table,
-                 test_sdk_shared_fsr3_fg_resources):
+                 test_sdk_shared_fsr3_fg_resources,
+                 test_sdk_spd_inpainting_pyramid_setup,
+                 test_sdk_present_swapchain_contract):
         name = test.__name__
         try:
             test()

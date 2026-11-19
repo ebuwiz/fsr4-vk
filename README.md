@@ -316,7 +316,18 @@ The build itself verifies every embedded asset payload and alias. On top of that
   plus the 4 per-frame slots of the `DILATED_DEPTH_i`/`DILATED_MOTION_VECTORS_i`/`RECONSTRUCTED_PREVIOUS_NEAREST_DEPTH_i`
   triple with `COUNT`=17 and `UPSCALED_COUNT`=3 (which is exactly what the provider's `…_0 + (frameToggle *
   UPSCALED_COUNT)` indexing walks) — closing the shared-resource-allocation part of blocker #3 for the
-  classic path; (2) the same gate
+  classic path; **`test_sdk_spd_inpainting_pyramid_setup`** pins the inpainting‑pyramid **SPD**
+  (single‑pass downsampling) geometry AMD drives — `ffxSpdSetup(rectInfo{0,0,w,h})` yields
+  `workGroupOffset = rectInfo/64`, `numWorkGroupsAndMips[0] = dtgcX*dtgcY`,
+  `mips = min(floor(log2(resolution)), 12)` — called **twice** (game‑vector‑field pyramid on
+  `renderSize`, inpainting pyramid on `displaySize`) and copied into the `cbInpaintingPyramid`
+  constant buffer; and **`test_sdk_present_swapchain_contract`** mines the full **Vulkan present/pacing/UI**
+  algorithm from `fsr3/vk/FrameInterpolationSwapchainVK.*` — the two `FGSwapchainCompositionMode` modes
+  (`eComposeOnPresentQueue` / `eComposeOnGameQueue`), the game↔present **queue‑family ownership transfer**,
+  the `UNDEFINED→VK_IMAGE_LAYOUT_PRESENT_SRC_KHR` transition, the `…UI_COMPOSITION_FLAG_USE_PREMUL_ALPHA`
+  flag, the `ffxRegisterFrameinterpolationUiResourceVK` / `ffxGetMaximumFrameLatencyVK` / `ffxSetFrameGenerationConfigToSwapchainVK`
+  APIs, and the UI‑composition(+premul) / debug‑pacing present VS/PS programs — the exact `Present` behaviour
+  the classic path must reproduce (previously only a "no provider" return code was knowable); (2) the same gate
   PROVES the **MLFI ONNX neural net** — the 382 `mlfi_*` inference passes — is *not*
   shipped in the open SDK, confirming the ML pass→pass execution ORDER is the single
   genuinely closed boundary; the ML `ffxDispatch` path therefore stays honestly refused
