@@ -22,47 +22,63 @@ from pathlib import Path
 
 
 def load_plan(pack_dir):
-    """Return {sha: (stage, entry, wgs)} for every COMPUTE module (the 474)."""
+    """Return ({sha: (stage, entry, wgs)}, [(name, wgs)]) for every COMPUTE module."""
     plan = {}
+    named = []
     tsv = Path(pack_dir) / "modules.tsv"
     if not tsv.is_file():
-        return plan
-    lines = tsv.read_text().splitlines()
-    for line in lines[1:]:
+        return plan, named
+    for line in tsv.read_text().splitlines()[1:]:
         p = line.split("\t")
         if len(p) < 5:
             continue
-        stage, entry, wgs, sha = p[1], p[2], p[3], p[4]
+        name, stage, entry, wgs, sha = p[0], p[1], p[2], p[3], p[4]
         if stage.startswith("compute"):
             plan[sha] = (stage, entry, wgs)
-    return plan
+            named.append((name, wgs))
+    return plan, named
+
+
+def resolve_sha(token, base):
+    """A capture identity token is a 64-hex SPIR-V digest, or a path to a dumped .spv file (hash its bytes)."""
+    import re
+    if re.fullmatch(r"[0-9a-fA-F]{64}", token):
+        return token.lower()
+    p = Path(token)
+    cand = p if p.is_absolute() else base / token
+    if cand.is_file():
+        return hashlib.sha256(cand.read_bytes()).hexdigest()
+    return token  # unresolvable -> surfaces as `extra`
 
 
 def read_capture(path):
-    """Return a list of (sha, dims) dispatch records from JSON or TSV."""
+    """Return a list of (identity_token, dims) dispatch records from JSON or TSV, plus the base dir."""
     text = Path(path).read_text()
-    if str(path).endswith(".json"):
-        data = json.loads(text)
-        return [(r["spirv_sha256"], r.get("dims")) for r in data["dispatches"]]
+    base = Path(path).resolve().parent
     out = []
-    for line in text.splitlines():
-        if not line.strip() or line.startswith("#"):
-            continue
-        p = line.split("\t")
-        out.append((p[0], p[1] if len(p) > 1 else None))
-    return out
+    if str(path).endswith(".json"):
+        for r in json.loads(text)["dispatches"]:
+            out.append((r.get("spirv_sha256") or r.get("spirv_ref"), r.get("dims")))
+    else:
+        for line in text.splitlines():
+            if not line.strip() or line.startswith("#"):
+                continue
+            p = line.split("\t")
+            out.append((p[0], p[1] if len(p) > 1 else None))
+    return out, base
 
 
-def analyze(plan, records):
+def analyze(plan, records, base):
     first_seen, counts, unknown = {}, {}, []
-    for pos, (sha, dims) in enumerate(records):
+    for pos, (token, dims) in enumerate(records):
+        sha = resolve_sha(token, base)
         if sha in plan:
             first_seen.setdefault(sha, pos)
             counts[sha] = counts.get(sha, 0) + 1
         else:
             unknown.append((pos, sha))
     observed = set(first_seen)
-    extra = sorted({s for _, s in unknown})           # dispatches with no matching pack module
+    extra = sorted({s for _, s in unknown})           # dispatches not matching any pack module
     missing = sorted(set(plan) - observed)            # plan modules not exercised by this capture
     return first_seen, counts, extra, missing, observed
 
@@ -89,30 +105,48 @@ def main():
     if args.selftest:
         if not args.pack or not Path(args.pack).is_dir():
             print("selftest needs --pack with a populated pack"); return 2
-        plan = load_plan(args.pack)
+        plan, named = load_plan(args.pack)
         if not plan:
             print("SKIP selftest: no compute modules in pack"); return 0
-        # Good capture: every compute module once, ordered by entry (deterministic; NOT a claimed schedule).
+        prob = []
+        # Mode A: raw-digest capture (every compute SHA once), ordered by entry (deterministic; NOT a schedule).
         good = [(sha, plan[sha][2]) for sha in sorted(plan, key=lambda s: plan[s][1])]
-        _, _, extra, missing, _ = analyze(plan, good)
+        _, _, extra, missing, _ = analyze(plan, good, Path("."))
         if extra or missing:
-            print(f"selftest FAIL round-trip extra={len(extra)} missing={len(missing)}"); return 1
-        # Bad capture: inject one unknown digest -> must be detected as extra.
+            prob.append(f"digest round-trip extra={len(extra)} missing={len(missing)}")
         bad = list(good); bad[0] = ("deadbeef" * 8, "8,8,1")
-        _, _, extra2, _, _ = analyze(plan, bad)
+        _, _, extra2, _, _ = analyze(plan, bad, Path("."))
         if not extra2:
-            print("selftest FAIL: unknown digest not flagged as extra"); return 1
-        print(f"selftest PASS: round-trip clean (compute={len(plan)}); "
-              f"unknown-digest drift detected extra={len(extra2)}")
+            prob.append("digest drift (unknown digest) not detected")
+        # Mode B: shim-style PATH capture (pack/modules/<name>.spv bytes -> hashed to the plan digest).
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            mod = Path(args.pack).resolve() / "modules"
+            lines = [f"{mod}/{name}\t{wgs}" for (name, wgs) in sorted(named, key=lambda x: x[0])]
+            cap = Path(td) / "capture.tsv"; cap.write_text("\n".join(lines) + "\n")
+            recs, bse = read_capture(cap)
+            _, _, ex, mi, _ = analyze(plan, recs, bse)
+            if ex or mi:
+                prob.append(f"path round-trip extra={len(ex)} missing={len(mi)}")
+            lines[0] = "/nope/missing.spv\t8,8,1"
+            cap.write_text("\n".join(lines) + "\n")
+            recs, bse = read_capture(cap)
+            _, _, ex3, _, _ = analyze(plan, recs, bse)
+            if not ex3:
+                prob.append("path drift (unknown digest) not detected")
+        if prob:
+            print("selftest FAIL: " + "; ".join(prob)); return 1
+        print(f"selftest PASS: digest + .spv-path round-trips clean (compute={len(plan)}); "
+              "unknown-digest drift detected both modes")
         return 0
 
     if not args.capture or not args.pack:
         print("need --pack and --capture (or --selftest)"); return 2
-    plan = load_plan(args.pack)
+    plan, _ = load_plan(args.pack)
     if not plan:
         print("SKIP: no compute modules in pack"); return 0
-    recs = read_capture(args.capture)
-    fs, cnt, extra, missing, obs = analyze(plan, recs)
+    recs, base = read_capture(args.capture)
+    fs, cnt, extra, missing, obs = analyze(plan, recs, base)
     if args.emit_order:
         emit(args.emit_order, plan, fs, cnt)
     print(f"capture dispatches={len(recs)} observed_compute={len(obs)} plan_compute={len(plan)} "
