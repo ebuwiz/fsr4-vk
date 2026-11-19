@@ -392,6 +392,15 @@ The build itself verifies every embedded asset payload and alias. On top of that
   `ENABLE_INTERNAL_UI_DOUBLE_BUFFERING` resource‑lifetime rule; the `WaitForPresentsVK` teardown flush
   before context destroy; and the documented **mutex‑guard** list (the FG+SwapChain contexts are not
   thread‑safe).
+- **Header finding (from the layout mining).** Our FG provider compiles against the older
+  `third_party/fidelityfx-api` header, which **lacks** the 2.4.0 `PrepareV2` (`0x0c`),
+  `GetGPUMemoryUsageV2` (`0x0b`), version‑link (`0x0e`) and present‑premul (`0x0d`) descs — so these are
+  now declared in `framegeneration.hpp` via AMD's own `kEffectId | 0xNN` composition and proven equal to the
+  2.4.0 SDK by `test_sdk_framegeneration_descriptor_layouts`. Relatedly, the **Frame Generation (Swapchain)**
+  is a **separate effect id** (`FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN_VK`: create `0x01`, registerUI
+  `0x02`, replacement‑functions query `0x05`, mode `0x10`, version `0x0a`, plus WaitForPresents /
+  InterpolationCommandList / InterpolationTexture), so those descs reach this interpolation `.so` as
+  `NO_PROVIDER` and belong to their **own** swapchain provider — they are not read here.
 - **Why `ffxDispatch` / `ffxQuery` return an error today — by design, not a defect.** Until the
   Frame Generation compute (classic optical‑flow + dilate **and** the 382 ML inference passes)
   **and** the present/pacing runtime are implemented *and* image‑quality‑validated against AMD
