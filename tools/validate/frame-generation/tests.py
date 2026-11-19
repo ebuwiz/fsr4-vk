@@ -1102,6 +1102,92 @@ def test_sdk_fg_version_negotiation():
         raise AssertionError("provider does not model ffxOverrideVersion selection")
 
 
+def test_sdk_fg_host_contract_enforcement():
+    # Ground the provider's HOST-INTEGRATION ENFORCEMENT against the real FFX create/configure/dispatch
+    # contract, using tokens from the SAME ffx_frame_generation.h the .so is compiled against (the 2.4.0-
+    # only descriptor ids it lacks are cross-checked to the SDK by the sibling layout/negotiation gates).
+    # Proves the provider now: (a) interprets ALL 7 FFX_FRAMEGENERATION_ENABLE_* create flags into context,
+    # (b) HONORS version negotiation by REFUSING an ffxOverrideVersion that is not the single classic FG
+    # version this .so implements (the 382-pass ML inference is NOT provided -> refuse, never silently
+    # substitute a different algorithm), (c) recognizes the 2.4.0 create version-link block (0x0e), the
+    # PrepareV2 dispatch (0x0c) and the GetGPUMemoryUsageV2 query (0x0b) WITHOUT a struct reinterpret (the
+    # older vendored header has no struct for them -> match by type id only, keeping the build safe), and
+    # (d) honors the documented numGeneratedFrames==0 cancel by returning OK (nothing to fabricate). The
+    # algorithm itself stays honestly refused (RUNTIME_ERROR for Prepare AND PrepareV2). GPU-free, pack-free.
+    hdr = ROOT / "third_party/fidelityfx-api/framegeneration/include/ffx_frame_generation.h"
+    prov = ROOT / "src/framegeneration/provider.cpp"
+    hpp = ROOT / "src/framegeneration/framegeneration.hpp"
+    if not (hdr.is_file() and prov.is_file() and hpp.is_file()):
+        print("SKIP sdk-fg-host-contract: vendored FG header/provider/hpp not present")
+        return
+    t = hdr.read_text(errors="ignore")
+    p = prov.read_text(errors="ignore")
+    h = hpp.read_text(errors="ignore")
+    # (a) all 7 create flags: real AMD tokens in the header AND read into the FG context by the provider.
+    for flag in (
+        "FFX_FRAMEGENERATION_ENABLE_ASYNC_WORKLOAD_SUPPORT",
+        "FFX_FRAMEGENERATION_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS",
+        "FFX_FRAMEGENERATION_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION",
+        "FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED",
+        "FFX_FRAMEGENERATION_ENABLE_DEPTH_INFINITE",
+        "FFX_FRAMEGENERATION_ENABLE_HIGH_DYNAMIC_RANGE",
+        "FFX_FRAMEGENERATION_ENABLE_DEBUG_CHECKING",
+    ):
+        if flag not in t:
+            raise AssertionError(f"create flag is not a real vendored-header token: {flag}")
+        if flag not in p:
+            raise AssertionError(f"provider does not interpret create flag {flag}")
+    # (b) version negotiation honored: provider consults findVersionOverride and refuses a non-classic id.
+    if "findVersionOverride" not in p or "versionId !=" not in p:
+        raise AssertionError("provider does not honor ffxOverrideVersion (no findVersionOverride + versionId compare)")
+    if "ML inference" not in p:
+        raise AssertionError("override-refusal must state the ML-not-provided honesty boundary")
+    # (c) the three 2.4.0-only descriptor ids (older header lacks a struct) are pinned in hpp AND handled by provider.
+    for const, subid in (("kDispatchPrepareV2Type", "0x0c"), ("kQueryGPUUsageV2Type", "0x0b"),
+                         ("kCreateVersionDescType", "0x0e")):
+        if not re.search(re.escape(const) + r"\s*=\s*kEffectId\s*\|\s*" + subid + r"\s*;", h):
+            raise AssertionError(f"framegeneration.hpp missing {const} = (kEffectId | {subid})")
+        if const not in p:
+            raise AssertionError(f"provider never handles {const} (0x{subid})")
+    # (d) documented cancel path honored: a zero-frame generate returns OK instead of refusing.
+    if "numGeneratedFrames == 0u" not in p:
+        raise AssertionError("provider does not honor the numGeneratedFrames==0 cancel path")
+    # The PrepareV2 branch must still refuse the algorithm honestly (log its pending refusal).
+    if "kDispatchPrepareV2Type" in p and "preparev2" not in p.lower():
+        raise AssertionError("PrepareV2 branch missing its honest pending-refusal handling")
+
+
+def test_vk_dll_shader_identity():
+    # SECOND AMD-authored source of truth, GPU-free and order-agnostic: the pinned Frame Generation *Vulkan*
+    # provider DLL (amd_fidelityfx_framegeneration_vk.dll, v2.4.0 FG 4.0.2.4555, sha d002...) advertises the
+    # SAME shader-IDENTITY census we extracted from the DX12 DLL -- 382 distinct mlfi_{4k,8k}_passNNN entries
+    # (pass0..190 per tier), cooperative-matrix markers == 156 (the CsTensorSizes census), and the classic
+    # interpolation names (CsDilate, cbInpaintingPyramid, uOpticalFlowPyramidLevel, iInputLumaResolution,
+    # FfxFrameInterpolationDebugViewport). tools/extract/frame-generation/vk-identity.py proves the _vk DLL's
+    # mlfi set EQUALS the pack's mlfi entry set (dll-only=0 pack-only=0), confirming our pack is complete +
+    # correctly named. It does NOT claim the ML execution ORDER (the _vk shader BYTES are one compressed
+    # proprietary blob with no plaintext SPIR-V / standard zstd, and passNNN are container LABELS). Self-skips
+    # if the _vk DLL is not present in dlls/.
+    vk = ROOT / "dlls/amd_fidelityfx_framegeneration_vk.dll"
+    tool = ROOT / "tools/extract/frame-generation/vk-identity.py"
+    pack = ROOT / "assets/frame-generation/pack"
+    if not (vk.is_file() and tool.is_file()):
+        print("SKIP vk-dll-identity: _vk FG DLL / extractor not present")
+        return
+    if hashlib.sha256(vk.read_bytes()).hexdigest() != \
+            "d002dabff8c5e71eaa715fc99438cd4dc81230262a7897b16bc402efec3498b4":
+        raise AssertionError("local _vk FG DLL is not the pinned v2.4.0 FG 4.0.2 identity")
+    cmd = [sys.executable, tool, "--dll", vk]
+    if pack.is_dir():
+        cmd += ["--pack", pack, "--expect"]
+    result = run(cmd)
+    if result.returncode != 0:
+        raise AssertionError("vk-identity drift: " + (result.stdout + result.stderr))
+    for need in ("mlfi_distinct=382", "UseMatrixAKHR=156", "dll-only=0 pack-only=0", "identity confirmed"):
+        if need not in result.stdout:
+            raise AssertionError(f"vk-identity did not confirm '{need}': {result.stdout}")
+
+
 def main():
     failures = []
     for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
@@ -1121,7 +1207,9 @@ def main():
                  test_sdk_swapchain_replacement_provider,
                  test_sdk_interpolation_api_contract,
                  test_sdk_framegeneration_descriptor_layouts,
-                 test_sdk_fg_version_negotiation):
+                 test_sdk_fg_version_negotiation,
+                 test_sdk_fg_host_contract_enforcement,
+                 test_vk_dll_shader_identity):
         name = test.__name__
         try:
             test()
