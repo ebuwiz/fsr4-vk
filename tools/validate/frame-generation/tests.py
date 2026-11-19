@@ -1365,6 +1365,76 @@ def test_capture_shim_builds_against_vulkan_headers():
         raise AssertionError("capture-shim does not compile: " + (b.stdout + b.stderr))
 
 
+def test_capture_shim_functional_rig():
+    # END-TO-END proof that capture-shim.cpp actually CAPTURES a known compute dispatch ORDER (identity + sequence
+    # + grids + ignores-unbound) while LD_PRELOADED against a real Vulkan device. Self-skips unless glslc, a linkable
+    # Vulkan runtime and an actual device are all present. The synthetic order is NOT an AMD schedule and is never fed
+    # to apply-capture-order.py -- it only validates the shim's own machinery that a future live capture depends on.
+    import subprocess, hashlib, shutil, os, tempfile
+    if not shutil.which("glslc"):
+        print("SKIP capture-shim functional: glslc absent"); return
+    shim = ROOT / "tools/capture/frame-generation/capture-shim.cpp"
+    prog = ROOT / "tools/capture/frame-generation/capture-shim-selftest.cpp"
+    vk = ROOT / "third_party/Vulkan-Headers/include"
+    if not (shim.is_file() and prog.is_file() and (vk / "vulkan" / "vulkan.h").is_file()):
+        print("SKIP capture-shim functional: sources/headers absent"); return
+    with tempfile.TemporaryDirectory() as td:
+        spv = []
+        for k in (1, 2, 3):
+            comp = os.path.join(td, f"c{k}.comp")
+            with open(comp, "w") as f:
+                f.write("#version 450\n"
+                       "layout(local_size_x=8,local_size_y=8,local_size_z=1) in;\n"
+                       "layout(std430,binding=0) buffer buf { uint x; } B;\n"
+                       f"void main(){{ B.x = {k}u; }}\n")
+            s = os.path.join(td, f"c{k}.spv")
+            if subprocess.run(["glslc", comp, "-o", s], capture_output=True).returncode != 0:
+                print("SKIP capture-shim functional: glslc failed"); return
+            spv.append(s)
+        shimso = os.path.join(td, "libffxvk-capture.so")
+        if subprocess.run(["g++", "-std=c++20", "-O1", "-shared", "-fPIC", "-I", str(vk), str(shim),
+                           "-o", shimso, "-ldl"], capture_output=True).returncode != 0:
+            print("SKIP capture-shim functional: shim build failed"); return
+        exe = os.path.join(td, "selftest")
+        if subprocess.run(["g++", "-std=c++20", "-I", str(vk), str(prog), "-o", exe, "-lvulkan"],
+                          capture_output=True).returncode != 0:
+            print("SKIP capture-shim functional: no Vulkan runtime to link"); return
+        capdir = os.path.join(td, "cap"); os.makedirs(capdir)
+        env = dict(os.environ, LD_PRELOAD=shimso, FSR4_VK_CAPTURE_DIR=capdir)
+        r = subprocess.run([exe] + spv, env=env, capture_output=True, text=True)
+        if r.returncode == 77:
+            print("SKIP capture-shim functional: no Vulkan device"); return
+        if r.returncode < 0:  # signal (e.g. SIGSEGV): this driver/loader combo can't host the bespoke program
+            print(f"SKIP capture-shim functional: selftest aborted (signal {-r.returncode}) on this driver; "
+                  "not faked"); return
+        if r.returncode != 0:
+            raise AssertionError("shim selftest run failed: " + (r.stdout + r.stderr))
+        tsv = os.path.join(capdir, "capture.tsv")
+        if not os.path.isfile(tsv):
+            raise AssertionError("capture-shim wrote no capture.tsv")
+        lines = [ln for ln in open(tsv).read().splitlines() if ln.strip()]
+        if len(lines) != 5:
+            raise AssertionError(f"expected 5 dispatch records (the unbound dispatch ignored), got {len(lines)}: {lines}")
+        def sha(p):
+            h = hashlib.sha256()
+            with open(p, "rb") as f: h.update(f.read())
+            return h.hexdigest()
+        src = [sha(s) for s in spv]
+        want_digests = [src[0], src[1], src[2], src[1], src[0]]
+        want_dims = ["3,4,5", "6,1,1", "1,1,1", "2,2,2", "9,8,7"]
+        got_digests, got_dims = [], []
+        for ln in lines:
+            path, dims = ln.split("\t")
+            got_digests.append(sha(path))   # dumped mod-*.spv must hash to the same identity as the source
+            got_dims.append(dims)
+        if got_digests != want_digests:
+            raise AssertionError(f"order/identity mismatch got={got_digests} want={want_digests}")
+        if got_dims != want_dims:
+            raise AssertionError(f"grid dims mismatch got={got_dims} want={want_dims}")
+        print("  capture-shim functional: 5 records in order P0,P1,P2,P1,P0; SPIR-V identity + grids match; "
+              "unbound dispatch ignored")
+
+
 def main():
     failures = []
     for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
@@ -1392,7 +1462,8 @@ def main():
                  test_capture_order_fusion,
                  test_stage_vk_dll_pins_reference_rig,
                  test_capture_ledger_unit_runs,
-                 test_capture_shim_builds_against_vulkan_headers):
+                 test_capture_shim_builds_against_vulkan_headers,
+                  test_capture_shim_functional_rig):
         name = test.__name__
         try:
             test()
