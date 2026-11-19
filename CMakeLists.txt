@@ -59,10 +59,12 @@ else()
 endif()
 option(FSR4_COMPRESS_SHADERS "Compress embedded shader payloads independently with Zstandard" ON)
 option(FSR4_EMBEDDED_ASSETS "Embed self-contained provider assets (PE or ELF)" ON)
+option(FSR4_BUILD_UPSCALER "Build the FSR4 upscaler provider and embed its assets" ON)
+if(FSR4_BUILD_UPSCALER)
 set(FSR4_ASSET_ROOT "${CMAKE_SOURCE_DIR}/assets" CACHE PATH "Verified assets directory")
 if(NOT EXISTS "${FSR4_ASSET_ROOT}/manifest.json")
     message(FATAL_ERROR
-        "Generated assets are missing. Run tools/setup.py --dll SDK_DLL. See README.md. "
+        "Generated assets are missing. Run tools/setup.py --dll /path/to/dlls. See README.md. "
         "For a custom asset directory, set FSR4_ASSET_ROOT.")
 endif()
 set(FSR4_GENERATED "${CMAKE_BINARY_DIR}/generated")
@@ -164,8 +166,60 @@ if(FSR4_EMBEDDED_ASSETS)
         message(FATAL_ERROR "Embedded assets currently support Windows PE and Linux ELF")
     endif()
 endif()
-option(FSR4_CAPABILITY_PROBE "Build the standalone device capability probe (POSIX hosts)" ON)
+endif()
+option(FSR4_CAPABILITY_PROBE "Build the standalone device capability probes (POSIX hosts)" ON)
+# --- AMD FidelityFX Frame Generation provider: an independent second family.
+# Separate output target (amd_fidelityfx_framegeneration_vk.{so,dll}). It links
+# ONLY the FFX generic C API headers and Vulkan: no upscaler assets, no upscaler
+# runtime, no model logic. It therefore cannot become an accidental merged provider
+# with the upscaler, and the two outputs coexist independently.
+add_library(amd_fidelityfx_framegeneration_vk SHARED
+    src/framegeneration/provider.cpp src/framegeneration/capabilities.cpp)
+target_include_directories(amd_fidelityfx_framegeneration_vk PRIVATE
+    src src/framegeneration third_party/fidelityfx-api/api/include)
+target_link_libraries(amd_fidelityfx_framegeneration_vk PRIVATE Vulkan::Vulkan ${CMAKE_DL_LIBS})
+set_target_properties(amd_fidelityfx_framegeneration_vk PROPERTIES
+    PREFIX "" POSITION_INDEPENDENT_CODE ON
+    CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
+if(MINGW)
+    target_link_options(amd_fidelityfx_framegeneration_vk PRIVATE -static $<$<CONFIG:Release>:-s>)
+endif()
+if(MSVC)
+    set_property(TARGET amd_fidelityfx_framegeneration_vk
+        PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
+# The on-device Frame Generation capability probe: creates a caller-owned device
+# with exactly the measured execution contract enabled, feeds it to the provider
+# ABI, and reports the create result + named blockers. It links the provider ABI
+# but no assets, so it runs on a machine that is not running a game.
 if(FSR4_CAPABILITY_PROBE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(framegeneration-probe tools/framegeneration-probe.cpp)
+    target_link_libraries(framegeneration-probe PRIVATE
+        amd_fidelityfx_framegeneration_vk Vulkan::Vulkan ${CMAKE_DL_LIBS})
+    target_include_directories(framegeneration-probe PRIVATE
+        third_party/fidelityfx-api/api/include)
+    set_target_properties(framegeneration-probe PROPERTIES
+        CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
+endif()
+
+if(FSR4_CAPABILITY_PROBE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # The Frame Generation execution + pipeline-cache benchmark harness: drives the
+    # provider's OWN namespaced cache (fg4) with a real compiled compute pipeline
+    # and measures cold->warm creation + a benchmark loop + profiling, plus loads
+    # every pack SPIR-V as a driver shader module. It shares ONLY the header-only
+    # pipeline-cache container (src/framegeneration/pipeline-cache.hpp) with the
+    # provider, so there is one cache-format source of truth and no upscaler coupling.
+    add_executable(framegeneration-exec tools/framegeneration-exec.cpp)
+    target_link_libraries(framegeneration-exec PRIVATE Vulkan::Vulkan ${CMAKE_DL_LIBS})
+    target_include_directories(framegeneration-exec PRIVATE
+        src/framegeneration tools)
+    set_target_properties(framegeneration-exec PROPERTIES
+        CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
+endif()
+
+
+if(FSR4_BUILD_UPSCALER AND FSR4_CAPABILITY_PROBE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # The probe links the capability snapshot and nothing else: no assets, no provider,
     # no VkInstance of the runtime's own. That is what lets the model ladder and the
     # device-class spellings in tools/cap-probe.cpp be gated on a machine that is not
@@ -183,10 +237,10 @@ if(FSR4_CAPABILITY_PROBE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set_target_properties(descriptor-smoke PROPERTIES CXX_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN YES)
 endif()
-if(MINGW)
+if(FSR4_BUILD_UPSCALER AND MINGW)
     target_link_options(amd_fidelityfx_upscaler_vk PRIVATE -static $<$<CONFIG:Release>:-s>)
 endif()
-if(MSVC)
+if(FSR4_BUILD_UPSCALER AND MSVC)
     set_property(TARGET fsr4_assets fsr4_runtime amd_fidelityfx_upscaler_vk
         PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
