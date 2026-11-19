@@ -311,7 +311,12 @@ The build itself verifies every embedded asset payload and alias. On top of that
   → `r/rw_optical_flow_input` + the **7-level** input pyramid `…_LEVEL_1..6` → `r/rw_optical_flow
   (_previous/_next_level)` → the SCD set (`histogram/previous_histogram/temp/output`) → the shared
   vector/SCD bindings, plus the 2 constant buffers `cbOF`/`cbOF_SPD`, and that the CPU actually
-  wires `resources→uav/srv bindings`); (2) the same gate
+  wires `resources→uav/srv bindings`); and `test_sdk_shared_fsr3_fg_resources` pins the **shared 17-id
+  FSR3↔FG resource pool** the FG provider consumes from the upscaler — `OPTICAL_FLOW_VECTOR` + `OPTICAL_FLOW_SCD_OUTPUT`
+  plus the 4 per-frame slots of the `DILATED_DEPTH_i`/`DILATED_MOTION_VECTORS_i`/`RECONSTRUCTED_PREVIOUS_NEAREST_DEPTH_i`
+  triple with `COUNT`=17 and `UPSCALED_COUNT`=3 (which is exactly what the provider's `…_0 + (frameToggle *
+  UPSCALED_COUNT)` indexing walks) — closing the shared-resource-allocation part of blocker #3 for the
+  classic path; (2) the same gate
   PROVES the **MLFI ONNX neural net** — the 382 `mlfi_*` inference passes — is *not*
   shipped in the open SDK, confirming the ML pass→pass execution ORDER is the single
   genuinely closed boundary; the ML `ffxDispatch` path therefore stays honestly refused

@@ -781,6 +781,32 @@ def test_sdk_opticalflow_binding_table():
         raise AssertionError("OpticalFlow CPU does not wire resources into named uav/srv bindings as pinned")
 
 
+def test_sdk_shared_fsr3_fg_resources():
+    # MINE the SHARED FSR3<->FrameGeneration resource pool the FG provider consumes from the upscaler
+    # (this is the exact coupling that lets FG reuse FSR3's dilated depth/motion + reconstructed prev-depth
+    # intermediates, and it explains the provider's `..._0 + (frameToggle * UPSCALED_COUNT)` indexing).
+    # Asserts AMD's 17-id pool: the 2 shared OF outputs + 4 per-frame slots of the dilated/reconstructed
+    # triple, `COUNT`=17, `UPSCALED_COUNT`=3. This closes the "shared resource allocation" part of roadmap
+    # blocker #3 for the classic path. GPU-free; self-skips when the SDK submodule is not populated.
+    fg_res = ROOT / "third_party/fidelityfx-sdk/Kits/FidelityFX/upscalers/fsr3/include/gpu/fsr3/ffx_fsr3_resources.h"
+    if not fg_res.is_file():
+        print("SKIP sdk-shared-res: FFX SDK submodule not populated")
+        return
+    txt = fg_res.read_text(errors="ignore")
+    if not re.search(r"FFX_FSR3_RESOURCE_IDENTIFIER_COUNT\s+17\b", txt):
+        raise AssertionError("shared FSR3 resource pool COUNT != 17 (drift vs pinned SDK)")
+    if not re.search(r"FFX_FSR3_RESOURCE_IDENTIFIER_UPSCALED_COUNT\s+3\b", txt):
+        raise AssertionError("shared FSR3 UPSCALED_COUNT (per-frame stride) != 3 (drift vs pinned SDK)")
+    for shared in ("OPTICAL_FLOW_VECTOR", "OPTICAL_FLOW_SCD_OUTPUT"):
+        if f"FFX_FSR3_RESOURCE_IDENTIFIER_{shared} " not in txt:
+            raise AssertionError(f"shared FSR3 resource {shared} absent from SDK")
+    # 4 frame slots x the dilated-depth / dilated-motion / reconstructed-prev-nearest-depth triple.
+    for i in range(4):
+        for triple in ("DILATED_DEPTH", "DILATED_MOTION_VECTORS", "RECONSTRUCTED_PREVIOUS_NEAREST_DEPTH"):
+            if f"FFX_FSR3_RESOURCE_IDENTIFIER_{triple}_{i} " not in txt:
+                raise AssertionError(f"shared FSR3 slot {triple}_{i} absent from SDK")
+
+
 def main():
     failures = []
     for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
@@ -791,7 +817,8 @@ def main():
                  test_mlfi_chain_structure_and_model_tiling,
                  test_sdk_ground_truth,
                  test_sdk_classic_controlflow_order,
-                 test_sdk_opticalflow_binding_table):
+                 test_sdk_opticalflow_binding_table,
+                 test_sdk_shared_fsr3_fg_resources):
         name = test.__name__
         try:
             test()
