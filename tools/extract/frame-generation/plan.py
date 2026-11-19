@@ -25,21 +25,32 @@ This tool builds that substrate as an explicit, machine-checked artefact:
 
   * `fg-plan.json`  the summary the provider and the parity gate read: coverage
     counts, per-module transport class, a grouped execution scaffold (an ORDER,
-    NOT a claim to match AMD's DLL order), and the effect-owned intermediate
+    NOT a claim to match AMD's DLL order), the effect-owned intermediate
     render-target model + its byte total (what the provider will allocate, and
-    therefore what `ffxQuery(…GetGPUMemoryUsage)` will honestly report in Phase 3).
+    therefore what `ffxQuery(…GetGPUMemoryUsage)` will honestly report in Phase 3), and a
+    CooperativeMatrix census — per module a `coop` column of its de-duplicated `CooperativeMatrixKHR`
+    operand shapes (compType:scope:rows:cols:K), plus the aggregate distinct-shape/`modules_using`/
+    per-tier counts. This recovers the DLL's "CsTensorSizes" (the tile geometry the 156 ML neural
+    modules run on) as a machine-checked fact from the shipped SPIR-V, independently re-derived in C++.
 
 HONEST BOUNDARY: the ORDER is a reconstructed, deterministic grouping (classic
 passes first, then mlfi tier-grouped with pass indices ascending). It is validated
 for structure (bijection, tier grouping, determinism), NOT for pixel-level equality
 with AMD's Frame Generation DLL, which is not verifiable on a host without reference
 captures (the 12 graphics/present + PSV modules are not compute-dispatchable either).
+Recovering the CooperativeMatrix operand shapes (CsTensorSizes) makes the ML graph's
+TILE GEOMETRY a known, gated fact — but it is NOT the same as recovering the graph's
+dependency order, the intermediate-target allocation or the swapchain pacing, all of
+which the provider still requires before it can honestly run `ffxDispatch`; it continues
+to refuse dispatch (runtime error) until those are reconstructed and reference-validated.
 """
 
 import argparse
 import collections
 import json
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -50,6 +61,31 @@ from pathlib import Path
 KINDS = {"SB", "UB", "CIS", "SI", "SMP"}
 
 ENTRY_MLFI = re.compile(r"mlfi_(.+)_pass(\d+)$")
+
+# CooperativeMatrix operand-shape grammar (the DLL's "CsTensorSizes"). SPIRV-Tools prints
+#   OpTypeCooperativeMatrixKHR %<comp> %uint_<scope> %uint_<rows> %uint_<cols> %uint_<K>
+# where scope/rows/cols/K are %uint_ integer literals and <comp> is a scalar shorthand (%half,
+# %float, %uchar ...). Capturing these shapes turns "which tile geometry the ML graph runs on"
+# from an assumption into a recovered, machine-checkable fact.
+COOP_SHAPE = re.compile(
+    r"OpTypeCooperativeMatrixKHR\s+%(\w+)\s+%uint_(\d+)\s+%uint_(\d+)\s+%uint_(\d+)\s+%uint_(\d+)")
+
+
+def resolve_spirv_dis():
+    env = __import__("os").environ.get("FSR4_SPIRV_DIS")
+    if env and Path(env).is_file():
+        return env
+    which = shutil.which("spirv-dis")
+    if which:
+        return which
+    root = Path(__file__).resolve().parents[3]
+    cand = root / "build/tools/SPIRV-Tools/bin/spirv-dis"
+    return str(cand) if cand.is_file() else None
+
+
+def coop_shapes(asm_text):
+    """Canonical sorted DISTINCT shape tokens 'comp:scope:rows:cols:K' for one module."""
+    return sorted({"%s:%s:%s:%s:%s" % sh for sh in COOP_SHAPE.findall(asm_text)})
 
 
 def parse_layout(layout):
@@ -187,6 +223,44 @@ def main(argv=None):
     for i, r in enumerate(ordered):
         r["order"] = i
 
+    # Recover the CooperativeMatrix operand shapes the DLL's ML inference runs on (its "CsTensorSizes")
+    # per compute module, straight from the shipped SPIR-V. GPU-free: no DLL, no device, no
+    # reference capture. This is a recovered substrate fact that is machine-checked against an
+    # independent C++ re-derivation (framegeneration-plan-test); on its own it does NOT enable
+    # ffxDispatch -- the ML-graph dependency/order, intermediate-target allocation and swapchain
+    # pacing are still unreconstructed, so the provider continues to refuse dispatch honestly.
+    spirv_dis = resolve_spirv_dis()
+    coop_modules_using = 0
+    coop_classic_using = 0
+    distinct = collections.Counter()
+    per_mod_count = collections.Counter()
+    tier_using = collections.Counter()
+    tier_geometry = collections.defaultdict(list)
+    if spirv_dis:
+        for r in ordered:
+            shader = pack / "modules" / r["name"]
+            try:
+                asm = subprocess.run([spirv_dis, str(shader)], capture_output=True,
+                                     text=True, check=True).stdout
+            except Exception:
+                r["coop"] = "<DISFAIL>"
+                continue
+            shapes = coop_shapes(asm)
+            r["coop"] = ";".join(shapes)
+            if shapes:
+                coop_modules_using += 1
+                per_mod_count[len(shapes)] += 1
+                for sh in shapes:
+                    distinct[sh] += 1
+                if r["tier"] == "classic":
+                    coop_classic_using += 1
+                else:
+                    tier_using[r["tier"]] += 1
+                    tier_geometry[r["tier"]].append(";".join(shapes))
+    else:
+        for r in ordered:
+            r["coop"] = ""
+
     render_w, render_h = args.max_render
     up_w, up_h = args.max_upscale
     bpp = bytes_per_texel(args.backbuffer_format)
@@ -207,13 +281,13 @@ def main(argv=None):
     tsv = Path(str(prefix) + ".tsv")
     with tsv.open("w", encoding="utf-8") as fh:
         fh.write("name\tstage\tentry\ttier\tpass\torder\ttransport\tresolved\t"
-                 "binding_count\tgroups\tw0,w1,w2\n")
+                 "binding_count\tgroups\tw0,w1,w2\tcoop\n")
         for r in ordered:
             fh.write("\t".join([
                 r["name"], r["stage"], r["entry"], r["tier"],
                 "" if r["pass"] is None else str(r["pass"]), str(r["order"]),
                 r["transport"], "1" if r["resolved"] else "0", str(r["binding_count"]),
-                r["groups"], f'{r["w0"]},{r["w1"]},{r["w2"]}',
+                r["groups"], f'{r["w0"]},{r["w1"]},{r["w2"]}', r["coop"],
             ]) + "\n")
 
     summary = {
@@ -235,6 +309,21 @@ def main(argv=None):
         "backbuffer_format": args.backbuffer_format,
         "intermediate_targets": intermediate,
         "intermediate_bytes_total": intermediate_bytes,
+        "cooperative_extractor": spirv_dis,
+        "cooperative_matrices": ({
+            "modules_using": coop_modules_using,
+            "classic_using": coop_classic_using,
+            "distinct_shapes": [{"shape": k, "modules": v}
+                                for (k, v) in sorted(distinct.items(),
+                                                     key=lambda kv: (-kv[1], kv[0]))],
+            "per_module_distinct_shape_count": {str(k): v
+                                                for (k, v) in sorted(per_mod_count.items())},
+            "neural_tiers_using": {t: tier_using[t] for t in sorted(tier_using)},
+            "tier_geometry_identical_across_tiers": (
+                len(tier_geometry) >= 2 and
+                all(sorted(tier_geometry[t]) ==
+                    sorted(tier_geometry[sorted(tier_geometry)[0]]) for t in tier_geometry)),
+        } if spirv_dis else None),
     }
     js = Path(str(prefix) + ".json")
     with js.open("w", encoding="utf-8") as fh:
@@ -248,6 +337,13 @@ def main(argv=None):
               summary["unified"], summary["unresolved"]))
     print("fg-plan: intermediate_bytes_total=%d (%d targets)" % (
         intermediate_bytes, len(intermediate)))
+    if spirv_dis:
+        print("fg-plan: cooperative-matrix modules=%d (classic=%d) distinct_shapes=%d tiers=%s "
+              "per-module-shape-counts=%s" % (
+                  coop_modules_using, coop_classic_using, len(distinct),
+                  dict(tier_using), dict(per_mod_count)))
+    else:
+        print("fg-plan: cooperative-matrix extraction SKIPPED (spirv-dis not found)")
     print("fg-plan: wrote %s and %s" % (tsv, js))
     return 0
 

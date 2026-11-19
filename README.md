@@ -243,7 +243,10 @@ The build itself verifies every embedded asset payload and alias. On top of that
    (`framegeneration-plan-test`: the GPU-free proof that an independent C++ re-parse of the
    pack's `pipelines.tsv` agrees, module-for-module, with the FG pass-plan that
    `tools/extract/frame-generation/plan.py` reconstructs: same 474 compute modules, same 1208
-   de-duplicated binding groups, valid order scaffold) and `framegeneration-plan-drift`
+   de-duplicated binding groups, valid order scaffold) — that same GPU-free test ALSO re-derives every module's CooperativeMatrixKHR
+    operand shapes (the DLL's CsTensorSizes) independently from the shipped SPIR-V via spirv-dis,
+    agreeing with plan.py module-for-module and pinning the FG 4.0.2 census: 156 ML neural modules,
+    6 distinct 16x16 tile shapes (float/half/uchar), identical 4k/8k geometry, 92 classic none. and `framegeneration-plan-drift`
    (`framegeneration-exec --compile-pack --descriptor-buffer-parity --expect-plan`: ties the
    driver-backed per-module binding census to that plan on a real device, measured
    `checked=474 missing=0 mismatch=0`) and `framegeneration-host-integration-ladder`
