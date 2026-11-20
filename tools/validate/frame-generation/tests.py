@@ -1351,6 +1351,50 @@ def test_capture_ledger_unit_runs():
             raise AssertionError("capture-ledger unit did not pass: " + (r.stdout + r.stderr))
 
 
+def test_classic_chain_shape_join():
+    """Phase-2 gate: the classic FG chain, joined two-sided between what the PACK records and what the SDK names.
+    Measured here: the pack's classic subset is 92 modules whose entry point is the anonymous `CS` - their plan
+    `pass` name column is EMPTY, while `order` IS contiguous 0..91, all 92 are `resolved`, transports split 64
+    collapsible / 28 plain, and their thread-group sizes fall in exactly 7 classes (56 x 8,8,1; 16 x 256,1,1; and
+    four-per-variant 16,16,1 / 64,1,1 / 16,4,1 / 4,4,4 / 32,8,1), i.e. 4 variants of everything. The vendored SDK
+    names 18 classic pass families (11 frame-interpolation + 7 optical-flow) each with its own compute triplet, and
+    the two sides join with ZERO ORPHAN SHAPE CLASSES on EITHER SIDE. That leaves a measured naming state: 20 slots
+    are unique by shape, 16 are count-matched to exactly 4 named owners (needs pairing, not guessing), and 56 tile-8
+    slots are ambiguous because the pack carries 14 tile-8 slots per variant where the SDK's classic sources list
+    only 9 owners -> 5 slots per variant are NOT covered by the open SDK, and the residual identity half still
+    needs the DLL's CPU-side argument marshal (plus captures for pixel parity). The tool also asserts the SDK
+    provider's 6 runtime rules are present: optical-flow dispatch runs before the interpolation dispatch, block size
+    8, the generationRect-0,0 fallback to the full presentColor extent, reset = OR(caller, Prepare, disjoint-frameID),
+    Prepare paired to generate by `frameID % MAX_QUEUED_FRAMES`, and reported memory usage = FG + OpticalFlow + Shared.
+    The 2 swapchain shaders with no compute triplet are reported as belonging to the separate SWAPCHAIN effect id.
+    GPU-free. Self-skips if the SDK is not populated."""
+    if not (ROOT / "third_party/fidelityfx-sdk/Kits/FidelityFX/framegeneration").is_dir():
+        print("SKIP classic-join: FFX SDK submodule not populated"); return
+    out = ROOT / "build" / "fg-classic-order.tsv"
+    r = subprocess.run(["python3", "tools/extract/frame-generation/classic_order.py", "--out", str(out)],
+                       cwd=str(ROOT), capture_output=True, text=True)
+    if r.returncode != 0:
+        raise AssertionError(f"classic_order.py rc={r.returncode}:\n{r.stdout}\n{r.stderr}")
+    for needle in ("classic=92", "neural=382", "named_pass_rows=382", "all_named_neural=True",
+                   "classic order contiguous 0..91: yes", "'8,8,1': 56", "'256,1,1': 16", "'16,16,1': 4",
+                   "'64,1,1': 4", "'16,4,1': 4", "'4,4,4': 4", "'32,8,1': 4", "'collapsible': 64", "'plain': 28",
+                   "'1': 92", "distinct signatures: 6", "7 shape classes, 18 SDK families in 7 classes",
+                   "'unique_by_shape': 20", "'count_matched_needs_pairing': 16", "'shape_ambiguous': 56",
+                   "frameinterpolation=11 opticalflow=7", "block_size_8=True",
+                   "optical_flow_dispatch_first=True", "generation_rect_fallback=True",
+                   "disjoint_frameid_reset=True", "prepare_frameid_modulo=True", "memory_usage_is_a_sum=True"):
+        if needle not in r.stdout:
+            raise AssertionError(f"classic chain join drifted, missing {needle!r}:\n{r.stdout}")
+    if "FAIL orphan shape classes" in r.stdout:
+        raise AssertionError(f"shape classes no longer join both ways:\n{r.stdout}")
+    rows = [l for l in out.read_text().splitlines() if l.strip()][1:]
+    if len(rows) != 92 or rows[0].split("\t")[0] != "0" or rows[-1].split("\t")[0] != "91":
+        raise AssertionError(f"work list must hold orders 0..91, got {len(rows)} rows")
+    if rows[-1].split("\t")[9] not in ("unique_by_shape", "count_matched_needs_pairing", "shape_ambiguous"):
+        raise AssertionError(f"work list row 91 lacks a naming state: {rows[-1]}")
+    return
+
+
 def test_capture_shim_builds_against_vulkan_headers():
     # The LD_PRELOAD capture shim (capture-shim.cpp) must COMPILE against the pinned Vulkan-Headers (the same
     # fork the providers use, whose VkShaderModuleCreateInfo field is pCode). GPU-free compile check of the real
@@ -1452,6 +1496,7 @@ def main():
                  test_sdk_framegeneration_descriptor_layouts,
                  test_sdk_fg_version_negotiation,
                  test_sdk_fg_host_contract_enforcement,
+                 test_classic_chain_shape_join,
                  test_vk_dll_shader_identity,
                  test_capture_diff_order_reader_roundtrip,
                  test_capture_diff_upscaler_pack_roundtrip,

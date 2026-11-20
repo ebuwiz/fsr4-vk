@@ -10,23 +10,36 @@ This project is not affiliated with or endorsed by AMD.
 The whole project is built on **measured ground truth, never inference**. Read this before any code change; every capability claim must trace to a runnable gate.
 
 - **Pin the inputs.** Both source DLLs are pinned by SHA-256 - upscaler 4.1.2.4555 (`aad4...`) and Frame Generation 4.0.2.4555 (`e684...77bb6`) - and every extraction tool **fails on drift** rather than skipping a mismatch. AMD's open **FidelityFX SDK 2.4.0** (`third_party/fidelityfx-sdk`) is vendored as **CPU control-flow ground truth**: the *classic* interpolation pass order, resource tables, present/pacing/UI and descriptor layouts are **MINED from that readable source** and pinned by gates - not guessed out of the DLL.
-- **Two independent providers.** The upscaler is **complete + validated**. The Frame Generation provider is the ABI + capability contract + host-integration surface + reconstructed pass-plan substrate, and it **honestly refuses the not-yet-validated algorithm** instead of fabricating a blend or a made-up optical-flow stand-in. The two `.so` outputs must never share assets, model logic or runtime resources.
-- **Verify before claiming.** GPU-free gates run on any host (`bash tools/build/check.sh`, `ctest`, and the 32 gates in `tools/validate/frame-generation/tests.py`); device gates **auto-skip with exit 77**, so a GPU-less CI host stays green instead of failing. A red run is a real regression, not a missing GPU.
-- **Treat transport as a measured constraint.** Conventional `VkDescriptorSet` fails 2684 of 2692 FG sets because FG bindings are `VK_WHOLE_ARRAY` runtime arrays; the host runtime **must** use `VK_EXT_descriptor_buffer` (all 1208 FG bindings serialize with 0 failures). No FG shader has a cross-kind slot, so plain derived `VkPipelineLayout`s suffice - pipeline creation for all 474 compute modules is **solved**.
+- **Two independent providers.** The upscaler is **complete + validated**. The Frame Generation provider is the ABI + capability contract + host-integration surface + the **Phase-1 runtime substrate** (real device allocations, pipeline layouts, compute pipelines and descriptor serialization driven by the pack's own plan tables), and it **honestly refuses the not-yet-validated dispatch** instead of fabricating a blend or a made-up optical-flow stand-in. The two `.so` outputs must never share assets, model logic or runtime resources.
+- **Verify before claiming.** GPU-free gates run on any host (`bash tools/build/check.sh`, `ctest`, and the 34 gates in `tools/validate/frame-generation/tests.py`); device gates **auto-skip with exit 77**, so a GPU-less CI host stays green instead of failing. A red run is a real regression, not a missing GPU.
+- **Treat transport as a measured constraint.** Conventional `VkDescriptorSet` fails 2684 of 2692 FG sets because FG bindings are `VK_WHOLE_ARRAY` runtime arrays; the host runtime **must** use `VK_EXT_descriptor_buffer` (all 1208 FG bindings serialize with 0 failures). No FG shader has a cross-kind slot, so plain derived `VkPipelineLayout`s suffice - pipeline creation for all 474 compute modules is **solved**. The provider reproduces that on its own: its substrate serialized **304 of 304** classic-subset bindings with zero failures on RX 9070 XT.
 - **Respect the closed boundary.** The 382 `mlfi_*` ML pass->pass execution ORDER is **not statically derivable** from the shipped SPIR-V (bindless pointers), and the ONNX neural net is **absent from the open SDK**; pixel parity needs AMD reference captures. The provider stays refused there *by design*, now with source-level evidence rather than only a shader-side `edges=0` proof.
 
 ## What runs today (status matrix)
 
 - **Upscaler `amd_fidelityfx_upscaler_vk.so` - runs.** Records every FSR4 pass onto the host's `VkCommandBuffer` and self-sequences the barriers; full `ffxQuery`/create/dispatch contract answered; validated **byte-identical across both descriptor transports** (`descriptor-smoke`).
-- **Frame Generation `amd_fidelityfx_framegeneration_vk.so` - the boundary runs, the algorithm refuses.**
-  - *Runs (returns its documented code):* `ffxCreateContext` (capability contract + version advertisement + `fg4`-namespaced pipeline cache + warm reload); `ffxConfigure` capturing the full host contract; the **enforced** contract surface - all 7 create flags interpreted, mandatory Configure->Prepare->generate order, **version-negotiation refusal** of a non-classic `ffxOverrideVersion`, `PrepareV2` (`0x0c`) validated (order + arguments + EMBEDDED camera basis, via an ABI-mirror of the 2.4.0 struct) and `GetGPUMemoryUsageV2` (`0x0b`) recognized, `numGeneratedFrames == 0` **cancel** -> `OK`; the offline tooling (inventory / convert / reverse / plan / vk-identity / capture-rig) and the 30-gate python suite; `framegeneration-plan-test` + `framegeneration-check-test` (GPU-free) and `framegeneration-exec` (`--compile-pack`, `--descriptor-buffer-parity`, `--write-descriptors`, `--expect-plan`) + `framegeneration-probe` (device).
-  - *Honestly refused (`FFX_API_RETURN_ERROR_RUNTIME_ERROR`):* `ffxDispatch(Prepare | PrepareV2 | generate 1..3)` - the interpolation / ML / present runtime - and `ffxQuery(GetGPUMemoryUsage V1/V2)` while the provider owns no allocated targets. The present-callback descriptor returns `NO_PROVIDER`.
+- **Frame Generation `amd_fidelityfx_framegeneration_vk.so` - the boundary AND the Phase-1 substrate run; the algorithm refuses.**
+  - *Runs (returns its documented code):* `ffxCreateContext` (capability contract + version advertisement + `fg4`-namespaced pipeline cache + warm reload); `ffxConfigure` capturing the full host contract; the **enforced** contract surface - all 7 create flags interpreted, mandatory Configure->Prepare->generate order, **version-negotiation refusal** of a non-classic `ffxOverrideVersion`, `PrepareV2` (`0x0c`) validated (order + arguments + EMBEDDED camera basis, via an ABI-mirror of the 2.4.0 struct), `numGeneratedFrames == 0` **cancel** -> `OK`; the offline tooling (inventory / convert / reverse / plan / vk-identity / capture-rig / classic-chain shape join) and the 34-gate python suite; `framegeneration-plan-test` + `framegeneration-check-test` (GPU-free) and `framegeneration-exec` (`--compile-pack`, `--descriptor-buffer-parity`, `--write-descriptors`, `--expect-plan`) + `framegeneration-probe` (device).
+  - *Runs (allocates, since Phase 1):* at `Prepare` - where the host declares the render resolution - the provider builds the substrate the pack's plan tables describe: **5 intermediate targets (66,355,200 B at 1920x1080) + one 10,368 B descriptor pool + 528 set layouts + 92/92 real `VkComputePipeline`s** for the classic subset, and a **304/304** `vkGetDescriptorEXT` serialization census of that subset's bindings (fed by 7 deliberately tiny scratch resources, never bound to anything). `ffxQuery(GetGPUMemoryUsage)` (`0x07`) then answers **from those allocations**: `totalUsageInBytes=66,365,568`, `aliasableUsageInBytes=10,368`.
+  - *Runs (device-free, since Phase 1):* `GetGPUMemoryUsageV2` (`0x0b`) is the pre-create sizing question, so it returns the pack's OWN byte model for the resolutions the CALLER names (measured: 640x360 -> 1280x720 = **7,372,800 B**), and the log line states `basis=plan-model(no allocation yet)` so the number can never be mistaken for an allocation.
+  - *Honestly refused (`FFX_API_RETURN_ERROR_RUNTIME_ERROR`):* `ffxDispatch(Prepare | PrepareV2 | generate 1..3)` - the interpolation / ML / present runtime - and `ffxQuery(GetGPUMemoryUsage V1)` **before** that query has allocations behind it (no `Prepare` yet, or a host device without the `VK_EXT_descriptor_buffer` transport, which the refusal now names). The present-callback descriptor returns `NO_PROVIDER`.
+  - *Runs (the moving-graphics host such a runtime would plug into, and the runnable mini app of this phase):*
+    `tools/FGTest`. Offscreen (`bash tools/FGTest/build.sh`) it proves the REAL AMD FSR4 compute end-to-end
+    (`rc=OK 3/3, output-changed 3/3, non-black 3/3`, per-frame checksums differ, `nonblack_px=518400` of the
+    960x540 read-back) and prints the FG refusal ladder (`prepare=3 generate=3(1x) 3(2x) 3(3x) 3(4x) cancel=0`,
+    i.e. documented codes, never a fabricated blend). As a window app (`bash tools/FGTest/run.sh`, 30 s by default,
+    `Esc`/`q` to end) it blits that upscaled frame live - measured today: 552 presented frames at ~25 fps in
+    1440x1080 - and paints a 5x7 bitmap-font HUD into every frame: `WIN:/RENDER:/UPSCALER VK:` resolutions top-left,
+    `FPS` 4x and `MS FRAME` / `MS UPSCALER` / `MS FGMEM REFUSED` 2x top-right, and `GOT n X REQ n X` last, so a
+    missing interpolation runtime is visible on the screen instead of claimed away. See `tools/FGTest/README.md`.
 - **See `## Next steps`** for what turns these honest refusals into a running FG runtime.
 
 ## Requirements
 
 - Python 3.10+, CMake 3.22.1+ and a C++20 compiler.
 - `llvm-objdump`.
+- For the optional `tools/FGTest` host app (the runnable mini graphic app of this phase): `glslc`, the Vulkan
+  dev headers, and SDL2 via `sdl2-config` for the visible window. Without SDL2 the app still builds headless.
 - Python 3.14+ for built-in Zstandard support, or the `zstandard` package
   (`python3 -m pip install zstandard`).
 
@@ -630,6 +643,9 @@ this host (no MinGW-w64 installed), so it is reported as unverified, not tested.
 ### Runtime levers
 
 `FFG4_VK_EXTENSIVE_LOG=1` (verbose context/dispatch logging).
+`FFG4_VK_SUBSTRATE=0` keeps the Phase-1 substrate off: the provider then allocates nothing
+on the caller's device and `ffxQuery(GetGPUMemoryUsage)` keeps refusing instead of reporting
+numbers - the default (unset) builds the substrate at `Prepare`.
 `FFG4_VK_PIPELINE_CACHE=<file>` selects the namespaced pipeline-cache container path
 (default is identity-named `amd_fidelityfx_framegeneration_vk.pcache.<gpu>.<driver>` in
 the working directory); `FFG4_VK_PIPELINE_CACHE_DISABLE=1` runs uncached;
@@ -652,6 +668,49 @@ built by another effect, GPU or driver is never reused (it cold-starts instead).
 Measured on RX 9070 XT: a cold context seeds `0` bytes, teardown serializes `36` bytes,
 and the next context reloads that blob (`seedBytes=36`) — a warm start isolated from
 the upscaler (verified by container magic `FFG4PC1` + algorithm tag `fg4`).
+
+### The Phase-1 runtime substrate (`src/framegeneration/fg-runtime.cpp`)
+
+The provider reads the plan tables **the pack itself carries** (`fg-plan.tsv`,
+`pipelines.tsv`, `fg-plan.json`, now embedded in the same `FFG4AS1` asset container as the
+shaders, so a shipped build has them without a filesystem) and cross-checks them before
+allocating anything: module count, stage split, binding totals, the resolved/unresolved
+count and the intermediate byte sum must agree across the three tables, and any disagreement
+marks the affected modules unresolved instead of picking a side. Only then, at
+`Prepare` - the call where the host declares the render resolution, and never earlier -
+does it build what those tables describe:
+
+- the plan's intermediate targets, sized by comparing the reference extents against the
+  plan's own `reference_max_render` / `reference_max_upscale` so a target follows
+  *upscale* or *render* by the plan's arithmetic rather than by a role name guessed in code;
+- one descriptor pool sized from the **driver's** reported element sizes
+  (storage-buffer 16 B, uniform-buffer 16 B, combined-image 64 B, storage-image 32 B,
+  sampler 16 B measured on RX 9070 XT), not from an assumed 8-byte descriptor;
+- one `VkDescriptorSetLayout` per declared set - including an EMPTY layout for every gap in
+  the set-index sequence, because `pSetLayouts` positions ARE set indices and a null entry
+  there is invalid - plus one `VkPipelineLayout` and one real `VkComputePipeline` per
+  classic-subset module (shader modules are destroyed immediately after creation, since
+  the pipeline cache keeps the compiled state).
+- a `vkGetDescriptorEXT` census of one descriptor per binding of every built module. That
+  call returns void, so what is counted is whether the driver **wrote bytes** at its own
+  element size; it is fed 7 deliberately tiny real resources (256 B buffers, 4x4 sampled +
+  storage images with views, one sampler) because the driver dereferences its target:
+  probing with null handles was measured to SIGSEGV inside `libvulkan_radeon`.
+
+Measured on RX 9070 XT (`framegeneration-probe`, rc=0): `plan modules=474 classic=92
+neural=382 groups=1208 intermediates=5/66355200B pool=10368B pipelines=92/92
+layouts=528/92 descriptors=304/304 backings=7 census=run usage=66365568B`.
+`GetGPUMemoryUsage` (`0x07`) reports exactly those numbers, `aliasableUsageInBytes` being
+the pool; the same query still refuses before `Prepare`. `GetGPUMemoryUsageV2` (`0x0b`)
+answers the pre-create question with the pack's byte model for the caller's own resolutions
+(640x360 -> 1280x720 = 7,372,800 B) and logs `basis=plan-model(no allocation yet)`.
+
+What this is **not**: the substrate never writes a descriptor, never binds a layout to a
+command buffer, never records or queues a command, and never dispatches. It proves the
+plan's resources exist on a real device and that the driver accepts every binding KIND
+through the transport the plan demands. Dispatch stays refused for the reason it has always
+given: which of the 92 anonymous `CS` classic modules a pass is, in which order, with which
+targets, is still not derivable - see `## Next steps`.
 
 ### Execution + pipeline-cache benchmark harness (`framegeneration-exec`)
 
@@ -846,8 +905,68 @@ The two remaining FG blockers - the 382-pass ML execution ORDER and output-pixel
 The Frame Generation algorithm is the only genuinely open work; everything else is buildable **without** touching the closed 382-pass ML boundary. In priority order:
 
 1. **Build the Swapchain present/pacing provider** (a separate effect id, `FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN_VK`). It **replaces the app's `VkSwapchainKHR`** and **delegates the interpolation workload to the host** (`frameGenerationCallback`, or the `...InterpolationCommandListVK` / `...InterpolationTextureVK` query) - it does **not** run the ML interface itself. Fully specified by the SDK source + the present/pacing/UI + swapchain gates, so it needs **no** ML and **no** reference capture to build honestly: `VkSwapchainKHR` replacement + the 2 CPU worker threads (present + pacing) + UI composition (`...USE_PREMUL_ALPHA`) + the `WaitForPresentsVK` teardown flush + driver-assisted pacing. This is where the still-open contract items above (UI paths, `RegisterUiResource...VK`, the internal-double-buffering lifetime, the `generationRect` letterbox width/height-equality rule, and the mutex-guard list) land.
-2. **Land a classic-only 4x interpolation runtime.** Wire the mined classic pass order + the 48-id / shared 17-id resource pool + `VK_EXT_descriptor_buffer` host population into a recording dispatch (Phase 1-2), already gated by `--compile-pack` (474 created), `--descriptor-buffer-parity` (0 failed) and `--expect-plan` (checked=474 missing=0 mismatch=0). Image parity still needs AMD reference captures, and it stays **<=4x** per the `outputs[4]` ceiling.
+2. **Land a classic-only 4x interpolation runtime.** **Phase 1 is done**: the provider now reads the pack's own plan tables at `Prepare` and really allocates the plan's intermediates + a driver-sized descriptor pool, creates the 92 classic-subset `VkComputePipeline`s from the pack's SPIR-V, and serializes 304/304 of that subset's bindings through `VK_EXT_descriptor_buffer` - which is what makes `ffxQuery(GetGPUMemoryUsage)` report real allocation-backed bytes instead of refusing. What is still open is the *identity* half: which anonymous `CS` module is which pass, in what order, against which of the plan's targets, and then the recording dispatch itself (already gated by `--compile-pack` (474 created), `--descriptor-buffer-parity` (0 failed) and `--expect-plan` (checked=474 missing=0 mismatch=0)). Image parity still needs AMD reference captures, and it stays **<=4x** per the `outputs[4]` ceiling. The host-side half of this phase is DONE and runnable: `bash tools/FGTest/run.sh`
+   opens the 30-second animated-triangle window (measured today: 552 presented frames at ~25 fps, AMD's own
+   dispatch 0.6-0.8 ms of each), its HUD prints the resolutions, the FPS at 4x scale, the frame/upscaler/FG-dispatch
+   clocks at 2x and `GOT n X REQ n X`, and `run.sh --headless` yields the identical proof plus the HUD corners as
+   ASCII where there is no display - so the remaining gap (which CS module is which pass, and the dispatch itself)
+   is something the app shows on screen rather than a claim. **Phase 2 has now landed its foundation, and it
+   changed what is actually open.** `tools/extract/frame-generation/classic_order.py` (+ the 34th gate,
+   `test_classic_chain_shape_join`, which writes `build/fg-classic-order.tsv`) joins the two ground truths the repo
+   owns. Measured: the pack's classic subset is **92 modules whose plan ORDER is already recorded (contiguous
+   0..91), all `resolved`, 64 collapsible / 28 plain, 6 distinct binding signatures, in exactly 7 thread-group
+   classes** (56 x 8,8,1 / 16 x 256,1,1 and four per variant of 16,16,1, 64,1,1, 16,4,1, 4,4,4, 32,8,1 - i.e. **4
+   variants of everything**), while their NAME column is empty; the vendored SDK names **18 classic pass families**
+   (11 frame-interpolation + 7 optical-flow, each declaring its own thread-group shape: 9 at 8,8,1; 4 at 256,1,1; one
+   each at 16,16,1 / 32,8,1 / 64,1,1 / 16,4,1 / 4,4,4), plus 2 swapchain shaders with no compute triplet that belong
+   to the separate SWAPCHAIN effect id. The two sides **join with zero orphan shape classes on either side**, which
+   leaves a measured naming state per slot: **20 unique-by-shape, 16 count-matched to exactly 4 named owners
+   (needs pairing, not guessing), 56 ambiguous** - and crucially the pack carries **14 tile-8 slots per variant
+   where the open SDK lists only 9 owners**, so 5 slots per variant are provably NOT covered by the SDK sources:
+   those stay DLL-reversal work, now bounded to 20 of the 92 slots. The SDK provider source also fixes the runtime
+   RULES (all six pinned by gates): the optical-flow dispatch runs BEFORE the interpolation dispatch, block size
+   8 (the same 8x8 tiling those 56 slots show), a zero `generationRect` falls back to the full presentColor extent,
+   `reset` is the OR of caller flag, Prepare flag and a disjoint-frameID test, Prepare pairs to generate through
+   `frameID % MAX_QUEUED_FRAMES`, and reported memory usage is the SUM over FrameGeneration + OpticalFlow + Shared
+   contexts. So the runtime half is now: allocate the SDK's shared-resource set with that arithmetic, bind the 92
+   modules in recorded order from the plan's resolved layouts (Phase 1 already creates those pipelines and the
+   plan-driven intermediates), record + submit, and let `generate` answer OK - leaving the 382 `mlfi_*` modules
+   refused. And the app closes the testability gap the README used to call "needs AMD captures": FGTest's scene is
+   analytic (a triangle on a known translation/rotation schedule), so the classic chain's flow is predictable -
+   a translation-only pair must yield a near-constant flow vector and an interpolated frame whose geometry sits
+   between the two inputs, which is a real oracle for the classic path independent of pixel parity.
 3. **The 382-pass ML (`mlfi`) chain stays blocked** on the DLL's closed CPU dispatch scheduler + AMD reference captures. Choose between: **(a) deep PE disassembly** of `amd_fidelityfx_framegeneration_dx12.dll` to recover the bindless descriptor writes / ML node order (high risk, unverifiable without captures), or **(b) hold** - accept FG as complete-as-documented with the honest, fully-gated substrate. **Recommended: do (1) and (2) first** - they deliver a real, honest FG experience without ever opening the closed boundary.
+
+### Phase ladder to a running Frame Generation (measured)
+
+Four phases make the **classic** chain generate frames and be testable in the app; a fifth makes it usable through
+AMD's own swapchain path. The 382 `mlfi_*` ML modules are deliberately **not** a phase - they stay refused.
+
+1. **2a - name the 92 ordered classic slots.** `build/fg-classic-order.tsv` already splits them: **20 unique by shape,
+   16 count-matched to exactly 4 named owners (needs pairing by order + arguments), 56 tile-8 ambiguous** (the pack
+   carries 14 tile-8 slots per variant, the open SDK only 9 owners - so **20 of the 92 have no owner in the SDK at all**
+   and are the real DLL-reversal target). Evidence: the CPU-side argument marshal the `--write-descriptors` /
+   `--expect-plan` / capture-rig tooling already consumes. Done when that table has a role for 92/92 slots, gated.
+2. **2b - allocate the shared-resource set with the SDK's OWN arithmetic.** Optical-flow vector, SCD histogram + output,
+   dilated depth, dilated motion vectors, reconstructed previous nearest depth (both frame-toggle sets), inpainting-pyramid
+   staging, hudless colour. Done when `GetGPUMemoryUsage` (V1) grows from the allocation-backed
+   `total=66,365,568 / aliasable=10,368` by exactly the added set and stays consistent with the plan-model V2 answer.
+3. **2c - bind, record and submit in recorded order.** Per-slot bindings from the plan's 6 resolved signatures, 32-byte
+   push constants per pass, usage flags, explicit barriers, optical-flow passes BEFORE interpolation passes, honouring the
+   six rules the SDK pins (block size 8, zero-`generationRect` fallback, reset OR rule, `frameID % MAX_QUEUED_FRAMES`
+   pairing, memory-usage sum, debug-view flags). Done when `ffxDispatch(generate 1..3)` returns `OK` for the classic
+   chain with non-zero `generated` and real output images written, while `mlfi` stays `RUNTIME_ERROR`.
+4. **2d - prove it in the app, which is what the app was built for.** `bash tools/FGTest/run.sh --fg=2x` must show
+   `GOT 2 X REQ 2 X` and a real `MS FGMEM` cost, and the analytic oracle on FGTest's own scene must hold: a
+   translation-only frame pair yields a near-constant flow vector, the interpolated frame's geometry sits between the
+   two inputs, and the disocclusion mask stays empty where nothing is revealed. Pixel parity against AMD stays
+   capture-gated; this oracle does not need captures.
+5. **3 - the Swapchain present/pacing provider** (separate effect id): replaces the app's `VkSwapchainKHR`, delegates
+   interpolation to the host through `frameGenerationCallback`, owns the two CPU worker threads, UI composition, pacing
+   and the `generationRect` letterbox rule. Specifiable from the SDK source with no ML and no captures.
+
+**So: 4 phases to frames actually generated and testable here, 5 to a usable in-app Frame Generation, and the ML
+boundary stays outside both counts.**
 
 ## Documentation
 FSR 4.1.2:
