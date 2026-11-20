@@ -13,7 +13,18 @@ The whole project is built on **measured ground truth, never inference**. Read t
 - **Two independent providers.** The upscaler is **complete + validated**. The Frame Generation provider is the ABI + capability contract + host-integration surface + the **Phase-1 runtime substrate** (real device allocations, pipeline layouts, compute pipelines and descriptor serialization driven by the pack's own plan tables), and it **honestly refuses the not-yet-validated dispatch** instead of fabricating a blend or a made-up optical-flow stand-in. The two `.so` outputs must never share assets, model logic or runtime resources.
 - **Verify before claiming.** GPU-free gates run on any host (`bash tools/build/check.sh`, `ctest`, and the 34 gates in `tools/validate/frame-generation/tests.py`); device gates **auto-skip with exit 77**, so a GPU-less CI host stays green instead of failing. A red run is a real regression, not a missing GPU.
 - **Treat transport as a measured constraint.** Conventional `VkDescriptorSet` fails 2684 of 2692 FG sets because FG bindings are `VK_WHOLE_ARRAY` runtime arrays; the host runtime **must** use `VK_EXT_descriptor_buffer` (all 1208 FG bindings serialize with 0 failures). No FG shader has a cross-kind slot, so plain derived `VkPipelineLayout`s suffice - pipeline creation for all 474 compute modules is **solved**. The provider reproduces that on its own: its substrate serialized **304 of 304** classic-subset bindings with zero failures on RX 9070 XT.
-- **Respect the closed boundary.** The 382 `mlfi_*` ML pass->pass execution ORDER is **not statically derivable** from the shipped SPIR-V (bindless pointers), and the ONNX neural net is **absent from the open SDK**; pixel parity needs AMD reference captures. The provider stays refused there *by design*, now with source-level evidence rather than only a shader-side `edges=0` proof.
+- **Respect the closed boundary — now with a corrected map of what is actually closed.** The 382 `mlfi_*` ML
+  modules' **weights ARE extracted** (`pack/mlfi-model.bin`, 9,437,184 B at RVA `0xf00000`, `model.extracted=true`,
+  entropy `7.403`, with per-record `.data` references) and their **chain order IS mined and gated**: `mlfi-graph.json`
+  holds two chains of **191 entries each (`mlfi_4k_pass0..190` / `mlfi_8k_pass0..190`), and within a tier the
+  execution order is fixed by the pass index** — its own `order_basis` note says so, and adds that the *classic*
+  optical-flow/interpolation ordering still needs control-flow correlation (which is what the new shape join advanced).
+  What genuinely stays closed is (a) mapping each ML pass's chain edges onto the intermediate/resource objects and
+  scratch sizing, and (b) **pixel parity**, which needs AMD reference captures. And the driver is NOT the blocker:
+  measured on this host, `--compile-pack` reports `attempted=474 created=474 failed=0`, so all 156 `CooperativeMatrixKHR`
+  modules and the 6 `ComputeDerivativeGroupLinearKHR` ones build as `VkComputePipeline`s on Mesa/RADV. The 12 modules
+  outside that 474 are non-compute stages (7 present-blit + 1 pixel + 1 vertex + 3 unsupported-psv), not refusals. So the provider still stays refused *by design* until the runtime exists, but the closed half is
+  narrowed to (a) the chain-edge → resource/scratch mapping and (b) reference captures — not to "unknowable order".
 
 ## What runs today (status matrix)
 
@@ -940,7 +951,11 @@ The Frame Generation algorithm is the only genuinely open work; everything else 
 ### Phase ladder to a running Frame Generation (measured)
 
 Four phases make the **classic** chain generate frames and be testable in the app; a fifth makes it usable through
-AMD's own swapchain path. The 382 `mlfi_*` ML modules are deliberately **not** a phase - they stay refused.
+AMD's own swapchain path. The 382 `mlfi_*` ML modules are **2 further phases, not an impossible one** — their
+weights (`pack/mlfi-model.bin`, 9,437,184 B), chain order (two 191-entry chains, order fixed by pass index) and
+pipelines (474/474 created on this Mesa device, cooperative-matrix and all) are already in hand; what is open is
+**M-a** the chain-edge → resource + scratch marshalling, and **M-b** validation (behaviour via the app's analytic
+oracle, pixel parity via captures).
 
 1. **2a - name the 92 ordered classic slots.** `build/fg-classic-order.tsv` already splits them: **20 unique by shape,
    16 count-matched to exactly 4 named owners (needs pairing by order + arguments), 56 tile-8 ambiguous** (the pack
@@ -965,8 +980,15 @@ AMD's own swapchain path. The 382 `mlfi_*` ML modules are deliberately **not** a
    interpolation to the host through `frameGenerationCallback`, owns the two CPU worker threads, UI composition, pacing
    and the `generationRect` letterbox rule. Specifiable from the SDK source with no ML and no captures.
 
-**So: 4 phases to frames actually generated and testable here, 5 to a usable in-app Frame Generation, and the ML
-boundary stays outside both counts.**
+**So: 4 phases to frames actually generated and testable here, 5 to a usable in-app Frame Generation, and 6 to a
+full classic+ML runtime (2a-2d + M-a + M-b) - and the genuinely closed half of that is only the marshalling plus
+parity evidence, not the pass order.**
+
+One driver-side constraint belongs to 2c, not to the algorithm: RADV creates all 474 compute pipelines here, but
+enabling `VK_EXT_descriptor_buffer` in the SAME device that hosts the app's graphics pipelines was measured to crash
+inside the driver's own graphics pipeline creation (SIGSEGV in `setupPipeline`). So the FG runtime needs its own
+`VkInstance`/`VkDevice` (as `framegeneration-probe` already keeps them apart) or that driver bug fixed - a bounded
+workaround, and never a reason to fake an interpolation.
 
 ## Documentation
 FSR 4.1.2:
