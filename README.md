@@ -1054,9 +1054,18 @@ oracle, pixel parity via captures).
    own refusal on every frame — the honest baseline this step has to beat. Two harness fixes landed alongside
    the measurement: `ok_calls` now counts only calls that ANSWERED with frames (a `--fg=1x` run used to print
    `ok_calls=55` for a run in which nothing was ever requested — a hollow success read as a delivery), and the
-   app's device now carries `VK_KHR_swapchain` at BOTH instance and device level. The old "this driver lacks
-   `vkCreateSwapchainKHR`" line was THIS harness asking for an extension name that does not exist
-   (`VK_xr_swapchain`), so the WSI present path must be re-measured rather than assumed unavailable; a gate
+   (`VK_xr_swapchain`). MEASURED NOW, and the first correction of that fix was itself wrong: `VK_KHR_swapchain` IS
+   offered by the device and `vkCreateSwapchainKHR` RESOLVES with the extension enabled at DEVICE level ONLY — also
+   requesting it at INSTANCE level made `vkCreateInstance` FAIL, which surfaced as a bare `NO_DEVICE` and turned the
+   whole app off. The instance-level request is gone, and `initVulkan` now NAMES the failing step and retries each
+   create WITHOUT the added extension, with stdout UNBUFFERED so a crash leaves its last line behind. The WSI path
+   itself still crashes, now LOCALIZED to `vkQueueSubmit` of the first present-draw buffer (`wsi p1` prints, `wsi p2`
+   does not), after two HOST bugs in it were found and fixed: a sampler write whose SAMPLER was `VK_NULL_HANDLE`
+   (spec-legal, but `vkUpdateDescriptorSets` SIGSEGVed; a REAL sampler object is written now) and a Prepare that never
+   LINKED the camera-info block (0x0002000a), which is why the provider refused it there while every other path in
+   this tree was accepted. `vkAcquireNextImageKHR` is result-checked and its index bounded too, since a garbage index
+   into `fences[]` is the delayed-SIGSEGV shape. So `--present` is a localized harness bug, not a driver verdict —
+   and the validation layer installed on that host is the tool that can name the VUID. A gate
    (`test_harness_extension_names_are_real`) now rejects any extension name that is not defined by the pinned
    headers, which is exactly the class of silent capability loss that caused it.
    Then `bash tools/FGTest/run.sh --fg=2x` must show `GOT 2 X REQ 2 X` and a real `MS FGMEM` cost, and the analytic oracle on FGTest's own scene must hold: a
@@ -1079,9 +1088,13 @@ workaround is now IN PLACE in FGTest: `VkApp::fgDevice` is a second logical devi
 created WITH the transport, and ONLY the Frame Generation backend block names it; the app keeps rendering on
 `a.device`. Before that, the window refused the substrate on every frame with `caller device exports none of:
 vkGetDescriptorEXT` - which was a HARNESS under-provisioning, not an FG limitation, and is why the probe could
-build the substrate while the app could not. The live effect of that fix (substrate built inside the window,
-`GET_GPUMEMORYUSAGE` answering with bytes instead of refusing) is COMPILE-VERIFIED ONLY and needs one re-run of
-`run.sh` to be called a measurement.
+build the substrate while the app could not. THAT FIX IS MEASURED, not expected: the window now prints
+`window FG ffxCreateContext = 0 (0=OK)`, then on EVERY frame `phase1 substrate render=480x270 ... pipelines=92/92
+... usage=35261568B (aliasable 10368B)` and `prepare substrate state: substrate built (usage reportable)`, with no
+refusal line anywhere in the log, and a 5 s window run reported `host_frames=138` at ~27 fps under the honest FG
+tally (`generated_frames=0 ok_calls=0 cancel_calls=0 empty_ok_calls=0 -> delivered 1X of requested 2X`). The byte
+figure follows the extent the caller named (`47933568B` on the 1280x720 present rig, `66365568B` for the probe's
+plan-sized query), so it is a function of the host shape, not a constant of the effect.
 
 ## Documentation
 FSR 4.1.2:

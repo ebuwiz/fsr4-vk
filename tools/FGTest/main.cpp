@@ -154,6 +154,9 @@ struct VkApp {
     // creates this app's graphics pipeline SIGSEGVs inside the driver while building that pipeline.
     // VK_NULL_HANDLE when the physical device does not offer the extension at all.
     VkDevice fgDevice{VK_NULL_HANDLE};
+    bool fgDeviceOk{false};      // the descriptor-buffer logical device really exists
+    bool swapchainAtInstance{true};  // flipped false only if the instance refused the request
+    bool swapchainAtDevice{true};    // ditto for the device
     VkQueue queue{VK_NULL_HANDLE};
     VkFormat colorFmt{VK_FORMAT_R8G8B8A8_UNORM};
     VkFormat depthFmt{VK_FORMAT_D32_SFLOAT};
@@ -261,8 +264,9 @@ static bool hasExt(VkPhysicalDevice p, const char* name) {
 static bool initVulkan(VkApp& a, bool windowMode) {
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO, nullptr, "FGTest", 0, "FGTest", 0,
                           VK_MAKE_API_VERSION(0, 4, 0, 2)};
-    VkInstanceCreateInfo ii{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
-    ii.pApplicationInfo = &app;
+    // No local VkInstanceCreateInfo here any more: the instance is created through the tryInstance lambda below,
+    // which exists so the create can be RETRIED with a different extension list and each attempt can be reported.
+    // A leftover `ii` here compiled to an unused-variable warning, which is how this line got noticed.
     std::vector<const char*> instExts;
     if (windowMode && gWin) {
         unsigned n = 0; SDL_Vulkan_GetInstanceExtensions(gWin, &n, nullptr);
@@ -270,19 +274,38 @@ static bool initVulkan(VkApp& a, bool windowMode) {
         if (n) SDL_Vulkan_GetInstanceExtensions(gWin, &n, req.data());
         instExts = req;
     }
-    // The loader only exposes VK_KHR_swapchain entry points if the EXTENSION is named at INSTANCE level
-    // too (VkInstanceCreateInfo::ppEnabledExtensionNames), not just at device level. Without this line the
-    // corrected device fix above still yields a NULL vkCreateSwapchainKHR - the exact symptom of the previous
-    // paragraph, so both halves are needed. Appending unconditionally is safe: SDL's own list already
-    // contains VK_KHR_surface, and requesting swapchain on a device that supports it is a no-op in headless.
-    {
-        bool haveSwap = false;
-        for (const auto* e : instExts) if (!std::strcmp(e, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) haveSwap = true;
-        if (!haveSwap) instExts.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    // A FIRST CUT OF THE SWAPCHAIN FIX APPENDED VK_KHR_swapchain AT INSTANCE LEVEL TOO, ON THE REASONING
+    // THAT the loader only exposes the entry point when the extension is named in VkInstanceCreateInfo. That
+    // reasoning was WRONG on this host, and the measured consequence was severe: vkCreateInstance then FAILED
+    // and the app printed a bare NO_DEVICE, killing a path that used to run. So the instance-level request is
+    // GONE. Device-level alone is sufficient HERE, proven by the resolution check further down printing
+    // `instance=0 device=1 -> RESOLVES`. The rule that WAS broken: VK_KHR_swapchain at instance level requires a
+    // window-system SURFACE extension in the SAME instance, and in headless mode there is none. If a future
+    // host really needs the instance-level name, enabling it means enabling VK_KHR_surface plus the platform
+    // surface extension too - never a bare append.
+    a.swapchainAtInstance = false;
+    // EVERY SETUP STEP NOW NAMES ITSELF + PRINTS ITS CODE. A bare NO_DEVICE cannot separate "the loader
+    // rejected a capability THIS harness just started requesting" from "the driver refused the device",
+    // and the previous paragraphs ADDED such a request, so the log has to make that difference visible.
+    auto tryInstance = [&](const std::vector<const char*>& list) {
+        VkInstanceCreateInfo t{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+        t.pApplicationInfo = &app;
+        t.enabledExtensionCount = (uint32_t)list.size();
+        t.ppEnabledExtensionNames = list.empty() ? nullptr : list.data();
+        return vkCreateInstance(&t, nullptr, &a.instance);
+    };
+    if (tryInstance(instExts) != VK_SUCCESS) {
+        std::printf("  instance-create-refused with the swapchain request in the list, retrying WITHOUT it\n");
+        std::vector<const char*> without;
+        for (const auto* e : instExts)
+            if (std::strcmp(e, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) without.push_back(e);
+        if (tryInstance(without) != VK_SUCCESS) {
+            std::printf("  instance-create-refused WITHOUT it too: the swapchain request is NOT the cause\n");
+            return false;
+        }
+        instExts.swap(without);
+        a.swapchainAtInstance = false;
     }
-    ii.enabledExtensionCount = (uint32_t)instExts.size();
-    ii.ppEnabledExtensionNames = instExts.empty() ? nullptr : instExts.data();
-    if (vkCreateInstance(&ii, nullptr, &a.instance) != VK_SUCCESS) return false;
     uint32_t pc = 0; vkEnumeratePhysicalDevices(a.instance, &pc, nullptr);
     std::vector<VkPhysicalDevice> ps(pc);
     if (pc) vkEnumeratePhysicalDevices(a.instance, &pc, ps.data());
@@ -292,6 +315,12 @@ static bool initVulkan(VkApp& a, bool windowMode) {
     if (!a.physical) a.physical = ps[0];
     std::vector<const char*> exts;
     for (const char* e : kContractExtensions) if (hasExt(a.physical, e)) exts.push_back(e);
+    // WHAT THIS DEVICE OFFERS, printed because the two capabilities added by the fix above are both
+    // CONDITIONAL on it: if an extension is not offered here, the code that requests it must not later be
+    // mistaken for a failure of the effect.
+    std::printf("  device offers: VK_KHR_swapchain=%d VK_EXT_descriptor_buffer=%d (1=yes)\n",
+                hasExt(a.physical, VK_KHR_SWAPCHAIN_EXTENSION_NAME) ? 1 : 0,
+                hasExt(a.physical, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME) ? 1 : 0);
     // THIS WAS A HARNESS BUG, NOT A DRIVER LIMITATION: the name below is not an extension at all
     // ("VK_xr_swapchain" does not exist), so VK_KHR_swapchain was never enabled and vkCreateSwapchainKHR
     // then resolved to NULL - which is exactly the symptom previously logged as "this (software) RADV build
@@ -326,8 +355,29 @@ static bool initVulkan(VkApp& a, bool windowMode) {
     di.pNext = &base; di.queueCreateInfoCount = 1; di.pQueueCreateInfos = &q;
     di.enabledExtensionCount = (uint32_t)exts.size();
     di.ppEnabledExtensionNames = exts.empty() ? nullptr : exts.data();
-    if (vkCreateDevice(a.physical, &di, nullptr, &a.device) != VK_SUCCESS) return false;
+    if (vkCreateDevice(a.physical, &di, nullptr, &a.device) != VK_SUCCESS) {
+        std::printf("  device-create-refused with %zu device extensions; retrying WITHOUT VK_KHR_swapchain\n",
+                    exts.size());
+        std::vector<const char*> without;
+        for (const auto* e : exts)
+            if (std::strcmp(e, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) without.push_back(e);
+        di.enabledExtensionCount = (uint32_t)without.size();
+        di.ppEnabledExtensionNames = without.empty() ? nullptr : without.data();
+        if (vkCreateDevice(a.physical, &di, nullptr, &a.device) != VK_SUCCESS) {
+            std::printf("  device-create-refused WITHOUT it too: the swapchain request is NOT the cause\n");
+            return false;
+        }
+        a.swapchainAtDevice = false;
+        exts.swap(without);
+    }
     vkGetDeviceQueue(a.device, 0, 0, &a.queue);
+    // THE DEFINITIVE ANSWER TO "does this driver expose the WSI present path", asked of the DEVICE the
+    // app actually created rather than inferred from a create failure: a NULL entry point here means
+    // --present cannot work on this host no matter what the app does later, and a non-NULL one means
+    // the previous NO_SWAPCHAIN line was the harness's missing extension, nothing else.
+    std::printf("  vkCreateSwapchainKHR on the app device: %s (instance=%d device=%d)\n",
+                vkGetDeviceProcAddr(a.device, "vkCreateSwapchainKHR") ? "RESOLVES" : "NULL",
+                a.swapchainAtInstance ? 1 : 0, a.swapchainAtDevice ? 1 : 0);
 
     // A SECOND LOGICAL DEVICE over the SAME physical device, this one with VK_EXT_descriptor_buffer
     // enabled, is what the Frame Generation backend block gets (see buildContract). Why not just enable it
@@ -357,9 +407,15 @@ static bool initVulkan(VkApp& a, bool windowMode) {
             di2.pNext = &base;
             di2.enabledExtensionCount = (uint32_t)fgExts.size();
             di2.ppEnabledExtensionNames = fgExts.data();
-            if (vkCreateDevice(a.physical, &di2, nullptr, &a.fgDevice) != VK_SUCCESS) {
+            const auto rcFg = vkCreateDevice(a.physical, &di2, nullptr, &a.fgDevice);
+            if (rcFg != VK_SUCCESS) {
                 a.fgDevice = VK_NULL_HANDLE;
-                std::fprintf(stderr, "fg-device-skipped: a device with VK_EXT_descriptor_buffer could not be created\n");
+                std::printf("  fg-device-create-refused: rc=%d with %zu extensions (descriptor_buffer ON). The FG\n"
+                            "    provider will therefore refuse its substrate here - a HARNESS limitation, printed\n"
+                            "    rather than a driver verdict on the algorithm\n",
+                            (int)rcFg, fgExts.size());
+            } else {
+                a.fgDeviceOk = true;
             }
             ssc.pNext = nullptr;  // leave the first device's chain untouched for anything built later
         }
@@ -1900,6 +1956,12 @@ int main(int argc, char** argv) {
         if (s == "--hud-dump") { hudDump = true; continue; }
         pos.push_back(s);
     }
+    // STDOUT IS UNBUFFERED FROM HERE ON. Measured: a --window --present run died with SIGSEGV (rc 139,
+    // core dumped) while the log showed NOTHING but the driver warning - every line the app had printed was
+    // still sitting in the stdout buffer. A crash that leaves no last line cannot be localized, so the tool
+    // trades buffering for a trace.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+
     // The HUD's frame-generation lines show BOTH halves of the story: what this host REQUESTED
     // (--fg=2x / 4x) and what the provider DELIVERED, so a refusal is visible on screen rather
     // than hidden behind a multiplier copied from the request.
@@ -1984,18 +2046,25 @@ int main(int argc, char** argv) {
         SDL_DestroyWindow(gWin); SDL_Quit(); gWin = nullptr;
         written = 1;
     } else if (windowMode) {
-        // SAFE WINDOW (default for --window on hosts whose driver lacks vkCreateSwapchainKHR): open the 1440x1080
+        // THE DEFAULT WINDOW PATH. Its earlier justification ("hosts whose driver lacks vkCreateSwapchainKHR"
+        // -) WAS WRONG HERE and is retired: measured, the entry point RESOLVES once VK_KHR_swapchain is
+        // enabled at device level. This path stays the default because the software blit needs no compositor
+        // and no WSI, and because --present is currently known to crash this build - a path to fix, not one
+        // to pretend works. It opens the 1440x1080
         // SDL window, run the REAL AMD FSR upscale headlessly (-> PPM), then show the LIVE animated triangle in
         // that window by blitting each offscreen GPU readback through SDL's SOFTWARE renderer (FPS readout baked
         // in, no WSI swapchain touched). Use --present to attempt the real Vulkan-WSI FSR blit on a host whose
         // GPU driver implements vkCreateSwapchainKHR.
-        std::printf("\n=== WINDOW: opening %ux%u SDL window (WSI present OFF: driver lacks vkCreateSwapchainKHR) ===\n",
+        std::printf("\n=== WINDOW: opening %ux%u SDL window (WSI present OFF: --present was not requested) ===\n",
                     kDispW, kDispH);
         runHeadless();
         std::printf("\nWSI present NOT used on this host; the REAL AMD FSR upscale ran offscreen -> PPM above. The SDL window\n"
                     "stays open for %ds. It now shows the LIVE moving triangle (GPU render -> CPU readback -> SDL\n"
                     "software scaler %ux%u -> window size) with a top-right FPS readout; ESC/Q or window-close ends it.\n"
-                    "Add --present for the real GPU FSR blit on a host whose driver implements vkCreateSwapchainKHR.\n",
+                    "Add --present to attempt the real GPU FSR blit through the WSI swapchain. Measured on this\n"
+                    "host: the entry point RESOLVES, and the attempt currently crashes before a frame presents;\n"
+                    "the step lines in the log localize that crash, so it is a WSI-path bug to fix - not a\n"
+                    "driver limitation.\n",
                     windowSec, kWidth, kHeight);
         // If SDL cannot give us a software renderer/texture, keep the previous blank-window behaviour.
         // The FG provider is driven HERE too (per frame, counted), so the window shows the frame-generation
@@ -2011,7 +2080,8 @@ int main(int argc, char** argv) {
     std::printf("\n=== RESULT ===\n  triangle host render: %s | AMD FSR4 upscale dispatch: %s | FG provider: driven "
                 "with real per-frame images (see codes)%s\n",
                 written > 0 ? "RUN" : "NO-FRAME", fsrRan ? "RUN (960x540 output proved)" : "NOT PROVEN",
-                windowMode ? "  [windowed, WSI present OFF]" : "");
+                windowMode ? (gpuPresent ? "  [windowed, WSI present ATTEMPTED]"
+                                      : "  [windowed, WSI present OFF]") : "");
     return 0;
 }
 
@@ -2019,9 +2089,11 @@ static void runPresent(VkApp& a, Provider& up, ffxContext& upCtx, bool upLive, P
                        bool fgLive, const std::string& vertSpv, const std::string& fragSpv, VkShaderModule vsP, VkShaderModule fsP,
                        int seconds, int fgMult, SDL_Window* win) {
     VkSurfaceKHR surface = VK_NULL_HANDLE;
+    std::printf("  wsi step 1/6: creating the window surface on the app instance\n");
     if (SDL_Vulkan_CreateSurface(win, a.instance, &surface) != SDL_TRUE || !surface) {
         std::printf("NO_SURFACE: SDL_Vulkan_CreateSurface failed\n"); return; }
     a.surface = surface;
+    std::printf("  wsi step 2/6: surface created, querying capabilities\n");
     VkSurfaceCapabilitiesKHR cap{};
     if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(a.physical, surface, &cap) != VK_SUCCESS || !cap.supportedUsageFlags) {
         std::printf("NO_CAPS: surface unsupported\n"); return; }
@@ -2032,6 +2104,7 @@ static void runPresent(VkApp& a, Provider& up, ffxContext& upCtx, bool upLive, P
     if (ext.width > cap.maxImageExtent.width) ext.width = cap.maxImageExtent.width;
     if (ext.height > cap.maxImageExtent.height) ext.height = cap.maxImageExtent.height;
     a.surfExtent = ext;
+    std::printf("  wsi step 3/6: capabilities OK, querying surface formats\n");
     uint32_t nf = 0; vkGetPhysicalDeviceSurfaceFormatsKHR(a.physical, surface, &nf, nullptr);
     std::vector<VkSurfaceFormatKHR> fmts(nf);
     if (nf) vkGetPhysicalDeviceSurfaceFormatsKHR(a.physical, surface, &nf, fmts.data());
@@ -2043,6 +2116,7 @@ static void runPresent(VkApp& a, Provider& up, ffxContext& upCtx, bool upLive, P
     a.imageCount = icount;
     // If the driver/loader exposes no present mode, the WSI path is unavailable on this host: bail cleanly
     // BEFORE creating a swapchain (the loader would mask a NULL driver function with a bogus handle -> SIGSEGV).
+    std::printf("  wsi step 4/6: %u surface formats, querying present modes\n", nf);
     uint32_t nModes = 0;
     if (vkGetPhysicalDeviceSurfacePresentModesKHR(a.physical, surface, &nModes, nullptr) != VK_SUCCESS || nModes == 0) {
         std::printf("NO_PRESENT_MODES: driver exposes no WSI present path on this host; skipping present.\n");
@@ -2053,15 +2127,68 @@ static void runPresent(VkApp& a, Provider& up, ffxContext& upCtx, bool upLive, P
     sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     sci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR; sci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
     sci.clipped = VK_TRUE; sci.oldSwapchain = VK_NULL_HANDLE;
+    // THE CALL THAT USED TO RESOLVE TO A NULL DRIVER FUNCTION. With VK_KHR_swapchain enabled at device
+    // level this is now a REAL call into the driver, so the step line below separates "the WSI path is
+    // broken on this host" from "the app uses it wrongly" - which is exactly the distinction the crash
+    // (measured in a later run) needs.
+    std::printf("  wsi step 5/6: %u present modes, creating the swapchain (%ux%u, %u images, fmt=%d)\n",
+                nModes, ext.width, ext.height, icount, (int)sf.format);
     if (vkCreateSwapchainKHR(a.device, &sci, nullptr, &a.swap) != VK_SUCCESS || !a.swap) {
         std::printf("NO_SWAPCHAIN: vkCreateSwapchainKHR failed\n"); return; }
-    uint32_t nn = 0; vkGetSwapchainImagesKHR(a.device, a.swap, &nn, nullptr);
-    std::vector<VkImage> imgs(nn); if (nn) vkGetSwapchainImagesKHR(a.device, a.swap, &nn, imgs.data());
+    std::printf("  wsi step 6/6: swapchain created, resolving the REST of the present API by NAME\n");
+    // WHY THIS BLOCK EXISTS, AND WHAT IT IS FOR: this run crashed with a core dump at the FIRST call after
+    // vkCreateSwapchainKHR. Calling a command the device does not export is not an error code, it is a
+    // NULL FUNCTION POINTER through the loader, i.e. exactly a SIGSEGV - the same shape the Frame Generation
+    // substrate taught already ("caller device exports none of: vkGetDescriptorEXT"). So the whole present
+    // surface is asked of the device BEFORE any of it is called, and a NULL answer ends the path CLEANLY
+    // instead of crashing it. This turns "rc=139, nothing printed" into a named missing entry point.
+    std::vector<std::string> wsiMissing;
+    for (const char* name : {"vkGetSwapchainImagesKHR", "vkAcquireNextImageKHR", "vkQueuePresentKHR",
+                            "vkDestroySwapchainKHR", "vkGetDeviceQueue"})
+        if (!vkGetDeviceProcAddr(a.device, name)) wsiMissing.push_back(name);
+    std::printf("  wsi api on the app device: %s\n",
+                wsiMissing.empty() ? "ALL RESOLVE" : "MISSING: see the list below");
+    for (const auto& name : wsiMissing) std::printf("    NULL entry point: %s\n", name.c_str());
+    if (!wsiMissing.empty()) {
+        // Refuse, clean up, and hand back to the software-blit path: the app must not call what is not there.
+        // The destroy call itself is resolved by name first, because if vkDestroySwapchainKHR is the missing
+        // one, "cleaning up" would be the crash.
+        if (auto destroySwap = reinterpret_cast<PFN_vkDestroySwapchainKHR>(
+                vkGetDeviceProcAddr(a.device, "vkDestroySwapchainKHR")); destroySwap)
+            destroySwap(a.device, a.swap, nullptr);
+        a.swap = VK_NULL_HANDLE;
+        vkDestroySurfaceKHR(a.instance, a.surface, nullptr);
+        a.surface = VK_NULL_HANDLE;
+        return;
+    }
+    uint32_t nn = 0;
+    std::printf("  wsi 6a: calling vkGetSwapchainImagesKHR (count query)\n");
+    vkGetSwapchainImagesKHR(a.device, a.swap, &nn, nullptr);
+    std::printf("  wsi 6b: image count = %u\n", nn);
+    // A COUNT THE DRIVER REPORTS IS USED TO SIZE A BUFFER, so an absurd answer is refused rather than
+    // allocated around and written through: this is the shape that turns a bad driver reply into a crash
+    // several lines later, far from the call that was actually wrong. A 1440x1080 window never needs more
+    // than a handful of images, and the ceiling below is a measurement guard, not a capability claim.
+    if (nn < 1u || nn > 16u) {
+        std::printf("NO_SWAPCHAIN_IMAGES: driver answered an implausible image count (%u)\n", nn);
+        if (auto destroySwap = reinterpret_cast<PFN_vkDestroySwapchainKHR>(
+                vkGetDeviceProcAddr(a.device, "vkDestroySwapchainKHR")); destroySwap)
+            destroySwap(a.device, a.swap, nullptr);
+        a.swap = VK_NULL_HANDLE;
+        vkDestroySurfaceKHR(a.instance, a.surface, nullptr);
+        a.surface = VK_NULL_HANDLE;
+        return;
+    }
+    std::vector<VkImage> imgs(nn);
+    std::printf("  wsi 6c: fetching the %u image handles\n", nn);
+    vkGetSwapchainImagesKHR(a.device, a.swap, &nn, imgs.data());
+    std::printf("  wsi 6d: handles fetched, creating per-image views + depth\n");
     if (nn < 1) { std::printf("NO_SWAPCHAIN_IMAGES: driver present path unavailable (loader NULL)\n");
         vkDestroySwapchainKHR(a.device, a.swap, nullptr); a.swap = VK_NULL_HANDLE;
         vkDestroySurfaceKHR(a.instance, a.surface, nullptr); a.surface = VK_NULL_HANDLE; return; }
     a.scColor = imgs; a.scColorView.resize(nn); a.scDepth.resize(nn); a.scDepthView.resize(nn); a.scDepthMem.resize(nn);
     for (uint32_t i = 0; i < nn; ++i) {
+        std::printf("  wsi 6e: image %u/%u: colour view\n", i, nn);
         VkImageViewCreateInfo ci{}; ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO; ci.image = imgs[i];
         ci.viewType = VK_IMAGE_VIEW_TYPE_2D; ci.format = sf.format; ci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCreateImageView(a.device, &ci, nullptr, &a.scColorView[i]);
@@ -2075,10 +2202,12 @@ static void runPresent(VkApp& a, Provider& up, ffxContext& upCtx, bool upLive, P
         VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, mr.size, mi};
         vkAllocateMemory(a.device, &ai, nullptr, &a.scDepthMem[i]);
         vkBindImageMemory(a.device, a.scDepth[i], a.scDepthMem[i], 0);
+        std::printf("  wsi 6f: image %u/%u: depth view\n", i, nn);
         VkImageViewCreateInfo dv{}; dv.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO; dv.image = a.scDepth[i];
         dv.viewType = VK_IMAGE_VIEW_TYPE_2D; dv.format = VK_FORMAT_D32_SFLOAT; dv.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
         vkCreateImageView(a.device, &dv, nullptr, &a.scDepthView[i]);
     }
+    std::printf("  wsi 7: swapchain images wired, continuing with the present pipeline\n");
     auto mkFmt = [&](VkFormat f, VkExtent2D e, VkImageUsageFlags u, VkImage& im, VkImageView& vw,
                      VkDeviceMemory& mem, VkImageAspectFlags asp) {
         VkImageCreateInfo ic{}; ic.sType=VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO; ic.imageType=VK_IMAGE_TYPE_2D; ic.format=f;
@@ -2098,22 +2227,35 @@ static void runPresent(VkApp& a, Provider& up, ffxContext& upCtx, bool upLive, P
     // R16G16B16A16_FLOAT / B10G11R11 / RGB9E5 (the old RGBA8 colour claim is why this dispatch returned PARAMETER
     // and never ran), and the depth role must CLAIM R32_FLOAT + the DEPTHTARGET usage bit so the provider binds the
     // app's REAL D32_SFLOAT depth ATTACHMENT with the DEPTH aspect.
+    // STAGE PRINTS THROUGH THE RIG IMAGES + PIPELINE, one per creation, because the run crashed in this
+    // neighbourhood with no line between `wsi 7` and the failure: five near-identical mkFmt calls and a
+    // pipeline creation, any of which can be the one that dies, and only the LAST printed line says which.
+    std::printf("  wsi 8a: rig colour FP16 %ux%u\n", kRenderW, kRenderH);
     mkFmt(VK_FORMAT_R16G16B16A16_SFLOAT,{kRenderW,kRenderH},VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,colR,colRV,colRM,VK_IMAGE_ASPECT_COLOR_BIT);
+    std::printf("  wsi 8b: rig depth D32\n");
     mkFmt(VK_FORMAT_D32_SFLOAT,{kRenderW,kRenderH},VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,triDepth,triDepthV,triDepthM,VK_IMAGE_ASPECT_DEPTH_BIT);
+    std::printf("  wsi 8c: rig depth-as-float R32\n");
     mkFmt(VK_FORMAT_R32_SFLOAT,{kRenderW,kRenderH},VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT,depR,depRV,depRM,VK_IMAGE_ASPECT_COLOR_BIT);
+    std::printf("  wsi 8d: rig motion vectors RG16\n");
     mkFmt(VK_FORMAT_R16G16_SFLOAT,{kRenderW,kRenderH},VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT,mvR,mvRV,mvRM,VK_IMAGE_ASPECT_COLOR_BIT);
+    std::printf("  wsi 8e: FSR storage output %ux%u\n", ext.width, ext.height);
     mkFmt(VK_FORMAT_R16G16B16A16_SFLOAT,ext,VK_IMAGE_USAGE_STORAGE_BIT|VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT,outU,outUV,outUM,VK_IMAGE_ASPECT_COLOR_BIT);
     if (!colR || !triDepth || !mvR || !outU) { std::printf("NO_RIG_IMAGES: FSR input images could not be created\n"); return; }
     // Triangle pipeline bound to the FP16 colour + D32 depth attachment pair. Fresh SPIR-V modules are loaded here
     // because setupPipeline OWNS their destruction (the handles main created were already retired with it).
     VkPipeline renderPipe{VK_NULL_HANDLE};
     {
+        std::printf("  wsi 9: loading the rig SPIR-V modules\n");
         auto v2 = mkShader(a, vertSpv), f2 = mkShader(a, fragSpv);
+        std::printf("  wsi 9b: shader modules %s / %s, creating the rig pipeline\n",
+                    v2 != VK_NULL_HANDLE ? "ok" : "NULL", f2 != VK_NULL_HANDLE ? "ok" : "NULL");
         if (v2 != VK_NULL_HANDLE && f2 != VK_NULL_HANDLE) setupPipeline(a, v2, f2, VK_FORMAT_R16G16B16A16_SFLOAT, renderPipe);
+        std::printf("  wsi 9c: rig pipeline handle %s\n", renderPipe != VK_NULL_HANDLE ? "ok" : "NULL");
     }
     if (renderPipe == VK_NULL_HANDLE) { std::printf("NO_RENDER_PIPELINE: FSR rig pipeline could not be created\n"); return; }
     // One-time layout + clear pass (mirrors setupFsrRig): motion vectors = (0,0) here, since this host supplies no
     // motion-vector pass, and both inputs end up SHADER_READ_ONLY while the storage output ends up GENERAL.
+    std::printf("  wsi 10: layout+clear pass (two barriers, two clears, submit+wait)\n");
     {
         VkCommandBuffer cc{VK_NULL_HANDLE};
         VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,nullptr,a.cmdPool,VK_COMMAND_BUFFER_LEVEL_PRIMARY,1};
@@ -2137,11 +2279,14 @@ static void runPresent(VkApp& a, Provider& up, ffxContext& upCtx, bool upLive, P
              .dstAccessMask=(VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT),.oldLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
              .newLayout=VK_IMAGE_LAYOUT_GENERAL,.image=outU,.subresourceRange=cRange}};
         vkCmdPipelineBarrier(cc,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_DEPENDENCY_BY_REGION_BIT,0,nullptr,0,nullptr,2,toUse);
+        std::printf("  wsi 10b: clear pass recorded, submitting\n");
         vkEndCommandBuffer(cc);
         VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO,nullptr,0,nullptr,nullptr,1,&cc,0,nullptr};
         vkQueueSubmit(a.queue,1,&si,VK_NULL_HANDLE); vkQueueWaitIdle(a.queue); vkFreeCommandBuffers(a.device,a.cmdPool,1,&cc);
     }
+    std::printf("  wsi 11: clear pass finished\n");
     // present pipeline: fragment samples a FP16 texture (binding 0) + 16-byte push constants
+    std::printf("  wsi 12: present sampler descriptor-set layout\n");
     VkDescriptorSetLayout samplerSet{VK_NULL_HANDLE};
     { VkDescriptorSetLayoutBinding b{.binding=0,.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,.descriptorCount=1,.stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT};
       VkDescriptorSetLayoutCreateInfo li{.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,.bindingCount=1,.pBindings=&b};
@@ -2166,20 +2311,77 @@ static void runPresent(VkApp& a, Provider& up, ffxContext& upCtx, bool upLive, P
           {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,VK_SHADER_STAGE_FRAGMENT_BIT,fsP,"main",nullptr}};
         VkPipelineRenderingCreateInfo rr{.sType=VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,.colorAttachmentCount=1,.pColorAttachmentFormats=&a.presentFmt};
         VkGraphicsPipelineCreateInfo gci{.sType=VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,.pNext=&rr,.stageCount=2,.pStages=st,.pVertexInputState=&vi,.pInputAssemblyState=&ia,.pViewportState=&vp,.pRasterizationState=&rs,.pMultisampleState=&ms,.pColorBlendState=&cb,.pDynamicState=&ds,.layout=presentLayout};
+        std::printf("  wsi 13: creating the present pipeline (colorAttachment fmt=%d)\n", (int)a.presentFmt);
         vkCreateGraphicsPipelines(a.device,VK_NULL_HANDLE,1,&gci,nullptr,&presentPipe);
+        std::printf("  wsi 13b: present pipeline %s\n", presentPipe != VK_NULL_HANDLE ? "ok" : "NULL");
     }
+    std::printf("  wsi 14: descriptor pool + sampler set\n");
     VkDescriptorPool pPool{VK_NULL_HANDLE};
-    { VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,4};
-      VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,nullptr,0,1,1,&ps};
-      vkCreateDescriptorPool(a.device,&pi,nullptr,&pPool); }
+    // EVERY CALL IN THIS BLOCK NOW RETURNS ITS CODE + HANDLE, because a run crashed INSIDE this block with
+    // NONE of these results checked: a NULL pool or a NULL set is not an error the present loop can survive,
+    // and passing one on is how a driver-side NULL FUNCTION POINTER or a bad handle becomes a SIGSEGV far from
+    // the call that was actually wrong. Naming the call is the fix's precondition, not the fix itself.
+    {
+        VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4};
+        VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr, 0, 1, 1, &ps};
+        const auto rcPool = vkCreateDescriptorPool(a.device, &pi, nullptr, &pPool);
+        std::printf("  wsi 14a: pool create rc=%d handle=%s\n", (int)rcPool, pPool ? "ok" : "NULL");
+    }
+    std::printf("  wsi 14z: sampler layout handle=%s\n", samplerSet ? "ok" : "NULL");
+    // Declared here so the present loop can DESTROY the sampler after its last use (the layout owns nothing).
+    VkSampler samplerCreated{VK_NULL_HANDLE};
     VkDescriptorSet descP{VK_NULL_HANDLE};
-    { VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,nullptr,pPool,1,&samplerSet};
-      vkAllocateDescriptorSets(a.device,&ai,&descP);
-      VkDescriptorImageInfo ii{VK_NULL_HANDLE,outUV,VK_IMAGE_LAYOUT_GENERAL};
-      VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,nullptr,descP,0,0,1,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,&ii,nullptr,nullptr};
-      vkUpdateDescriptorSets(a.device,1,&w,0,nullptr); }
+    if (pPool && samplerSet) {
+        VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, pPool, 1, &samplerSet};
+        const auto rcSet = vkAllocateDescriptorSets(a.device, &ai, &descP);
+        std::printf("  wsi 14b: set allocate rc=%d handle=%s\n", (int)rcSet, descP ? "ok" : "NULL");
+        // THE WRITE ITSELF IS WHERE THE LAST RUN DIED: the set handle was ok, the call vkUpdateDescriptorSets
+        // then SIGSEGVed with NO code to inspect. The one thing that write passes that is not a real object is
+        // the SAMPLER (VK_NULL_HANDLE, which the spec allows: the implementation substitutes its own default).
+        // So a REAL sampler object is created here and written instead - if the crash disappears, this harness
+        // was feeding a legal-but-unimplemented combination to the driver; if it stays, the driver is the fault
+        // and the guard below is what keeps the app alive.
+        if (descP) {
+            VkSampler presentSampler{VK_NULL_HANDLE};
+            VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+            si.magFilter = VK_FILTER_LINEAR; si.minFilter = VK_FILTER_LINEAR;
+            si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST; si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            si.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK; si.unnormalizedCoordinates = VK_FALSE;
+            const auto rcS = vkCreateSampler(a.device, &si, nullptr, &presentSampler);
+            std::printf("  wsi 14d: sampler create rc=%d handle=%s\n", (int)rcS, presentSampler ? "ok" : "NULL");
+            (void)samplerCreated;
+            samplerCreated = presentSampler;
+            VkDescriptorImageInfo ii{presentSampler ? presentSampler : VK_NULL_HANDLE, outUV,
+                                     VK_IMAGE_LAYOUT_GENERAL};
+            VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descP, 0, 0, 1,
+                                   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ii, nullptr, nullptr};
+            // vkUpdateDescriptorSets RETURNS void: there is no code to print, so what is recorded is the
+            // SET handle and the fact the call returned at all. A driver-side failure there shows up as a
+            // crash or a corrupted set rather than a code, which is why the set handle is re-checked below.
+            vkUpdateDescriptorSets(a.device, 1, &w, 0, nullptr);
+            std::printf("  wsi 14c: descriptor write issued (void API), set handle=%s\n",
+                        descP ? "ok" : "NULL");
+        }
+    }
+    if (!pPool || !samplerSet || !descP) {
+        // The present loop cannot run without this set, and the WSI objects must not be left behind either:
+        // end the path HERE with a NAMED reason, so the caller falls back to the software-blit window that
+        // has been measured to work, instead of dying in the driver.
+        std::printf("NO_PRESENT_SET: pool/layout/set incomplete -> present path skipped, not crashed\n");
+        if (auto destroySwap = reinterpret_cast<PFN_vkDestroySwapchainKHR>(
+                vkGetDeviceProcAddr(a.device, "vkDestroySwapchainKHR")); destroySwap)
+            destroySwap(a.device, a.swap, nullptr);
+        a.swap = VK_NULL_HANDLE;
+        vkDestroySurfaceKHR(a.instance, a.surface, nullptr);
+        a.surface = VK_NULL_HANDLE;
+        return;
+    }
+    std::printf("  wsi 15: %u presentation fences\n", nn);
     std::vector<VkFence> fences(nn, VK_NULL_HANDLE);
     for (uint32_t i = 0; i < nn; ++i) { VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,nullptr,VK_FENCE_CREATE_SIGNALED_BIT}; vkCreateFence(a.device,&fi,nullptr,&fences[i]); }
+    if (samplerCreated) std::printf("  wsi 15s: the present sampler is a REAL object (not the NULL default)\n");
+    std::printf("  wsi 16: reading device properties, entering the present loop\n");
     VkPhysicalDeviceProperties p{}; vkGetPhysicalDeviceProperties(a.physical, &p);
     std::printf("\n=== WINDOWED PRESENT: 3D triangle 1280x720 -> REAL AMD FSR upscale -> %ux%u (%ds, --fg=%dx) ===\n",
                 (unsigned)ext.width, (unsigned)ext.height, seconds, fgMult);
@@ -2204,7 +2406,21 @@ static void runPresent(VkApp& a, Provider& up, ffxContext& upCtx, bool upLive, P
         if (el >= 1.0) fps = (int)((frame - lastFpsFrame) / (el - lastFpsT));
         uint32_t i = 0; VkSemaphore acq{VK_NULL_HANDLE};
         { VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO}; vkCreateSemaphore(a.device, &si, nullptr, &acq); }
-        vkAcquireNextImageKHR(a.device, a.swap, UINT64_MAX, acq, VK_NULL_HANDLE, &i);
+        // THE ACQUIRE RESULT IS CHECKED AND THE INDEX BOUNDED. `i` indexes a vector sized from the swapchain
+        // image count, so trusting an unchecked acquire is the classic shape where the failure shows up as a
+        // SIGSEGV several calls later (waiting on fences[i] with a garbage index) rather than here. A failed
+        // acquire skips the frame instead.
+        if (const auto rcAcq = vkAcquireNextImageKHR(a.device, a.swap, UINT64_MAX, acq, VK_NULL_HANDLE, &i);
+            rcAcq != VK_SUCCESS) {
+            if (frame < 4u) std::printf("  wsi acquire rc=%d on frame %u -> frame skipped\n", (int)rcAcq, frame);
+            if (acq) vkDestroySemaphore(a.device, acq, nullptr);
+            continue;
+        }
+        if (i >= nn) {
+            if (frame < 4u) std::printf("  wsi acquire returned image index %u outside the %u-image swapchain -> frame skipped\n", i, nn);
+            if (acq) vkDestroySemaphore(a.device, acq, nullptr);
+            continue;
+        }
         float phase = (float)el * 2.0f;
         Mat4 model = mul(translate(0.55f * std::sinf(phase), 0.25f * std::cosf(phase * 0.8f), 0.0f), rotateZ(phase * 0.7f));
         Mat4 proj = ortho(-1.6f, 1.6f, -0.9f, 0.9f, -1.0f, 1.0f); Mat4 view; ShaderData d;
@@ -2265,6 +2481,18 @@ static void runPresent(VkApp& a, Provider& up, ffxContext& upCtx, bool upLive, P
             pr.commandList=(void*)fc;
             pr.depth=mkRes(triDepth,kRenderW,kRenderH,FFX_API_SURFACE_FORMAT_R32_FLOAT,FFX_API_RESOURCE_USAGE_DEPTHTARGET,FFX_API_RESOURCE_STATE_COMPUTE_READ);
             pr.motionVectors=mkRes(mvR,kRenderW,kRenderH,FFX_API_SURFACE_FORMAT_R16G16_FLOAT,FFX_API_RESOURCE_USAGE_READ_ONLY,FFX_API_RESOURCE_STATE_COMPUTE_READ);
+            // THE CAMERA-INFORMATION BLOCK (type 0x0002000a) LINKED AFTER Prepare. THIS CALL SITE WAS MISSING
+            // IT: the log printed `prepare refused: camera-info block not linked`, so a refusal here was the HOST's
+            // omission - the ladder and the window-rig paths, which DO link it, get accepted and are refused only
+            // by the algorithm. Same orthonormal basis as those paths, so the present loop now speaks the same
+            // host contract as the rest of the tree.
+            ffxDispatchDescFrameGenerationPrepareCameraInfo cam{};
+            cam.header.type = 0x0002000au;
+            cam.cameraPosition[0]=0.0f; cam.cameraPosition[1]=0.0f; cam.cameraPosition[2]=0.0f;
+            cam.cameraUp[0]=0.0f; cam.cameraUp[1]=1.0f; cam.cameraUp[2]=0.0f;
+            cam.cameraRight[0]=1.0f; cam.cameraRight[1]=0.0f; cam.cameraRight[2]=0.0f;
+            cam.cameraForward[0]=0.0f; cam.cameraForward[1]=0.0f; cam.cameraForward[2]=-1.0f;
+            pr.header.pNext = &cam.header;
             ffxReturnCode_t qr=fg.dispatch(&fgCtx,&pr.header);
             const uint32_t genFrames = (uint32_t)(fgMult < 1 ? 1 : (fgMult > 3 ? 3 : fgMult));  // 1..3: one base frame
             ffxDispatchDescFrameGeneration gg{}; gg.header.type=FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION; gg.numGeneratedFrames=genFrames; gg.minMaxLuminance[0]=0.0f; gg.minMaxLuminance[1]=1.0f;
@@ -2300,9 +2528,12 @@ static void runPresent(VkApp& a, Provider& up, ffxContext& upCtx, bool upLive, P
           vkCmdEndRendering(cc);
           vkEndCommandBuffer(cc);
           VkSubmitInfo s{}; s.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO; s.waitSemaphoreCount=1; s.pWaitSemaphores=&acq; s.commandBufferCount=1; s.pCommandBuffers=&cc;
+          if (frame < 2u) std::printf("  wsi p1: present draw recorded into image %u, submitting\n", i);
           vkQueueSubmit(a.queue,1,&s,fences[i]);
           VkPresentInfoKHR pi{}; pi.sType=VK_STRUCTURE_TYPE_PRESENT_INFO_KHR; pi.swapchainCount=1; pi.pSwapchains=&a.swap; pi.pImageIndices=&i;
+          if (frame < 2u) std::printf("  wsi p2: submitted, calling vkQueuePresentKHR\n");
           vkQueuePresentKHR(a.queue,&pi);
+          if (frame < 2u) std::printf("  wsi p3: presented\n");
           vkFreeCommandBuffers(a.device,a.cmdPool,1,&cc); }
         std::printf("  frame %4u: present=FSR(%ux%u) t=%.2fs fps=%d  interpolated=0 generated=%d [FG req=%dx]\n",
                     frame, ext.width, ext.height, el, (el>0.3?(int)(frame/el):0), fgGen, fgMult);
@@ -2330,6 +2561,10 @@ static void runPresent(VkApp& a, Provider& up, ffxContext& upCtx, bool upLive, P
     if (presentPipe) vkDestroyPipeline(a.device,presentPipe,nullptr);
     if (presentLayout) vkDestroyPipelineLayout(a.device,presentLayout,nullptr);
     if (samplerSet) vkDestroyDescriptorSetLayout(a.device,samplerSet,nullptr);
+    // The sampler object this function created is destroyed with the objects of the same pass, BEFORE the
+    // swapchain goes: nothing reads it after the last present, and the handle belongs to the same device.
+    if (samplerCreated) vkDestroySampler(a.device, samplerCreated, nullptr);
+    samplerCreated = VK_NULL_HANDLE;
     vkDestroySwapchainKHR(a.device, a.swap, nullptr); a.swap = VK_NULL_HANDLE;
     vkDestroySurfaceKHR(a.instance, a.surface, nullptr); a.surface = VK_NULL_HANDLE;
 }

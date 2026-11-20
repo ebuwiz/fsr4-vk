@@ -52,11 +52,25 @@ add `--window` (default 30 s; `--window=N` to change). It links **SDL2** (`sdl2-
 552 frames at a measured ~25 fps (~40 ms/frame end to end, of which AMD's own dispatch is 0.6-0.8 ms), and a 6 s
 spot-check presented 137 frames at ~26-27 fps.
 * `--window --present`: the real Vulkan-WSI path (SDL window surface → swapchain → AMD-FSR-upscaled blit
-  1280x720 → 1440x1080), logging one line per presented frame. The skip observed here (`NO_SWAPCHAIN`) was
-  PRODUCED by that harness bug, not by the driver: RADV implements `vkCreateSwapchainKHR`. With the extension now
-  requested at both levels this path should reach a real GPU-presented blit — an EXPECTATION, not a measurement,
-  until it is re-run. The failure path stays safe (`NO_PRESENT_MODES` / `NO_SWAPCHAIN`, never a crash), which is
-  why the pre-fix observation is recorded as "compiled-and-format-correct" and nothing more.
+  1280x720 → 1440x1080). MEASURED NOW, STAGE BY STAGE, because the path prints every stage and stdout is
+  unbuffered (a crash used to leave NO trace at all, which is why this bullet used to be speculation):
+  `VK_KHR_swapchain` is offered by the device and `vkCreateSwapchainKHR` RESOLVES with the extension enabled at
+  DEVICE level ONLY — the instance-level request added by the first attempt at this fix made `vkCreateInstance`
+  FAIL, which is what produced a bare `NO_DEVICE` and killed the app entirely; that request is gone, and `initVulkan`
+  now retries each create WITHOUT the added extension and prints WHICH step failed.
+  What the run reaches: surface → 90 surface formats → 3 present modes → swapchain created (1440x1080, 3 images,
+  fmt=58) → its images + views + depth → rig images + pipeline → clear pass → present pipeline → descriptor set.
+  Two HOST bugs inside that block were found and fixed: the sampler write used `VK_NULL_HANDLE` as its SAMPLER
+  (spec-legal, but `vkUpdateDescriptorSets` then SIGSEGVed, so a REAL `vkCreateSampler` object is written now), and
+  this call site never LINKED the camera-info block (0x0002000a) after Prepare, so the provider refused Prepare
+  HERE while every other path in the tree was accepted. `vkAcquireNextImageKHR` is now result-checked and its
+  index bounded, since a garbage index into `fences[]` is the classic delayed-SIGSEGV shape.
+  STILL MEASURED BROKEN: the first frame dies INSIDE `vkQueueSubmit` of the present-draw buffer — the log prints
+  `wsi p1` (submitting) and never `wsi p2`. So `--present` is a LOCALIZED WSI bug in this harness, not a driver
+  verdict, and it is NOT crash-safe today: the guards cover setup, not a death inside the driver. The validation
+  layer is installed on this host now, so the next experiment is
+  `VK_LAYER_KHRONOS_validation=1 build/FGTest … --present` read for the VUID it names. The DEFAULT window path
+  touches none of this and works.
 
 ```sh
 # after `bash tools/FGTest/build.sh` has produced the .so's + triangle.*.spv:
@@ -96,12 +110,14 @@ runtime, not a different call sequence here. If the machine's Vulkan loader does
   - `ffxCreateContext(frame-generation) = 0` (OK) — the device meets the FG execution contract
     (cooperative matrix, 8/16-bit storage, runtime descriptors, etc.).
   - `ffxQuery(GET_VERSIONS)` advertises the real classic id `0xF600000001000002`.
-  - `ffxQuery(GET_GPUMEMORYUSAGE)`: on a device WITHOUT the descriptor-buffer transport the provider refuses
-    rather than inventing a size. The value this file used to record — `3` — was a property of THIS harness's
-    under-provisioned device, not of the algorithm. The ladder now hands the FG provider `a.fgDevice`, a second
-    logical device created WITH `VK_EXT_descriptor_buffer`, so the EXPECTED answer on this host is OK with the
-    numbers the probe measures (`total=66,365,568 B`, `aliasable=10,368 B`). The printed line states which branch
-    happened; the OK-with-bytes branch is COMPILE-VERIFIED ONLY and must be re-run to be called a measurement.
+  - `ffxQuery(GET_GPUMEMORYUSAGE) = 3 (RUNTIME_ERROR)` **in the ladder, and by design**: the ladder asks BEFORE any
+    `Prepare`, and the substrate is allocated at `Prepare`, so there are no allocations behind the number yet and
+    the provider refuses instead of inventing one. The DEVICE question is settled and MEASURED: the ladder's backend
+    block names `a.fgDevice` (a second logical device created WITH `VK_EXT_descriptor_buffer`), and once `Prepare`
+    runs the substrate IS built and usage becomes reportable — `phase1 substrate render=480x270 ... pipelines=92/92
+    descriptors=304/304 ... usage=35261568B (aliasable 10368B)`, and `usage=47933568B` on the 1280x720 present rig.
+    The byte total SCALES with the extent the caller names; the probe's `66,365,568 B` belongs to its plan-sized
+    query, so no one of these is a constant of the algorithm.
   - `ffxConfigure(host contract) = 0` (OK) — swapchain/present/framegen callbacks accepted.
   - `ffxDispatch(Generate) BEFORE Prepare = 6` (PARAMETER) — the order guard is live, so the ladder below is
     not a no-op: `Configure → Prepare → generate` really is enforced.
@@ -204,10 +220,12 @@ enabled `VK_EXT_descriptor_buffer`**. This harness DOES now carry that transport
 device (`VkApp::fgDevice`, created over the SAME physical device) that ONLY the Frame Generation backend block
 names. It is a separate device because turning the transport on in the device that builds this sample's own GRAPHICS
 pipeline was measured to crash inside the driver (SIGSEGV in `libvulkan_radeon` from `setupPipeline`) — that half
-is a driver-side fact and still stands, which is why the app keeps rendering on `a.device`. So the substrate refusal
-the window printed on every frame (`caller device exports none of: vkGetDescriptorEXT`) should be GONE and the
-ladder's memory query should answer with bytes. Both are COMPILE-VERIFIED ONLY: the window must be re-run before
-either is called a measurement, and until then the FG numbers in this file describe the PRE-FIX state. Nothing here changed about `generate`: no descriptor write, no bind, no command recorded,
+is a driver-side fact and still stands, which is why the app keeps rendering on `a.device`. BOTH halves are now
+MEASURED rather than expected: the window prints `window FG ffxCreateContext = 0 (0=OK)`, then on every frame
+`phase1 substrate render=480x270 ... pipelines=92/92 ... usage=35261568B (aliasable 10368B)` and
+`prepare substrate state: substrate built (usage reportable)`, with NO `exports none of` line anywhere; a 5-second
+window run reported `host_frames=138 ... last_generate=3 prepare=3 ... delivered 1X of requested 2X` at ~27 fps.
+Nothing here changed about `generate`: no descriptor write, no bind, no command recorded,
 no dispatch — the refusal is the same honest one, one allocation layer deeper.
 
 The **upscaler** provider genuinely creates a live context in-app: after attaching the `fsr4vk` backend(3) **+ instance(4)**

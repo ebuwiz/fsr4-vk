@@ -28,6 +28,14 @@ for a in "$@"; do
         --seconds=*)  DURATION="${a#--seconds=}" ;;
         --headless)   MODE=headless ;;
         --build)      MODE=build-only ;;
+        --window|--window=*)
+            # run.sh drives the window itself, so it used to IGNORE a bare --window and say so on stderr.
+            # Accepting it (with an optional =SECONDS) is what the caller obviously meant; the value still
+            # flows into the single --window=DURATION the script passes to the app, so the app never sees two.
+            case "$a" in
+                --window=*) DURATION="${a#--window=}" ;;
+                *) : ;;  # bare --window keeps the default (or an earlier --seconds=)
+            esac ;;
         --hud-dump|--fg=*|--present) EXTRA+=("$a") ;;
         *) echo "run.sh: ignoring unknown argument '$a'" >&2 ;;
     esac
