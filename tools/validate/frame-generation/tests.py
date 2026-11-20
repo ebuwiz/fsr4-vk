@@ -47,6 +47,22 @@ PROVIDER_SO = ROOT / "build/linux/amd_fidelityfx_framegeneration_vk.so"
 EXEC_EXE = ROOT / "build/linux/framegeneration-exec"
 FFX_EXPORTS = {"ffxCreateContext", "ffxDestroyContext", "ffxConfigure", "ffxQuery", "ffxDispatch"}
 
+# The extension names a Vulkan harness in THIS tree may legitimately ask for, HARVESTED from the pinned
+# Vulkan headers rather than from memory: every *_EXTENSION_NAME macro and the string value it expands to.
+# A harness naming anything outside this set has a typo that silently removes a capability - the create call
+# still succeeds, the entry point is simply missing - which is why the check lives in a gate and not in prose.
+_EXT_MACRO_NAMES: set = set()
+_EXT_MACRO_VALUES: set = set()
+for _hdr in sorted((ROOT / "third_party/Vulkan-Headers/include/vulkan").glob("*.h")):
+    # Backslash-newline continuations are joined first: some *_EXTENSION_NAME macros are split across lines
+    # in the headers, and a naive per-line scan would call those "not defined".
+    _text = _hdr.read_text().replace("\\\n", " ")
+    for _macro, _value in re.findall(r'#\s*define\s+(VK[A-Z0-9_]+_EXTENSION_NAME)\s+"([^"]+)"', _text):
+        _EXT_MACRO_NAMES.add(_macro)
+        _EXT_MACRO_VALUES.add(_value)
+EXT_MACRO_NAMES = frozenset(_EXT_MACRO_NAMES)
+EXT_MACRO_VALUES = frozenset(_EXT_MACRO_VALUES)
+
 
 def run(command):
     return subprocess.run([str(c) for c in command], capture_output=True, text=True)
@@ -1475,6 +1491,54 @@ def test_capture_shim_functional_rig():
               "unbound dispatch ignored")
 
 
+def harness_extension_problems(text, origin):
+    """Unusable extension names a Vulkan harness asks for, as a hard list.
+
+    WHY THIS EXISTS: tools/FGTest once requested the literal "VK_xr_swapchain" -- a name that is not an extension
+    at all -- so VK_KHR_swapchain was never enabled, vkCreateSwapchainKHR resolved to NULL, and the log blamed
+    THE DRIVER for what was a HARNESS BUG ("driver lacks vkCreateSwapchainKHR"). A typo in an extension name is
+    SILENT by design: the create call still succeeds, the entry point is just missing, and every later symptom
+    points at the environment. Checking the requested names against the pinned headers makes that class of
+    capability loss a build-time failure instead of a field-measurement mystery.
+    """
+    problems = []
+    # Strip C++ LINE COMMENTS before scanning: prose that discusses a bad name (as the WHY block above and
+    # this tree's own history notes do, quoting the bogus literal to explain it) is not a string literal the
+    # harness hands the driver, and only literals decide what gets enabled. Cutting right of `//` is adequate
+    # here because no string literal in the scanned files contains `//`.
+    code = re.sub(r'//[^\n]*', '', text)
+    for macro in sorted(set(re.findall(r'\b(VK[A-Z0-9_]+_EXTENSION_NAME)\b', code))):
+        if macro not in EXT_MACRO_NAMES:
+            problems.append(f"{origin}: macro {macro} is not defined by the pinned Vulkan headers")
+    # The pattern is deliberately BROAD, then filtered by SHAPE: a real extension name always carries a
+    # LOWERCASE body ("VK_KHR_swapchain", "VK_EXT_descriptor_buffer"), which is also true of the historical
+    # bogus literal "VK_xr_swapchain" - so the shape test still catches that typo, while the ALL-UPPERCASE
+    # Vulkan result codes quoted in error strings ("VK_SUCCESS", "VK_ERROR_OUT_OF_HOST_MEMORY", ...) are
+    # correctly ignored. An earlier revision required an uppercase second token and therefore MISSED the typo.
+    for lit in sorted(set(re.findall(r'"(VK_[A-Za-z0-9_]+)"', code))):
+        if not any(c.islower() for c in lit):
+            continue
+        if lit not in EXT_MACRO_VALUES:
+            problems.append(f'{origin}: extension literal "{lit}" matches no *_EXTENSION_NAME value in the pinned headers')
+    return problems
+
+
+def test_harness_extension_names_are_real():
+    checked = 0
+    for src in (ROOT / "tools/FGTest/main.cpp", ROOT / "tools/framegeneration-probe.cpp",
+                ROOT / "tools/db-command-surface.cpp", ROOT / "src/framegeneration/fg-runtime.cpp"):
+        if not src.is_file():
+            continue
+        checked += 1
+        problems = harness_extension_problems(src.read_text(), src.name)
+        assert not problems, "unusable extension names -> " + "; ".join(problems)
+    assert checked >= 3, f"only {checked} harness sources found to check"
+    # THE CHECKER MUST BITE: the exact historical bug has to be caught by the same code path.
+    caught = harness_extension_problems('    if (hasExt(a.physical, "VK_xr_swapchain"))'
+                                        ' exts.push_back("VK_xr_swapchain");', "regression-sample")
+    assert caught, "extension-name checker failed to catch the historical VK_xr_swapchain typo"
+
+
 def main():
     failures = []
     for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
@@ -1504,7 +1568,8 @@ def main():
                  test_stage_vk_dll_pins_reference_rig,
                  test_capture_ledger_unit_runs,
                  test_capture_shim_builds_against_vulkan_headers,
-                  test_capture_shim_functional_rig):
+                  test_capture_shim_functional_rig,
+                   test_harness_extension_names_are_real):
         name = test.__name__
         try:
             test()

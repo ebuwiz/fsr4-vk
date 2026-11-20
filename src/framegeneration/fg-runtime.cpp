@@ -1398,8 +1398,25 @@ bool PlanRuntime::dispatchOne(std::uint32_t planOrder, std::uint32_t canvasWidth
                          0u, nullptr, 0u, nullptr, 2u, toGeneral);
         VkClearColorValue zero{};
         VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, 1u};
+        // THE OUTPUT IMAGE IS PRE-FILLED WITH A NON-ZERO SENTINEL, and this matters more than anything else
+        // in the design of this measurement: when BOTH images are cleared to zero, a pass that READS zeros and
+        // WRITES zeros leaves the after-hash IDENTICAL to the before-hash, so "it ran and produced nothing"
+        // and "it wrote something" are indistinguishable - which is exactly what the recorded runs showed
+        // (`out_changed=0`, `before == after`). A sentinel makes ANY write visible, including a write of
+        // zeros, and it costs no semantics whatever: these bytes are an arbitrary fill of an image the CALLER
+        // owns, never an input the pass is meant to interpret. The INPUT image stays zero-filled, and the note
+        // says which is which, so the line can be read without guessing.
+        VkClearColorValue sentinel{};
+        sentinel.float32[0] = 0.25f;
+        sentinel.float32[1] = 0.5f;
+        sentinel.float32[2] = 0.75f;
+        sentinel.float32[3] = 1.0f;
         clearImage_(commandBuffer, sampled.image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1u, &range);
-        clearImage_(commandBuffer, storage.image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1u, &range);
+        clearImage_(commandBuffer, storage.image, VK_IMAGE_LAYOUT_GENERAL, &sentinel, 1u, &range);
+        facts.note += "out_prefilled=sentinel(a_write_of_zeros_still_changes_hash) in_prefilled=zero ";
+        // The SB/UB backs stay zero-filled on purpose: their census metric is a COUNT of NON-ZERO BYTES, which
+        // a non-zero pre-fill would silently corrupt (it would count the fill, not the pass). A pass that writes
+        // only zeros into them therefore stays invisible there, and the image note above is what says so.
         // Zero the SB/UB backs too, so a read outside what the pass wrote is defined memory.
         const std::vector<std::uint8_t> chunk(256, 0u);
         for (const Resource* backing : {&storageBacking, &uniformBacking}) {

@@ -95,6 +95,7 @@ struct HudFacts {
     bool fgRefused = false;        // generate returned RUNTIME_ERROR, i.e. honest refusal
     // The counted FRAME numbers, filled by the window path's per-frame Prepare+generate attempts.
     long long fgAttempts = 0;      // generate calls made in this process
+    long long fgCancels = 0;       // of those, the calls that took the documented cancel branch
     long long fgGenerated = 0;     // frames the provider actually DELIVERED, summed over its answers
     int fgCode = 0xFFFF;           // the last generate return code (0 OK, 3 runtime, 1/6 parameter, ...)
     bool fgLive = false;           // false == no FG context in this session (provider .so absent/refused)
@@ -147,6 +148,12 @@ struct VkApp {
     VkInstance instance{VK_NULL_HANDLE};
     VkPhysicalDevice physical{VK_NULL_HANDLE};
     VkDevice device{VK_NULL_HANDLE};
+    // Second logical device over the SAME physical device, created ONLY with VK_EXT_descriptor_buffer
+    // enabled (see initVulkan), and handed to the Frame Generation backend block. The app's own `device`
+    // cannot carry that extension: measured on this host, a device that has descriptorBuffer enabled AND
+    // creates this app's graphics pipeline SIGSEGVs inside the driver while building that pipeline.
+    // VK_NULL_HANDLE when the physical device does not offer the extension at all.
+    VkDevice fgDevice{VK_NULL_HANDLE};
     VkQueue queue{VK_NULL_HANDLE};
     VkFormat colorFmt{VK_FORMAT_R8G8B8A8_UNORM};
     VkFormat depthFmt{VK_FORMAT_D32_SFLOAT};
@@ -263,6 +270,16 @@ static bool initVulkan(VkApp& a, bool windowMode) {
         if (n) SDL_Vulkan_GetInstanceExtensions(gWin, &n, req.data());
         instExts = req;
     }
+    // The loader only exposes VK_KHR_swapchain entry points if the EXTENSION is named at INSTANCE level
+    // too (VkInstanceCreateInfo::ppEnabledExtensionNames), not just at device level. Without this line the
+    // corrected device fix above still yields a NULL vkCreateSwapchainKHR - the exact symptom of the previous
+    // paragraph, so both halves are needed. Appending unconditionally is safe: SDL's own list already
+    // contains VK_KHR_surface, and requesting swapchain on a device that supports it is a no-op in headless.
+    {
+        bool haveSwap = false;
+        for (const auto* e : instExts) if (!std::strcmp(e, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) haveSwap = true;
+        if (!haveSwap) instExts.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    }
     ii.enabledExtensionCount = (uint32_t)instExts.size();
     ii.ppEnabledExtensionNames = instExts.empty() ? nullptr : instExts.data();
     if (vkCreateInstance(&ii, nullptr, &a.instance) != VK_SUCCESS) return false;
@@ -275,7 +292,12 @@ static bool initVulkan(VkApp& a, bool windowMode) {
     if (!a.physical) a.physical = ps[0];
     std::vector<const char*> exts;
     for (const char* e : kContractExtensions) if (hasExt(a.physical, e)) exts.push_back(e);
-    if (hasExt(a.physical, "VK_xr_swapchain")) exts.push_back("VK_xr_swapchain"); // required by the loader for vkCreateSwapchainKHR in window mode
+    // THIS WAS A HARNESS BUG, NOT A DRIVER LIMITATION: the name below is not an extension at all
+    // ("VK_xr_swapchain" does not exist), so VK_KHR_swapchain was never enabled and vkCreateSwapchainKHR
+    // then resolved to NULL - which is exactly the symptom previously logged as "this (software) RADV build
+    // lacks vkCreateSwapchainKHR". RADV implements that entry point. Same fix at instance level below, since
+    // the loader requires the extension named in VkInstanceCreateInfo as well as in the device create.
+    if (hasExt(a.physical, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) exts.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 
     VkPhysicalDeviceFeatures2 base{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
@@ -306,6 +328,42 @@ static bool initVulkan(VkApp& a, bool windowMode) {
     di.ppEnabledExtensionNames = exts.empty() ? nullptr : exts.data();
     if (vkCreateDevice(a.physical, &di, nullptr, &a.device) != VK_SUCCESS) return false;
     vkGetDeviceQueue(a.device, 0, 0, &a.queue);
+
+    // A SECOND LOGICAL DEVICE over the SAME physical device, this one with VK_EXT_descriptor_buffer
+    // enabled, is what the Frame Generation backend block gets (see buildContract). Why not just enable it
+    // on a.device: measured on this host, a device that has descriptorBuffer enabled AND creates this app's
+    // GRAPHICS pipeline SIGSEGVs inside the driver at setupPipeline, so the visible window would die before
+    // drawing a frame. Logical devices are cheap and resources are bound to the physical device, so FG can
+    // allocate its own layouts/pipelines/scratch on the second device while the app renders on the first.
+    // Without this, the FG provider's substrate cannot even be built in the app: it refuses with
+    // "caller device exports none of: vkGetDescriptorEXT", because vkGetDeviceProcAddr on a device created
+    // WITHOUT the extension returns NULL for it (measured: the command IS present at instance scope, which
+    // is why probing the instance misleads; the backend block hands the provider device-scope resolution).
+    {
+        bool dbSupported = hasExt(a.physical, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+        if (dbSupported) {
+            auto fgExts = exts;
+            fgExts.push_back(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+            VkPhysicalDeviceDescriptorBufferFeaturesEXT dbFeat{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
+            // Only `descriptorBuffer` itself is requested: that is exactly what the probe device that DOES
+            // build the substrate enables, and the struct's other members (descriptorBufferCaptureReplay,
+            // ...ImageLayoutIgnored, ...PushDescriptors) are separate optional capabilities this runtime never
+            // asked for. (There are no imageLayout/bufferLayout fields in this struct at all.)
+            dbFeat.descriptorBuffer = VK_TRUE;
+            ssc.pNext = &dbFeat;  // extend the existing chain tail for the second create only
+            VkDeviceCreateInfo di2{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+            di2 = di;
+            di2.pNext = &base;
+            di2.enabledExtensionCount = (uint32_t)fgExts.size();
+            di2.ppEnabledExtensionNames = fgExts.data();
+            if (vkCreateDevice(a.physical, &di2, nullptr, &a.fgDevice) != VK_SUCCESS) {
+                a.fgDevice = VK_NULL_HANDLE;
+                std::fprintf(stderr, "fg-device-skipped: a device with VK_EXT_descriptor_buffer could not be created\n");
+            }
+            ssc.pNext = nullptr;  // leave the first device's chain untouched for anything built later
+        }
+    }
 
     auto mkImg = [&](VkFormat fmt, VkImageUsageFlags usage, VkImage& img, VkImageView& view,
                      VkImageAspectFlags aspect) {
@@ -452,7 +510,7 @@ static ffxReturnCode_t cbFg(ffxDispatchDescFrameGeneration*, void*) { return FFX
 
 // Fill the host-declared enabled-feature block (type 7) + Vulkan backend block (type 3) that BOTH FSR4
 // providers require on their create chain (same layout framegeneration-probe.cpp uses).
-static void buildContract(VkApp& a, FfgEnabledFeaturesDesc& en, FfgBackendDesc& bk) {
+static void buildContract(VkApp& a, FfgEnabledFeaturesDesc& en, FfgBackendDesc& bk, VkDevice backendDevice) {
     en = FfgEnabledFeaturesDesc{};
     en.header = ffxApiHeader{7u, nullptr};
     en.shaderInt16 = en.shaderInt64 = en.shaderFloat16 = en.shaderInt8 = en.storage8Bit = en.storage16Bit = VK_TRUE;
@@ -460,7 +518,16 @@ static void buildContract(VkApp& a, FfgEnabledFeaturesDesc& en, FfgBackendDesc& 
     en.subgroupSizeControl = en.computeDerivativeGroupLinear = en.synchronization2 = en.storageImageWriteWithoutFormat = VK_TRUE;
     bk = FfgBackendDesc{};
     bk.header = ffxApiHeader{3u, &en.header};
-    bk.device = a.device; bk.physicalDevice = a.physical; bk.getDeviceProcAddr = vkGetDeviceProcAddr;
+    // Which device the backend block names decides whether the FG runtime's substrate can be built at all:
+    // it needs VK_EXT_descriptor_buffer, so FG call sites pass a.fgDevice (a second logical device created in
+    // initVulkan with that extension). The upscaler keeps a.device, where it was measured working; passing
+    // it the FG device would be gratuitous risk for a provider that has no need of descriptor buffer.
+    // VK_NULL_HANDLE (device lacks the extension) falls back to a.device, and the FG provider then refuses the
+    // substrate with "caller device exports none of: vkGetDescriptorEXT" - which is the honest, visible signal
+    // that the host device was under-provisioned, not that the algorithm is broken.
+    bk.device = (backendDevice != VK_NULL_HANDLE) ? backendDevice : a.device;
+    bk.physicalDevice = a.physical;
+    bk.getDeviceProcAddr = vkGetDeviceProcAddr;
 }
 
 static void writePPM(const std::string& path, uint32_t w, uint32_t h, const uint8_t* rgba) {
@@ -839,7 +906,7 @@ static ffxReturnCode_t fsrUpscaleFrame(VkApp& a, Provider& up, ffxContext& ctx, 
 static ffxReturnCode_t createUpscaleSized(Provider& p, VkApp& a, ffxContext& ctx, uint32_t rw, uint32_t rh,
                                          uint32_t ow, uint32_t oh) {
     FfgEnabledFeaturesDesc en; FfgBackendDesc bk; FfgBackendInstanceDesc inst;
-    buildContract(a, en, bk);
+    buildContract(a, en, bk, VK_NULL_HANDLE);  // upscaler: the app's own device, where it was measured working
     inst.header = ffxApiHeader{4u, &en.header};
     inst.instance = a.instance; inst.getInstanceProcAddr = vkGetInstanceProcAddr;
     bk.header.pNext = &inst.header;
@@ -1105,7 +1172,8 @@ static void drawHud(unsigned char* rgba, uint32_t W, uint32_t H, const HudFacts&
     // multiplier the host requested.
     y += 7 * 2 + 5;
     if (f.fgLive)
-        std::snprintf(line, sizeof line, "FGEN %lld/%lld CODE %d", f.fgGenerated, f.fgAttempts, f.fgCode);
+        std::snprintf(line, sizeof line, "FGEN %lld/%lld CAN %lld CODE %d", f.fgGenerated, f.fgAttempts,
+                    f.fgCancels, f.fgCode);
     else
         std::snprintf(line, sizeof line, "FGEN NO CONTEXT");
     hudLine(rgba, W, H, y, margin, true, 2, line, 150, 255, 150);
@@ -1163,7 +1231,7 @@ static constexpr uint32_t kFgPrepareV2Type = 0x0002000cu;
 
 static void driveUpscaler(Provider& p, VkApp& a) {
     std::printf("\n=== FSR4 UPSCALER provider (create + query helpers) ===\n");
-    FfgEnabledFeaturesDesc en; FfgBackendDesc bk; FfgBackendInstanceDesc inst; buildContract(a, en, bk);
+    FfgEnabledFeaturesDesc en; FfgBackendDesc bk; FfgBackendInstanceDesc inst; buildContract(a, en, bk, VK_NULL_HANDLE);
     // Attach the optional instance(4) block so the upscaler can confirm its cooperative-matrix
     // tiles / device entry-point groups (the runtime does this; without it create() -> RUNTIME_ERROR).
     inst.header = ffxApiHeader{4u, &en.header};
@@ -1207,7 +1275,7 @@ static void driveUpscaler(Provider& p, VkApp& a) {
 // buffers) so a refusal can only be the provider's own, never a host-side parameter error.
 static void driveFrameGeneration(Provider& p, VkApp& a, const FsrRig* rig) {
     std::printf("\n=== FSR4 FRAME GENERATION provider (host-integration ladder) ===\n");
-    FfgEnabledFeaturesDesc en; FfgBackendDesc bk; buildContract(a, en, bk);
+    FfgEnabledFeaturesDesc en; FfgBackendDesc bk; buildContract(a, en, bk, a.fgDevice);
     struct VersionLink { ffxCreateContextDescHeader header; } vlink{ffxApiHeader{0x0002000eu, nullptr}};
     bk.header.pNext = &en.header; en.header.pNext = &vlink.header;
     ffxCreateContextDescFrameGeneration cd{};
@@ -1234,8 +1302,22 @@ static void driveFrameGeneration(Provider& p, VkApp& a, const FsrRig* rig) {
                     (unsigned long long)cnt);
         ffxQueryDescFrameGenerationGetGPUMemoryUsage mem{};
         mem.header.type = FFX_API_QUERY_DESC_TYPE_FRAMEGENERATION_GPU_MEMORY_USAGE;
-        std::printf("  ffxQuery(GET_GPUMEMORYUSAGE) = %d (expect 3=RUNTIME_ERROR: not faked)\n",
-                    (int)p.query(&ctx, &mem.header));
+        // WHICH ANSWER IS CORRECT DEPENDS ON THE DEVICE THE BACKEND BLOCK NAMED: on a device WITHOUT
+        // VK_EXT_descriptor_buffer the provider cannot build its plan runtime, so it refuses this query
+        // (RUNTIME_ERROR) instead of inventing a size; on a.fgDevice (that transport ON) the substrate IS built
+        // and the provider answers OK with the byte counts the driver actually reported for the context. The
+        // earlier "(expect 3)" line was only ever right because of the under-provisioned harness device.
+        FfxApiEffectMemoryUsage memOut{};
+        mem.gpuMemoryUsageFrameGeneration = &memOut;
+        const int memCode = (int)p.query(&ctx, &mem.header);
+        std::printf("  ffxQuery(GET_GPUMEMORYUSAGE) = %d -> %s\n", memCode,
+                    memCode == FFX_API_RETURN_OK
+                        ? "OK: plan runtime built on this device (bytes are the driver's own allocations)"
+                        : "RUNTIME_ERROR: no plan runtime here, so no size is reported (nothing faked)");
+        if (memCode == FFX_API_RETURN_OK)
+            std::printf("    totalUsageInBytes=%llu aliasableUsageInBytes=%llu\n",
+                        (unsigned long long)memOut.totalUsageInBytes,
+                        (unsigned long long)memOut.aliasableUsageInBytes);
         ffxConfigureDescFrameGeneration cf{};
         cf.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
         cf.frameGenerationEnabled = true;
@@ -1391,7 +1473,7 @@ static uint32_t findDeviceMemoryType(VkApp& a, VkMemoryRequirements req, VkMemor
 // Live upscaler context for the window path (create only; AUTO_EXPOSURE so no 1x1 exposure
 // texture is required; sized for render 1280x720 -> upscale 1440x1080).
 static ffxReturnCode_t createUpscale(Provider& p, VkApp& a, ffxContext& ctx) {
-    FfgEnabledFeaturesDesc en; FfgBackendDesc bk; FfgBackendInstanceDesc inst; buildContract(a, en, bk);
+    FfgEnabledFeaturesDesc en; FfgBackendDesc bk; FfgBackendInstanceDesc inst; buildContract(a, en, bk, VK_NULL_HANDLE);
     inst.header = ffxApiHeader{4u, &en.header}; inst.instance = a.instance; inst.getInstanceProcAddr = vkGetInstanceProcAddr;
     bk.header.pNext = &inst.header;
     ffxCreateContextDescUpscale cd{}; cd.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE; cd.header.pNext = &bk.header;
@@ -1400,7 +1482,7 @@ static ffxReturnCode_t createUpscale(Provider& p, VkApp& a, ffxContext& ctx) {
 }
 // Live Frame Generation context (create; the provider's generate stays refused here).
 static ffxReturnCode_t createFg(Provider& p, VkApp& a, ffxContext& ctx) {
-    FfgEnabledFeaturesDesc en; FfgBackendDesc bk; buildContract(a, en, bk);
+    FfgEnabledFeaturesDesc en; FfgBackendDesc bk; buildContract(a, en, bk, a.fgDevice);
     struct VersionLink { ffxCreateContextDescHeader header; } vlink{ffxApiHeader{0x0002000eu, nullptr}};
     bk.header.pNext = &en.header; en.header.pNext = &vlink.header;
     ffxCreateContextDescFrameGeneration cd{};
@@ -1414,9 +1496,14 @@ static void runPresent(VkApp& a, Provider& up, ffxContext& upCtx, bool upLive, P
                        int seconds, int fgMult, SDL_Window* win);
 
 
-// Keep an SDL window on screen WITHOUT touching the WSI swapchain path. On this host the (software-RADV)
-// driver returns a NULL vkCreateSwapchainKHR, which the loader masks with VK_SUCCESS -> the app would then
-// SIGSEGV. Holding the window without presenting is the safe, crash-free way to show the tool on such hosts.
+// Keep an SDL window on screen WITHOUT touching the WSI swapchain path. AN EARLIER REVISION OF THIS HARNESS
+// BLAMED THAT ON THE DRIVER ("this RADV build lacks vkCreateSwapchainKHR"); the real cause was here, in the
+// harness: the device requested a name that is not an extension at all ("VK_xr_swapchain"), so VK_KHR_swapchain
+// was never enabled at instance or device level and the entry point resolved to NULL. RADV does implement it.
+// This path stays the DEFAULT because the software blit is what makes the HUD reproducible with no compositor,
+// but after the extension fix --present has a genuine chance of working, and that is the thing to re-measure
+// rather than assume. A driver that really lacks the entry point still fails safe: the WSI path is skipped,
+// never a silent SIGSEGV.
 static void holdWindow(int seconds, SDL_Window* win) {
     if (!win) return;
     SDL_ShowWindow(win);
@@ -1471,7 +1558,9 @@ struct FgWindowRig {
     uint64_t frameID{1001ull};
     long long attempts{0};    // generate calls made
     long long generated{0};   // frames the provider actually delivered, summed
-    long long okCalls{0};     // generate calls that returned OK
+    long long okCalls{0};     // generate calls that returned OK AND ANSWERED >=1 frame (a DELIVERY)
+    long long cancelCalls{0}; // the DOCUMENTED cancel branch: host ASKED 0 frames, OK is not a delivery
+    long long emptyCalls{0};  // host asked for frames, provider said OK but ANSWERED 0 (hollow success)
     double msTotal{0.0};      // wall cost of those calls (what the HUD's FGMEM line prints)
     bool cmdOk{false};        // a command buffer could be allocated + begun (the provider records INTO one)
 };
@@ -1481,7 +1570,7 @@ static bool initFgWindowRig(VkApp& a, Provider& p, FsrRig* rig, FgWindowRig& r, 
     r.p = &p;
     FfgEnabledFeaturesDesc en;
     FfgBackendDesc bk;
-    buildContract(a, en, bk);
+    buildContract(a, en, bk, a.fgDevice);
     struct VersionLink {
         ffxCreateContextDescHeader header;
     } vlink{ffxApiHeader{0x0002000eu, nullptr}};
@@ -1596,13 +1685,24 @@ static void fgFrameAttempt(FgWindowRig& r, VkApp& a, FsrRig* rig, int mult) {
             }
         }
     }
+    const uint32_t asked = g.numGeneratedFrames;  // 0 == documented cancel branch, not a delivery request
     const auto t0 = std::chrono::steady_clock::now();
     r.generateCode = (int)r.p->dispatch(&r.ctx, &g.header);
     r.msTotal += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     ++r.attempts;
     if (r.generateCode == FFX_API_RETURN_OK) {
-        ++r.okCalls;
-        r.generated += (long long)g.numGeneratedFrames;  // the ANSWER, re-read after the call, is what counts
+        // A cancel call used to land in okCalls, so a --fg=1x run read as a success ("delivered 1X of requested
+        // 1X") even though the host never asked the provider to fabricate one single frame. Only a call whose
+        // ANSWER carries frames is a delivery now; asked-0 lands in cancelCalls and asked>0-answered-0 lands in
+        // emptyCalls, so a future hollow success cannot hide in the ok counter.
+        if (g.numGeneratedFrames > 0u) {
+            ++r.okCalls;
+            r.generated += (long long)g.numGeneratedFrames;  // the ANSWER, re-read after the call, is what counts
+        } else if (asked == 0u) {
+            ++r.cancelCalls;
+        } else {
+            ++r.emptyCalls;
+        }
     }
     if (vkEndCommandBuffer(cb) == VK_SUCCESS && a.queue) {
         VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr, 0u, nullptr, nullptr, 1u, &cb, 0u, nullptr};
@@ -1720,6 +1820,7 @@ static bool showWindowSdl(VkApp& a, Provider* up, FsrHost* fsr, Provider* fg, in
             fgFrameAttempt(fgRig, a, rigForFg, fgMult);
             gHudFacts.fgLive = true;
             gHudFacts.fgAttempts = fgRig.attempts;
+            gHudFacts.fgCancels = fgRig.cancelCalls;
             gHudFacts.fgGenerated = fgRig.generated;
             gHudFacts.fgCode = fgRig.generateCode;
             gHudFacts.fgMs = fgRig.attempts ? fgRig.msTotal / (double)fgRig.attempts : 0.0;
@@ -1771,8 +1872,10 @@ static bool showWindowSdl(VkApp& a, Provider* up, FsrHost* fsr, Provider* fg, in
     if (fgRig.live) {
         const double avgMs = fgRig.attempts ? fgRig.msTotal / (double)fgRig.attempts : 0.0;
         std::printf("  FRAME GENERATION tally: host_frames=%lld generated_frames=%lld ok_calls=%lld "
-                    "last_generate=%d prepare=%d avg_cost=%.3fms -> delivered %dX of requested %dX\n",
-                    fgRig.attempts, fgRig.generated, fgRig.okCalls, fgRig.generateCode, fgRig.prepareCode, avgMs,
+                    "cancel_calls=%lld empty_ok_calls=%lld last_generate=%d prepare=%d avg_cost=%.3fms -> "
+                    "delivered %dX of requested %dX (ok_calls counts DELIVERIES, never cancels)\n",
+                    fgRig.attempts, fgRig.generated, fgRig.okCalls, fgRig.cancelCalls, fgRig.emptyCalls,
+                    fgRig.generateCode, fgRig.prepareCode, avgMs,
                     fgRig.attempts ? (int)(1 + (fgRig.generated / (double)fgRig.attempts)) : 1,
                     (fgMult > 1 ? fgMult : 1));
     } else {

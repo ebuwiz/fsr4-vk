@@ -762,8 +762,12 @@ in the SAME submit.
 | first-execution cost | `ms_record≈0.3–0.5`, `ms_submit≈0.2`, **`ms_wait≈2003–2017`** for ONE dispatch |
 | is that per-dispatch? | **No.** FOUR dispatches of the same module in one command buffer measured `ms_wait=2042` total — the extra 3 added ~30 ms. So `ms_wait / repeats` is a meaningless number and is not printed |
 | chaining those dispatches | `repeats=4` produced `radv/amdgpu: The CS has been cancelled because the context is lost` while `vkQueueWaitIdle` still answered `VK_SUCCESS`; the next submit then returned `VK_ERROR_OTHER`. `repeats=1` produced **no** driver fault |
-| why the chain faults | the dependency `VK_EXT_descriptor_buffer` requires between dispatches that write the same pool is `VK_DEPENDENCY_BY_TRANSITION`, and that flag **is not in the pinned headers**; only a PLAIN barrier is expressible here |
+| why the chain faults | **HYPOTHESIS, not measured.** Two candidates fit the evidence equally well: (a) the dependency the extension requires between dispatches writing one pool is `VK_DEPENDENCY_BY_TRANSITION`, which is absent from the pinned headers, so only a plain barrier is expressible; (b) the shader READS a descriptor slot that was never BOUND — every array binding in these runs is an unbound whole-array slot, and an out-of-range read of that is exactly the kind of access that gets a CS cancelled. (b) is the more likely of the two given `poolSlack=zero(unbound_array_slots)`, and it would also explain why a PLAIN barrier did not help |
+| how to tell (a) from (b) | three cheap GPU experiments, none run yet: `VK_LAYER_KHRONOS_validation=1` on the probe (it reports the read of an unbound descriptor, or it reports the missing by-transition dependency); `RADV_DEBUG=hang` (the driver names the faulting compute); and enabling `nullDescriptor` + `robustBufferAccess2` in the probe device — if the fault DISAPPEARS, it was an OOB read (b), not a dependency problem (a) |
+| which of those exist on THIS host | `RADV_DEBUG=hang` **is** accepted (the `hang` knob is present in `/usr/lib/libvulkan_radeon.so`, Mesa 26.2.6; `nocompute` and `allbos` are too). The Khronos validation layer is **NOT installed here** — the only layer objects under `/usr/lib` are `libXrApiLayer_best_practices_validation.so`, `libXrApiLayer_core_validation.so` and MangoHud — so that half of the experiment needs the validation-layers package installed first. Do not report "validation found no error" before checking the layer was actually loaded |
 | did the pass write? | `out_changed=0 wrote_sampled=0 sb_nonzeroB=0 ub_nonzeroB=0` — but for the `repeats=4` run this is **confounded** by the cancelled CS (the note says so in the output); a clean single-dispatch census has not been re-run since the census was widened |
+| what those recorded runs PROVED | Only `ran=1`: that the pipeline, the bind, the dispatch, the submit and the wait all complete. They proved NOTHING about the pass, because EVERYTHING was zero-filled — `push=32B=zero(uninitialized)`, the whole-array slots unbound, both images cleared to zero. A flow pass handed zeros can WRITE zeros, leaving the after-hash IDENTICAL to the before-hash, so `out_changed=0` cannot distinguish "ran and produced nothing" from "did nothing at all" |
+| the census can now tell those apart | the OUTPUT image is pre-filled with a NON-ZERO SENTINEL (the printed note carries `out_prefilled=sentinel(a_write_of_zeros_still_changes_hash)`), so ANY write — including a write of zeros — changes the after-hash. The INPUT image stays zero-filled, and the SB/UB backs stay zero-filled because their metric is a COUNT of NON-ZERO BYTES, which a non-zero fill would silently corrupt. **COMPILE-VERIFIED ONLY:** no GPU run has used the sentinel yet. Real push constants and real bound array resources are still missing, and that half is 2c's marshalling work, not a probe flag |
 
 Command for that clean census, when you choose to touch the GPU again (one process, one
 device, `repeats` defaults to 1):
@@ -1031,19 +1035,31 @@ oracle, pixel parity via captures).
    pairing, memory-usage sum, debug-view flags). Done when `ffxDispatch(generate 1..3)` returns `OK` for the classic
    chain with non-zero `generated` and real output images written, while `mlfi` stays `RUNTIME_ERROR`.
    **Measured on this host, and it constrains HOW:** ONE pass per device lifetime runs clean
-   (`ran=1`, no driver fault) but **`repeats=4` dispatches of the same module over one pool inside one command buffer
-   produced `radv/amdgpu: The CS has been cancelled because the context is lost` while
-   `vkQueueWaitIdle` still answered `VK_SUCCESS`**, and the dependency the extension asks for there
-   (`VK_DEPENDENCY_BY_TRANSITION`) **is not in the pinned headers**, so a chain of dispatches over one
-   pool cannot currently be expressed correctly here. Two routes to try, in order: (i) **separate
+   (`ran=1`, no driver fault) but **`repeats=4` dispatches of the same module over one pool inside one command
+   buffer produced `radv/amdgpu: The CS has been cancelled because the context is lost` while
+   `vkQueueWaitIdle` still answered `VK_SUCCESS`**. WHY is NOT settled: the missing-flag explanation
+   (`VK_DEPENDENCY_BY_TRANSITION` is absent from the pinned headers) is ONE hypothesis, and an out-of-range
+   read of an UNBOUND whole-array descriptor is at least as plausible given those runs bound no real resources
+   at all. The two are separated by the validation layer / `RADV_DEBUG=hang` / `robustBufferAccess2`
+   experiments recorded in the measurement table above, and until one of them runs the chain blocker should be
+   read as UNSCOPED — it may evaporate the moment the dispatches get real inputs and real bindings. Two routes to try, in order: (i) **separate
    command buffers with one dispatch each** and a real `vkCmdPipelineBarrier` / event dependency between the
    submits (the earlier per-order runs show the fault tracks multi-dispatch-in-one-buffer, not the
    submit itself); (ii) **give each pass its OWN descriptor pool** so no dispatch writes a pool another
    dispatch is reading, which sidesteps the missing flag entirely at the cost of ~112-144 B per pass (the
    measured per-module pool size). Either way the ~2 s first-execution cost is per-device, not
    per-pass, so a 92-pass chain is not 92 x 2 s.
-4. **2d - prove it in the app, which is what the app was built for.** `bash tools/FGTest/run.sh --fg=2x` must show
-   `GOT 2 X REQ 2 X` and a real `MS FGMEM` cost, and the analytic oracle on FGTest's own scene must hold: a
+4. **2d - prove it in the app, which is what the app was built for.** Measured with `--fg=2x` today:
+   `host_frames=56 generated_frames=0 ok_calls=0 last_generate=3`, i.e. `GOT 1 X REQ 2 X` with the provider's
+   own refusal on every frame — the honest baseline this step has to beat. Two harness fixes landed alongside
+   the measurement: `ok_calls` now counts only calls that ANSWERED with frames (a `--fg=1x` run used to print
+   `ok_calls=55` for a run in which nothing was ever requested — a hollow success read as a delivery), and the
+   app's device now carries `VK_KHR_swapchain` at BOTH instance and device level. The old "this driver lacks
+   `vkCreateSwapchainKHR`" line was THIS harness asking for an extension name that does not exist
+   (`VK_xr_swapchain`), so the WSI present path must be re-measured rather than assumed unavailable; a gate
+   (`test_harness_extension_names_are_real`) now rejects any extension name that is not defined by the pinned
+   headers, which is exactly the class of silent capability loss that caused it.
+   Then `bash tools/FGTest/run.sh --fg=2x` must show `GOT 2 X REQ 2 X` and a real `MS FGMEM` cost, and the analytic oracle on FGTest's own scene must hold: a
    translation-only frame pair yields a near-constant flow vector, the interpolated frame's geometry sits between the
    two inputs, and the disocclusion mask stays empty where nothing is revealed. Pixel parity against AMD stays
    capture-gated; this oracle does not need captures.
@@ -1058,8 +1074,14 @@ parity evidence, not the pass order.**
 One driver-side constraint belongs to 2c, not to the algorithm: RADV creates all 474 compute pipelines here, but
 enabling `VK_EXT_descriptor_buffer` in the SAME device that hosts the app's graphics pipelines was measured to crash
 inside the driver's own graphics pipeline creation (SIGSEGV in `setupPipeline`). So the FG runtime needs its own
-`VkInstance`/`VkDevice` (as `framegeneration-probe` already keeps them apart) or that driver bug fixed - a bounded
-workaround, and never a reason to fake an interpolation.
+`VkDevice` or that driver bug fixed - a bounded workaround, and never a reason to fake an interpolation. The
+workaround is now IN PLACE in FGTest: `VkApp::fgDevice` is a second logical device over the same physical device,
+created WITH the transport, and ONLY the Frame Generation backend block names it; the app keeps rendering on
+`a.device`. Before that, the window refused the substrate on every frame with `caller device exports none of:
+vkGetDescriptorEXT` - which was a HARNESS under-provisioning, not an FG limitation, and is why the probe could
+build the substrate while the app could not. The live effect of that fix (substrate built inside the window,
+`GET_GPUMEMORYUSAGE` answering with bytes instead of refusing) is COMPILE-VERIFIED ONLY and needs one re-run of
+`run.sh` to be called a measurement.
 
 ## Documentation
 FSR 4.1.2:

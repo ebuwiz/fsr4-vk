@@ -39,18 +39,24 @@ add `--window` (default 30 s; `--window=N` to change). It links **SDL2** (`sdl2-
   headless `VkInstance` at 480x270, **upscaled by the REAL AMD FSR4 compute to 960x540**, read back into a CPU
   RGBA8 buffer, then blitted to the window with SDL's SOFTWARE renderer (960x540 → window size by SDL's scaler).
   A bitmap-font HUD (5x7 glyphs, no atlas, no shader) is baked into the buffer, and the FPS number is also printed
-  once per second together with the average `ffxDispatch(upscale)` cost. The WSI swapchain is never touched, which
-  is what keeps this path alive on hosts where the driver exposes no working `vkCreateSwapchainKHR`. Measured on
+  once per second together with the average `ffxDispatch(upscale)` cost. The WSI swapchain is not touched by
+  DEFAULT because the software blit is what makes the HUD reproducible with no compositor involved — NOT because
+  this host lacks the entry point. An earlier revision of THIS harness claimed "the driver exposes no working
+  `vkCreateSwapchainKHR`" and that claim WAS WRONG: the device asked for the name `VK_xr_swapchain`, which is not
+  an extension at all, so `VK_KHR_swapchain` was never enabled and the entry point resolved to NULL. Both halves
+  are fixed now (the extension is requested at instance level and at device level), so `--present` has a genuine
+  chance of working on this Wayland host; it has NOT been re-measured since the fix. Measured on
   RX 9070 XT: FSR GPU 0.6 ms/frame, whole frame ≈ 25 ms (the 4 MB FP16 read-back + half decode dominates) → ~21 fps
   in a 1440x1080 window. If the upscaler context is unavailable the same window falls back to the native
   480x270 read-back, and it says so in the printed line. Measured today with `run.sh`: the 30 s window run presented
 552 frames at a measured ~25 fps (~40 ms/frame end to end, of which AMD's own dispatch is 0.6-0.8 ms), and a 6 s
 spot-check presented 137 frames at ~26-27 fps.
 * `--window --present`: the real Vulkan-WSI path (SDL window surface → swapchain → AMD-FSR-upscaled blit
-  1280x720 → 1440x1080), logging one line per presented frame. On a driver without a working swapchain this
-  path is skipped (it prints `NO_PRESENT_MODES` / `NO_SWAPCHAIN`) instead of crashing — which is the case on this
-  Wayland host, so the WSI path is compiled-and-format-correct (FP16 colour input, `DEPTHTARGET` depth, FG images)
-  but only the software-blit path is exercised here.
+  1280x720 → 1440x1080), logging one line per presented frame. The skip observed here (`NO_SWAPCHAIN`) was
+  PRODUCED by that harness bug, not by the driver: RADV implements `vkCreateSwapchainKHR`. With the extension now
+  requested at both levels this path should reach a real GPU-presented blit — an EXPECTATION, not a measurement,
+  until it is re-run. The failure path stays safe (`NO_PRESENT_MODES` / `NO_SWAPCHAIN`, never a crash), which is
+  why the pre-fix observation is recorded as "compiled-and-format-correct" and nothing more.
 
 ```sh
 # after `bash tools/FGTest/build.sh` has produced the .so's + triangle.*.spv:
@@ -90,11 +96,12 @@ runtime, not a different call sequence here. If the machine's Vulkan loader does
   - `ffxCreateContext(frame-generation) = 0` (OK) — the device meets the FG execution contract
     (cooperative matrix, 8/16-bit storage, runtime descriptors, etc.).
   - `ffxQuery(GET_VERSIONS)` advertises the real classic id `0xF600000001000002`.
-  - `ffxQuery(GET_GPUMEMORYUSAGE) = 3` (RUNTIME_ERROR) — this harness's device does not enable
-    `VK_EXT_descriptor_buffer`, so the provider's Phase-1 substrate refuses to allocate there and the query
-    keeps refusing rather than inventing a size. On a contract device that DOES enable the transport
-    (`tools/framegeneration-probe`) the same query answers with the allocations: `total=66,365,568 B`,
-    `aliasable=10,368 B`.
+  - `ffxQuery(GET_GPUMEMORYUSAGE)`: on a device WITHOUT the descriptor-buffer transport the provider refuses
+    rather than inventing a size. The value this file used to record — `3` — was a property of THIS harness's
+    under-provisioned device, not of the algorithm. The ladder now hands the FG provider `a.fgDevice`, a second
+    logical device created WITH `VK_EXT_descriptor_buffer`, so the EXPECTED answer on this host is OK with the
+    numbers the probe measures (`total=66,365,568 B`, `aliasable=10,368 B`). The printed line states which branch
+    happened; the OK-with-bytes branch is COMPILE-VERIFIED ONLY and must be re-run to be called a measurement.
   - `ffxConfigure(host contract) = 0` (OK) — swapchain/present/framegen callbacks accepted.
   - `ffxDispatch(Generate) BEFORE Prepare = 6` (PARAMETER) — the order guard is live, so the ladder below is
     not a no-op: `Configure → Prepare → generate` really is enforced.
@@ -152,11 +159,17 @@ The same tallies print to stdout, once per second and at the end of the run — 
 
 ```
 FG: frames_generated=0 host_frames_asked=552 last_generate_code=3 (0.018ms avg)
-FRAME GENERATION tally: host_frames=552 generated_frames=0 ok_calls=0 last_generate=3 prepare=3 avg_cost=0.018ms -> delivered 1X of requested 2X
+FRAME GENERATION tally: host_frames=552 generated_frames=0 ok_calls=0 cancel_calls=0 empty_ok_calls=0 last_generate=3 prepare=3 avg_cost=0.018ms -> delivered 1X of requested 2X (ok_calls counts DELIVERIES, never cancels)
 ```
 
 `MS FGMEM` in the window is now that live average (per-frame call cost), not the headless ladder's one-shot
-number, and `FGEN NO CONTEXT` prints when the FG provider could not create/configure a context on this host.
+number, and `FGEN NO CONTEXT` prints when the FG provider could not create/configure a context on this host. The
+HUD line is `FGEN n/m CAN k CODE c`: frames DELIVERED over generate calls made, calls that took the DOCUMENTED
+cancel branch `numGeneratedFrames == 0` (which is what `--fg=1x` exercises every frame), and the last return code.
+That split exists because a `--fg=1x` run used to print `ok_calls=55` for a run in which the host NEVER asked
+for a single interpolated frame — a hollow success that read as a delivery. Cancels are now excluded from
+`ok_calls`, and a call that returned OK while ANSWERING 0 despite being asked for frames lands in
+`empty_ok_calls`, so a future fake success cannot hide in the delivery counter either.
 
 `--fg=1x|2x|3x|4x` sets the REQUESTED value; because `generate` is refused here the screen keeps showing
 `GOT 1 X` next to `REQ 2 X`, which is the point of printing it at all — a multiplier copied from the
@@ -187,10 +200,14 @@ would drive; it does NOT fake interpolated frames.
 tables describe at `Prepare` — the plan's intermediate targets, one descriptor pool sized from the driver's
 element costs, the 92 classic-subset `VkComputePipeline`s, and a `vkGetDescriptorEXT` census of that subset's
 bindings — so `ffxQuery(GET_GPUMEMORYUSAGE)` reports those allocations instead of refusing **on devices that
-enabled `VK_EXT_descriptor_buffer`**. This harness is not one of them, deliberately: turning that transport on
-here was measured to crash inside the driver while building this sample's own GRAPHICS pipeline (SIGSEGV in
-`libvulkan_radeon` from `setupPipeline`), which is why the numbers above stay `3` in this file and live in the
-probe's output instead. Nothing here changed about `generate`: no descriptor write, no bind, no command recorded,
+enabled `VK_EXT_descriptor_buffer`**. This harness DOES now carry that transport — on a SECOND logical
+device (`VkApp::fgDevice`, created over the SAME physical device) that ONLY the Frame Generation backend block
+names. It is a separate device because turning the transport on in the device that builds this sample's own GRAPHICS
+pipeline was measured to crash inside the driver (SIGSEGV in `libvulkan_radeon` from `setupPipeline`) — that half
+is a driver-side fact and still stands, which is why the app keeps rendering on `a.device`. So the substrate refusal
+the window printed on every frame (`caller device exports none of: vkGetDescriptorEXT`) should be GONE and the
+ladder's memory query should answer with bytes. Both are COMPILE-VERIFIED ONLY: the window must be re-run before
+either is called a measurement, and until then the FG numbers in this file describe the PRE-FIX state. Nothing here changed about `generate`: no descriptor write, no bind, no command recorded,
 no dispatch — the refusal is the same honest one, one allocation layer deeper.
 
 The **upscaler** provider genuinely creates a live context in-app: after attaching the `fsr4vk` backend(3) **+ instance(4)**
