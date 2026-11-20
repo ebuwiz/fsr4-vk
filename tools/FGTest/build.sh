@@ -10,6 +10,7 @@ BUILD="$HERE/build"; mkdir -p "$BUILD"
 # 1) shaders -> SPIR-V
 glslc -o "$BUILD/triangle.vert.spv" "$HERE/triangle.vert"
 glslc -o "$BUILD/triangle.frag.spv" "$HERE/triangle.frag"
+glslc -o "$BUILD/velocity.frag.spv" "$HERE/velocity.frag"   # the MOTION-VECTOR pass Frame Generation is owed
 glslc -o "$BUILD/present.vert.spv" "$HERE/present.vert"
 glslc -o "$BUILD/present.frag.spv" "$HERE/present.frag"
 

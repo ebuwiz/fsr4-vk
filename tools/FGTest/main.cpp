@@ -99,6 +99,15 @@ struct HudFacts {
     long long fgGenerated = 0;     // frames the provider actually DELIVERED, summed over its answers
     int fgCode = 0xFFFF;           // the last generate return code (0 OK, 3 runtime, 1/6 parameter, ...)
     bool fgLive = false;           // false == no FG context in this session (provider .so absent/refused)
+    // THE PIXEL-VERIFIED DELIVERY EVIDENCE, read back off the provider's OWN output backbuffer: how many sampled
+    // pixels DIFFER from the sentinel pre-fill. 0 of N with fgGenerated==0 is the on-screen statement that Frame
+    // Generation produced NOTHING, whatever --fg= asked for; a nonzero count can only come from the provider writing.
+    long long fgGenWritten = 0, fgGenSampled = 0;
+    bool fgGenMeasured = false;
+    // THE MEASURED MOTION-VECTOR INPUT the host handed FG (0 max|v| == the app supplied a zero velocity field, which
+    // would make any interpolation meaningless - visible rather than hidden).
+    double fgVelMax = 0.0;
+    uint32_t fgVelPx = 0, fgVelSamples = 0;
 };
 static HudFacts gHudFacts;
 static bool gHudDump = false;  // --hud-dump: paint the HUD into PPM frames and print the ASCII crop
@@ -135,13 +144,23 @@ static Mat4 ortho(float l, float r, float t, float b, float n, float f) {
     return o;
 }
 
-struct ShaderData {  // std140: three mat4, column-major; memcpy directly.
+struct ShaderData {  // std140: four mat4, column-major; memcpy directly.
     float projection[16];
     float model[16];
     float view[16];
+    // THE PREVIOUS HOST FRAME'S transform of the SAME object. The vertex shader's clip-space delta against it
+    // IS this app's motion vector, so Frame Generation is handed a real velocity field instead of a zeroed
+    // image - which is the input the interpolation math needs and this host used NOT to supply.
+    float prevModel[16];
 } ;
 static void putMat(float* dst, const Mat4& a) {
     for (int c = 0; c < 4; ++c) for (int r = 0; r < 4; ++r) dst[c * 4 + r] = a.m[c][r];
+}
+// The scene's ONE animated transform, as a function of the phase clock: the same expression the vertex stage
+// sees, kept in ONE place so the current AND previous frames' models cannot drift apart.
+static Mat4 triModel(double phase) {
+    const float p = (float)phase;
+    return mul(translate(0.55f * std::sinf(p), 0.25f * std::cosf(p * 0.8f), 0.0f), rotateZ(p * 0.7f));
 }
 
 struct VkApp {
@@ -535,7 +554,8 @@ static void setupDescriptors(VkApp& a) {
         vkUpdateDescriptorSets(a.device, 1, &w, 0, nullptr);
     }
 }
-static void setupPipeline(VkApp& a, VkShaderModule vs, VkShaderModule fs, VkFormat cfmt, VkPipeline& outPipe) {
+static void setupPipeline(VkApp& a, VkShaderModule vs, VkShaderModule fs, VkFormat cfmt, VkPipeline& outPipe,
+                          bool withDepth = true) {
     VkPipelineLayoutCreateInfo li{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &a.setLayout};
     if (!a.pipeLayout) vkCreatePipelineLayout(a.device, &li, nullptr, &a.pipeLayout);
     VkVertexInputBindingDescription vb{.binding = 0, .stride = sizeof(float) * 6, .inputRate = VK_VERTEX_INPUT_RATE_VERTEX};
@@ -563,8 +583,10 @@ static void setupPipeline(VkApp& a, VkShaderModule vs, VkShaderModule fs, VkForm
     VkPipelineShaderStageCreateInfo st[2] = {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vs, "main", nullptr},
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fs, "main", nullptr}};
+    // The velocity pass declares NO depth attachment, so its pipeline must not name one either: withDepth=false
+    // leaves depthAttachmentFormat UNDEFINED, which is what a colour-only pass with no depth buffer needs.
     VkPipelineRenderingCreateInfo rr{.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .colorAttachmentCount = 1,
-        .pColorAttachmentFormats = &cfmt, .depthAttachmentFormat = a.depthFmt};
+        .pColorAttachmentFormats = &cfmt, .depthAttachmentFormat = withDepth ? a.depthFmt : VK_FORMAT_UNDEFINED};
     VkGraphicsPipelineCreateInfo gci{.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &rr, .stageCount = 2,
         .pStages = st, .pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vp,
         .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cb, .pDynamicState = &ds,
@@ -611,17 +633,18 @@ static void writePPM(const std::string& path, uint32_t w, uint32_t h, const uint
 // upscale dispatch that records compute work, or an image read-back) before ending + submitting.
 // `f` picks the UBO/descriptor slot (mod kFrames); `phase` is the animation clock, kept SEPARATE so the offscreen
 // PPM loop (phase = frame index) and the live window loop (phase = elapsed seconds * 2, the --present clock)
-// both animate at a sane rate.
-static VkCommandBuffer recordTriangle(VkApp& a, uint32_t f, double phase, VkImage colorImg, VkImageView colorView,
-                                      VkImage depthImg, VkImageView depthView, VkPipeline pipe, uint32_t rw,
-                                      uint32_t rh) {
-    const float p = (float)phase;
-    Mat4 model = mul(translate(0.55f * std::sinf(p), 0.25f * std::cosf(p * 0.8f), 0.0f),
-                     rotateZ(p * 0.7f));
+// both animate at a sane rate. `prevPhase` is the PREVIOUS presented frame's clock value - it feeds prevModelMatrix
+// in the UBO, and the caller (not this function) decides what a frame is worth: the window uses the measured
+// elapsed delta, the PPM proof uses its own frame step.
+static VkCommandBuffer recordTriangle(VkApp& a, uint32_t f, double phase, double prevPhase, VkImage colorImg,
+                                       VkImageView colorView, VkImage depthImg, VkImageView depthView,
+                                       VkPipeline pipe, uint32_t rw, uint32_t rh) {
+    Mat4 model = triModel(phase);
+    Mat4 prev = triModel(prevPhase);
     Mat4 proj = ortho(-1.6f, 1.6f, -0.9f, 0.9f, -1.0f, 1.0f);
     Mat4 view;
     ShaderData d;
-    putMat(d.projection, proj); putMat(d.model, model); putMat(d.view, view);
+    putMat(d.projection, proj); putMat(d.model, model); putMat(d.view, view); putMat(d.prevModel, prev);
     std::memcpy(a.uboMap[f % kFrames], &d, sizeof(d));
 
     VkCommandBuffer cc{VK_NULL_HANDLE};
@@ -668,9 +691,46 @@ static VkCommandBuffer recordTriangle(VkApp& a, uint32_t f, double phase, VkImag
     return cc;
 }
 
+// THE MOTION-VECTOR PASS Frame Generation is owed. It renders the SAME geometry into the CALLER's RG16F image with
+// the velocity.frag stage, whose varying carries clip(thisFrame) - clip(prevFrame). The attachment is CLEARED to
+// (0,0) first, so pixels the triangle does not cover keep ZERO velocity - correct, because the background of this
+// scene really is static. Before this, the app cleared the motion image ONCE at setup and never wrote it again,
+// which meant FG was handed a stationary scene while the triangle visibly moved: no interpolation of that zero
+// field could ever produce a plausible in-between frame, whatever the provider's runtime did.
+static void appendVelocityPass(VkApp& a, VkCommandBuffer cc, uint32_t f, VkImage motionImg, VkImageView motionView,
+                               VkPipeline velPipe, uint32_t rw, uint32_t rh) {
+    VkImageMemoryBarrier toAttach{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, .image = motionImg,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    vkCmdPipelineBarrier(cc, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 0, nullptr, 1, &toAttach);
+    VkClearValue zero;
+    zero.color = {0.0f, 0.0f, 0.0f, 0.0f};
+    VkRenderingAttachmentInfo colorA{.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = motionView,
+        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .clearValue = zero};
+    VkRenderingInfo ri{.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {0, 0, rw, rh}, .layerCount = 1,
+        .colorAttachmentCount = 1, .pColorAttachments = &colorA, .pDepthAttachment = nullptr};
+    vkCmdBeginRendering(cc, &ri);
+    VkViewport vpt{0.0f, 0.0f, (float)rw, (float)rh, 0.0f, 1.0f};
+    vkCmdSetViewport(cc, 0, 1, &vpt);
+    VkRect2D sc{0, 0, rw, rh};
+    vkCmdSetScissor(cc, 0, 1, &sc);
+    vkCmdBindDescriptorSets(cc, VK_PIPELINE_BIND_POINT_GRAPHICS, a.pipeLayout, 0, 1, &a.descSet[f % kFrames], 0,
+                            nullptr);
+    vkCmdBindPipeline(cc, VK_PIPELINE_BIND_POINT_GRAPHICS, velPipe);
+    VkDeviceSize off[1] = {0};
+    vkCmdBindVertexBuffers(cc, 0, 1, &a.vertexBuf, off);
+    vkCmdBindIndexBuffer(cc, a.indexBuf, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cc, gIndexCount, 1, 0, 0, 0);
+    vkCmdEndRendering(cc);
+}
 // OFFSCREEN render of one frame + read-back into the CPU host buffer (RGBA8) used for PPM output.
 static void renderFrame(VkApp& a, uint32_t f, double phase, std::vector<unsigned char>& host) {
-    VkCommandBuffer cc = recordTriangle(a, f, phase, a.color, a.colorView, a.depth, a.depthView, a.pipeline,
+    // prevPhase == phase here: this OFFSCREEN path has no motion-vector consumer, so the velocity varying comes out
+    // zero by construction and the colour pass ignores it anyway.
+    VkCommandBuffer cc = recordTriangle(a, f, phase, phase, a.color, a.colorView, a.depth, a.depthView, a.pipeline,
                                        kWidth, kHeight);
 
 
@@ -721,14 +781,30 @@ static void renderFrame(VkApp& a, uint32_t f, double phase, std::vector<unsigned
 //     inputs SHADER_READ_ONLY_OPTIMAL, output GENERAL, then GENERAL -> TRANSFER_SRC_OPTIMAL to read back.
 // ================================================================================================
 static constexpr uint32_t kFsrOw = 960, kFsrOh = 540;  // 480x270 render -> 960x540 AMD FSR upscale
+// THE RING: Frame Generation keeps a TWO-FRAME history (`MAX_QUEUED_FRAMES == 2` in the SDK's own contract), so
+// the images it samples for frame N must STILL hold frame N's pixels while frame N+1 renders. With ONE image
+// per role - which is what this rig used to have - every hand-off to FG pointed at an image the host was about
+// to overwrite, so the pair of frames an interpolated frame is made FROM cannot exist. Slot = frame parity.
+static constexpr uint32_t kFsrRing = 2;
+static inline uint32_t fsrRingSlot(uint32_t f) { return f % kFsrRing; }
 struct FsrRig {
     uint32_t rw{}, rh{}, ow{}, oh{};
-    VkImage color{}, depth{}, motion{}, out{};
-    VkImageView colorV{}, depthV{}, motionV{}, outV{};
-    VkDeviceMemory colorM{}, depthM{}, motionM{}, outM{};
+    VkImage color[kFsrRing]{}, depth[kFsrRing]{}, motion[kFsrRing]{}, out[kFsrRing]{};
+    VkImageView colorV[kFsrRing]{}, depthV[kFsrRing]{}, motionV[kFsrRing]{}, outV[kFsrRing]{};
+    VkDeviceMemory colorM[kFsrRing]{}, depthM[kFsrRing]{}, motionM[kFsrRing]{}, outM[kFsrRing]{};
     VkPipeline pipeline{VK_NULL_HANDLE};
+    VkPipeline velPipeline{VK_NULL_HANDLE};  // the MOTION-VECTOR pass: RG16F colour, NO depth attachment
     VkBuffer rb{VK_NULL_HANDLE}; VkDeviceMemory rbM{VK_NULL_HANDLE};  // FP16 output read-back
     uint8_t* rbMap{nullptr};
+    // MEASURED velocity stats (refreshed by measureMotion): the print below proves the motion image the provider
+    // is handed is NOT all-zero, i.e. the host supplied the input the interpolation math needs. BOTH readings are
+    // kept because they answer different questions: LAST is the cadence of the path that ran most recently (the
+    // window's real frame delta), MAX is the widest velocity seen anywhere in the session (the PPM proof steps the
+    // scene much further per frame, so its numbers are larger and must not be mistaken for the window's).
+    double velMaxMag{0.0};
+    double velLastMax{0.0};
+    uint32_t velNonzeroPx{0}, velSamplePx{0}, velLastNonzeroPx{0};
+    bool velMeasured{false};
     bool live{false};
 };
 static void mkImg(VkApp& a, uint32_t w, uint32_t h, VkFormat fmt, VkImageUsageFlags usage, VkImageAspectFlags aspect,
@@ -757,33 +833,55 @@ static void teardownFsrRig(VkApp& a, FsrRig& r) {
     if (r.rb) vkDestroyBuffer(a.device, r.rb, nullptr);
     if (r.rbM) vkFreeMemory(a.device, r.rbM, nullptr);
     if (r.pipeline) vkDestroyPipeline(a.device, r.pipeline, nullptr);
-    for (auto* v : {&r.colorV, &r.depthV, &r.motionV, &r.outV}) if (*v) vkDestroyImageView(a.device, *v, nullptr);
-    for (auto* im : {&r.color, &r.depth, &r.motion, &r.out}) if (*im) vkDestroyImage(a.device, *im, nullptr);
-    for (auto* m : {&r.colorM, &r.depthM, &r.motionM, &r.outM}) if (*m) vkFreeMemory(a.device, *m, nullptr);
+    if (r.velPipeline) vkDestroyPipeline(a.device, r.velPipeline, nullptr);
+    // EVERY ring slot is torn down, not just slot 0.
+    for (uint32_t k = 0; k < kFsrRing; ++k) {
+        for (auto* v : {&r.colorV[k], &r.depthV[k], &r.motionV[k], &r.outV[k]})
+            if (*v) vkDestroyImageView(a.device, *v, nullptr);
+        for (auto* im : {&r.color[k], &r.depth[k], &r.motion[k], &r.out[k]})
+            if (*im) vkDestroyImage(a.device, *im, nullptr);
+        for (auto* m : {&r.colorM[k], &r.depthM[k], &r.motionM[k], &r.outM[k]})
+            if (*m) vkFreeMemory(a.device, *m, nullptr);
+    }
     r = FsrRig{};
 }
-static bool setupFsrRig(VkApp& a, FsrRig& r, const std::string& vertSpv, const std::string& fragSpv, uint32_t rw,
-                       uint32_t rh, uint32_t ow, uint32_t oh) {
+static bool setupFsrRig(VkApp& a, FsrRig& r, const std::string& vertSpv, const std::string& fragSpv,
+                        const std::string& velSpv, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t oh) {
     r.rw = rw; r.rh = rh; r.ow = ow; r.oh = oh;
-    mkImg(a, rw, rh, VK_FORMAT_R16G16B16A16_SFLOAT,
-          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-          VK_IMAGE_ASPECT_COLOR_BIT, r.color, r.colorV, r.colorM);
-    mkImg(a, rw, rh, VK_FORMAT_D32_SFLOAT,
-          VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_DEPTH_BIT,
-          r.depth, r.depthV, r.depthM);
-    mkImg(a, rw, rh, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-          VK_IMAGE_ASPECT_COLOR_BIT, r.motion, r.motionV, r.motionM);
-    mkImg(a, ow, oh, VK_FORMAT_R16G16B16A16_SFLOAT,
-          VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-              VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT, r.out, r.outV, r.outM);
-    if (!r.color || !r.depth || !r.motion || !r.out || !r.colorV || !r.depthV || !r.motionV || !r.outV) {
-        teardownFsrRig(a, r); return false;
+    for (uint32_t k = 0; k < kFsrRing; ++k) {
+        mkImg(a, rw, rh, VK_FORMAT_R16G16B16A16_SFLOAT,
+              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+              VK_IMAGE_ASPECT_COLOR_BIT, r.color[k], r.colorV[k], r.colorM[k]);
+        mkImg(a, rw, rh, VK_FORMAT_D32_SFLOAT,
+              VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_DEPTH_BIT,
+              r.depth[k], r.depthV[k], r.depthM[k]);
+        // The motion image gains COLOR_ATTACHMENT (WRITTEN by the velocity pass every frame, instead of cleared
+        // ONCE and read as zeros forever) and TRANSFER_SRC (so the app can read it back and MEASURE the velocity
+        // field it handed the provider rather than claim it).
+        mkImg(a, rw, rh, VK_FORMAT_R16G16_SFLOAT,
+              VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT, r.motion[k], r.motionV[k], r.motionM[k]);
+        mkImg(a, ow, oh, VK_FORMAT_R16G16B16A16_SFLOAT,
+              VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                  VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT, r.out[k], r.outV[k], r.outM[k]);
     }
+    bool imagesOk = true;
+    for (uint32_t k = 0; k < kFsrRing; ++k)
+        if (!r.color[k] || !r.depth[k] || !r.motion[k] || !r.out[k] || !r.colorV[k] || !r.depthV[k] ||
+            !r.motionV[k] || !r.outV[k]) imagesOk = false;
+    if (!imagesOk) { teardownFsrRig(a, r); return false; }
     auto vs = mkShader(a, vertSpv), fs = mkShader(a, fragSpv);
     if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE) { teardownFsrRig(a, r); return false; }
     // setupPipeline OWNS the shader-module teardown (it destroys vs/fs itself), so do NOT destroy them again here.
     setupPipeline(a, vs, fs, VK_FORMAT_R16G16B16A16_SFLOAT, r.pipeline);  // FP16 colour + D32 depth attachment
     if (r.pipeline == VK_NULL_HANDLE) { teardownFsrRig(a, r); return false; }
+    // THE VELOCITY PIPELINE: same vertex stage but a FRESH module (the creation above retired the first pair),
+    // velocity.frag writing the RG16F colour attachment, and NO depth attachment (hence withDepth=false, so the
+    // pipeline matches a pass that declares only a colour attachment).
+    auto vs2 = mkShader(a, vertSpv), vfs = mkShader(a, velSpv);
+    if (vs2 == VK_NULL_HANDLE || vfs == VK_NULL_HANDLE) { teardownFsrRig(a, r); return false; }
+    setupPipeline(a, vs2, vfs, VK_FORMAT_R16G16_SFLOAT, r.velPipeline, false);
+    if (r.velPipeline == VK_NULL_HANDLE) { teardownFsrRig(a, r); return false; }
     r.rb = mkBuffer(a, (VkDeviceSize)ow * oh * 8u, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &r.rbM);
     if (!r.rb || !r.rbM) { teardownFsrRig(a, r); return false; }
@@ -804,26 +902,26 @@ static bool setupFsrRig(VkApp& a, FsrRig& r, const std::string& vertSpv, const s
     VkImageMemoryBarrier toDst[2] = {
         {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = 0,
          .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-         .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .image = r.motion,
+         .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .image = r.motion[0],
          .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}},
         {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = 0,
          .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-         .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .image = r.out,
+         .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .image = r.out[0],
          .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}}};
     vkCmdPipelineBarrier(cc, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 0, nullptr, 2, toDst);
     VkClearColorValue zero{}; zero.float32[0] = zero.float32[1] = zero.float32[2] = zero.float32[3] = 0.0f;
     VkImageSubresourceRange cRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdClearColorImage(cc, r.motion, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &cRange);
-    vkCmdClearColorImage(cc, r.out, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &cRange);
+    vkCmdClearColorImage(cc, r.motion[0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &cRange);
+    vkCmdClearColorImage(cc, r.out[0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &cRange);
     VkImageMemoryBarrier toUse[2] = {
         {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
          .dstAccessMask = VK_ACCESS_SHADER_READ_BIT, .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-         .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, .image = r.motion, .subresourceRange = cRange},
+         .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, .image = r.motion[0], .subresourceRange = cRange},
         {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
          .dstAccessMask = (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT),
          .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-         .newLayout = VK_IMAGE_LAYOUT_GENERAL, .image = r.out, .subresourceRange = cRange}};
+         .newLayout = VK_IMAGE_LAYOUT_GENERAL, .image = r.out[0], .subresourceRange = cRange}};
     vkCmdPipelineBarrier(cc, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 0, nullptr, 2, toUse);
     vkEndCommandBuffer(cc);
@@ -831,8 +929,115 @@ static bool setupFsrRig(VkApp& a, FsrRig& r, const std::string& vertSpv, const s
     vkQueueSubmit(a.queue, 1, &si, VK_NULL_HANDLE);
     vkQueueWaitIdle(a.queue);
     vkFreeCommandBuffers(a.device, a.cmdPool, 1, &cc);
+    // RING SLOTS BEYOND 0 get the SAME parking (motion SHADER_READ_ONLY, out GENERAL): the one-time pass above only
+    // covers the field-named slot, and FSR samples + UAV-writes into every slot it may be handed, so an UNDEFINED
+    // first layout for slot 1 would be illegal the moment frame 1 renders into it. Kept in its OWN buffer so the
+    // block above stays readable.
+    for (uint32_t k = 1u; k < kFsrRing; ++k) {
+        VkCommandBuffer cp{VK_NULL_HANDLE};
+        VkCommandBufferAllocateInfo caip{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, a.cmdPool,
+            VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
+        vkAllocateCommandBuffers(a.device, &caip, &cp);
+        VkCommandBufferBeginInfo bip{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, 0, nullptr};
+        vkBeginCommandBuffer(cp, &bip);
+        VkImageMemoryBarrier toDst2[2] = {
+            {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = 0,
+             .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+             .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .image = r.motion[k],
+             .subresourceRange = cRange},
+            {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = 0,
+             .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+             .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .image = r.out[k],
+             .subresourceRange = cRange}};
+        vkCmdPipelineBarrier(cp, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 0, nullptr, 2, toDst2);
+        vkCmdClearColorImage(cp, r.motion[k], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &cRange);
+        vkCmdClearColorImage(cp, r.out[k], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &cRange);
+        VkImageMemoryBarrier toUse2[2] = {
+            {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+             .dstAccessMask = VK_ACCESS_SHADER_READ_BIT, .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+             .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, .image = r.motion[k],
+             .subresourceRange = cRange},
+            {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+             .dstAccessMask = (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT),
+             .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+             .image = r.out[k], .subresourceRange = cRange}};
+        vkCmdPipelineBarrier(cp, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 0, nullptr, 2, toUse2);
+        vkEndCommandBuffer(cp);
+        VkSubmitInfo sip{VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr, 0, nullptr, nullptr, 1, &cp, 0, nullptr};
+        vkQueueSubmit(a.queue, 1, &sip, VK_NULL_HANDLE);
+        vkQueueWaitIdle(a.queue);
+        vkFreeCommandBuffers(a.device, a.cmdPool, 1, &cp);
+    }
     return true;
 }
+static float halfToFloat(uint16_t h);  // defined below; measureMotion needs it to decode the RG16F texels
+// MEASURE the motion image this app HANDED the upscaler and Frame Generation: copy a CENTRE window of the rig's
+// RG16F motion image back to CPU, then count the texels carrying NON-ZERO velocity and the largest magnitude seen.
+// WHY MEASURE IT AT ALL: an all-zero motion image makes any interpolation meaningless - FG would be reconstructing
+// a stationary scene - so "the host supplied real motion vectors" has to be an OBSERVATION in the log, not a claim
+// in a comment. The centre 64x36 window is where this app's triangle passes through during its orbit, so coverage
+// varies by phase; the session MAX is what the HUD and the summary print.
+static void measureMotion(VkApp& a, FsrRig& r, uint32_t ring) {
+    const uint32_t mw = 64, mh = 36;
+    if (r.rw < mw || r.rh < mh || !r.motion[ring]) return;
+    const VkDeviceSize n = (VkDeviceSize)mw * mh * 4u;  // RG16F = 4 bytes per texel
+    VkDeviceMemory mem{VK_NULL_HANDLE};
+    VkBuffer buf = mkBuffer(a, n, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &mem);
+    if (!buf || !mem) return;
+    uint8_t* map{nullptr};
+    if (vkMapMemory(a.device, mem, 0, n, 0, (void**)&map) != VK_SUCCESS) {
+        if (buf) vkDestroyBuffer(a.device, buf, nullptr);
+        if (mem) vkFreeMemory(a.device, mem, nullptr);
+        return;
+    }
+    VkCommandBuffer cb{VK_NULL_HANDLE};
+    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, a.cmdPool,
+        VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
+    vkAllocateCommandBuffers(a.device, &ai, &cb);
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, 0, nullptr};
+    vkBeginCommandBuffer(cb, &bi);
+    // Access-only barrier: the image stays SHADER_READ_ONLY (that is the layout the app left it in for sampling),
+    // and TRANSFER_READ is added for the copy.
+    VkImageMemoryBarrier readSrc{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_SHADER_READ_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .image = r.motion[ring], .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 0, nullptr, 1, &readSrc);
+    VkBufferImageCopy cp{};
+    cp.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    cp.imageOffset = {(int32_t)(r.rw / 2u - mw / 2u), (int32_t)(r.rh / 2u - mh / 2u), 0};
+    cp.imageExtent = {mw, mh, 1};
+    vkCmdCopyImageToBuffer(cb, r.motion[ring], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, buf, 1, &cp);
+    vkEndCommandBuffer(cb);
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr, 0, nullptr, nullptr, 1, &cb, 0, nullptr};
+    vkQueueSubmit(a.queue, 1, &si, VK_NULL_HANDLE);
+    vkQueueWaitIdle(a.queue);
+    uint32_t nonzero = 0;
+    double maxMag = 0.0;
+    const uint16_t* hx = (const uint16_t*)map;
+    for (uint32_t i = 0; i < mw * mh; ++i) {
+        const float vx = halfToFloat(hx[i * 2u + 0u]), vy = halfToFloat(hx[i * 2u + 1u]);
+        const double m = std::sqrt((double)vx * vx + (double)vy * vy);
+        if (m > 0.0) ++nonzero;
+        if (m > maxMag) maxMag = m;
+    }
+    vkUnmapMemory(a.device, mem);
+    vkDestroyBuffer(a.device, buf, nullptr);
+    vkFreeMemory(a.device, mem, nullptr);
+    vkFreeCommandBuffers(a.device, a.cmdPool, 1, &cb);
+    r.velSamplePx = mw * mh;
+    r.velLastNonzeroPx = nonzero;  // the reading of THIS call, for the live window's own cadence
+    r.velLastMax = maxMag;
+    if (!r.velMeasured || maxMag > r.velMaxMag) { r.velMeasured = true; r.velMaxMag = maxMag; r.velNonzeroPx = nonzero; }
+    std::printf("  motion MEASURED (ring slot %u, %ux%u centre of the %ux%u render): nonzero_velocity_px=%u/%u "
+                "max|v|=%.5f clip units\n", ring, mw, mh, r.rw, r.rh, nonzero, mw * mh, maxMag);
+}
+
+// subnormal halves (exp 0) are normalized first, which lands on 113 - s for s left-shifts.
 // Exact IEEE half -> float. A half's exponent bias is 15, so the float exponent is (e - 15 + 127) = e + 112;
 // subnormal halves (exp 0) are normalized first, which lands on 113 - s for s left-shifts.
 static float halfToFloat(uint16_t h) {
@@ -864,38 +1069,51 @@ static FfxApiResource mkRes(VkImage img, uint32_t w, uint32_t h, uint32_t apiFmt
     o.state = apiState;
     return o;
 }
-// ONE REAL AMD FSR4 upscale pass: render the triangle into the rig's FP16 colour + D32 depth, hand the provider
-// {colour, the REAL rendered depth (DEPTHTARGET), motion, FP16 output} plus its command list, submit the recorded
-// work, then copy the upscaled FP16 image back to CPU and convert to RGBA8. rc==0 together with a non-black
-// output whose checksum CHANGES between frames is the evidence the AMD compute actually ran (nothing is faked).
+// ONE REAL AMD FSR4 upscale pass: render the triangle into the rig's FP16 colour + D32 depth, write the MOTION
+// VECTORS for the same frame into the rig's RG16F image, hand the provider {colour, the REAL rendered depth
+// (DEPTHTARGET), the REAL motion, FP16 output} plus its command list, submit the recorded work, then copy the
+// upscaled FP16 image back to CPU and convert to RGBA8. rc==0 together with a non-black output whose checksum
+// CHANGES between frames is the evidence the AMD compute actually ran (nothing is faked).
+// `slot` picks the UBO ring AND the image ring: the same frame index must land in the same image slot for BOTH
+// the upscaler and Frame Generation, or FG is handed an image this very frame is overwriting.
 static ffxReturnCode_t fsrUpscaleFrame(VkApp& a, Provider& up, ffxContext& ctx, FsrRig& r, uint32_t slot,
-                                       double phase, std::vector<unsigned char>& outRGBA, uint64_t* checksum,
-                                       double* tOut = nullptr) {  // tOut[0..3]: dispatch GPU, read-back GPU, checksum pass, half-decode pass
+                                       double phase, double prevPhase, std::vector<unsigned char>& outRGBA,
+                                       uint64_t* checksum, double* tOut = nullptr) {
     const auto tStart = std::chrono::steady_clock::now();
-    VkCommandBuffer cc = recordTriangle(a, slot, phase, r.color, r.colorV, r.depth, r.depthV, r.pipeline, r.rw, r.rh);
-    // Attachments -> the SHADER_READ_ONLY layout the FSR model samples its inputs in.
-    VkImageMemoryBarrier toRead[2] = {
+    const uint32_t k = fsrRingSlot(slot);
+    const VkImage cImg = r.color[k], dImg = r.depth[k], mImg = r.motion[k], oImg = r.out[k];
+    const VkImageView cVw = r.colorV[k], dVw = r.depthV[k], mVw = r.motionV[k], oVw = r.outV[k];
+    VkCommandBuffer cc = recordTriangle(a, slot, phase, prevPhase, cImg, cVw, dImg, dVw, r.pipeline, r.rw, r.rh);
+    // THE VELOCITY PASS for this frame, appended to the SAME buffer: this is what the FG hand-off reads as
+    // `motionVectors`, and it is measured below (measureMotion) rather than asserted.
+    if (r.velPipeline) appendVelocityPass(a, cc, slot, mImg, mVw, r.velPipeline, r.rw, r.rh);
+    // Attachments -> the SHADER_READ_ONLY layout the FSR model samples its inputs in (colour, depth AND motion).
+    VkImageMemoryBarrier toRead[3] = {
         {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
          .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
          .oldLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-         .image = r.color, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}},
+         .image = cImg, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}},
         {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
          .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
          .oldLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-         .image = r.depth, .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1}}};
+         .image = dImg, .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1}},
+        {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+         .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+         .oldLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+         .image = mImg, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}}};
     vkCmdPipelineBarrier(cc, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 0, nullptr, 2, toRead);
+        VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 0, nullptr, 3, toRead);
 
     ffxDispatchDescUpscale u{};
     u.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
     u.commandList = (void*)cc;
-    u.color = mkRes(r.color, r.rw, r.rh, FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT, FFX_API_RESOURCE_USAGE_READ_ONLY,
+    u.color = mkRes(cImg, r.rw, r.rh, FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT, FFX_API_RESOURCE_USAGE_READ_ONLY,
         FFX_API_RESOURCE_STATE_COMPUTE_READ);
-    u.depth = mkRes(r.depth, r.rw, r.rh, FFX_API_SURFACE_FORMAT_R32_FLOAT, FFX_API_RESOURCE_USAGE_DEPTHTARGET,
+    u.depth = mkRes(dImg, r.rw, r.rh, FFX_API_SURFACE_FORMAT_R32_FLOAT, FFX_API_RESOURCE_USAGE_DEPTHTARGET,
         FFX_API_RESOURCE_STATE_COMPUTE_READ);
-    u.motionVectors = mkRes(r.motion, r.rw, r.rh, FFX_API_SURFACE_FORMAT_R16G16_FLOAT,
+    u.motionVectors = mkRes(mImg, r.rw, r.rh, FFX_API_SURFACE_FORMAT_R16G16_FLOAT,
         FFX_API_RESOURCE_USAGE_READ_ONLY, FFX_API_RESOURCE_STATE_COMPUTE_READ);
-    u.output = mkRes(r.out, r.ow, r.oh, FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT, FFX_API_RESOURCE_USAGE_UAV,
+    u.output = mkRes(oImg, r.ow, r.oh, FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT, FFX_API_RESOURCE_USAGE_UAV,
         FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
     u.exposure.resource = nullptr; u.reactive.resource = nullptr;
     u.transparencyAndComposition.resource = nullptr;
@@ -923,12 +1141,12 @@ static ffxReturnCode_t fsrUpscaleFrame(VkApp& a, Provider& up, ffxContext& ctx, 
     vkBeginCommandBuffer(rb, &bi);
     VkImageMemoryBarrier outSrc{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .srcAccessMask = (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT), .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-        .oldLayout = VK_IMAGE_LAYOUT_GENERAL, .newLayout = VK_IMAGE_LAYOUT_GENERAL, .image = r.out,
+        .oldLayout = VK_IMAGE_LAYOUT_GENERAL, .newLayout = VK_IMAGE_LAYOUT_GENERAL, .image = oImg,
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
     vkCmdPipelineBarrier(rb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 0, nullptr, 1, &outSrc);
     VkBufferImageCopy cp{}; cp.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; cp.imageExtent = {r.ow, r.oh, 1};
-    vkCmdCopyImageToBuffer(rb, r.out, VK_IMAGE_LAYOUT_GENERAL, r.rb, 1, &cp);
+    vkCmdCopyImageToBuffer(rb, oImg, VK_IMAGE_LAYOUT_GENERAL, r.rb, 1, &cp);
     vkEndCommandBuffer(rb);
     VkSubmitInfo si2{VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr, 0, nullptr, nullptr, 1, &rb, 0, nullptr};
     vkQueueSubmit(a.queue, 1, &si2, VK_NULL_HANDLE);
@@ -996,15 +1214,15 @@ struct FsrHost {
     Provider* up{nullptr};
     bool live{false};
 };
-static bool initFsrHost(VkApp& a, Provider& up, FsrHost& h, const std::string& vertSpv, const std::string& fragSpv) {
+static bool initFsrHost(VkApp& a, Provider& up, FsrHost& h, const std::string& vertSpv, const std::string& fragSpv,
+                        const std::string& velSpv) {
     std::printf("\n=== FSR4 UPSCALER IMAGE DISPATCH: app-owned VkImages %ux%u -> %ux%u ===\n", kWidth, kHeight,
                 kFsrOw, kFsrOh);
     // THE SPIR-V PATHS COME FROM THE CALLER, not from re-joining outDir here. outDir is an OUTPUT directory;
     // rebuilding `outDir + "/triangle.vert.spv"` ignored the argv paths and, when outDir did not contain them,
     // handed vkCreateShaderModule an EMPTY buffer - which SIGSEGVed inside RADV rather than reporting a missing
     // shader. Callers still default to the outDir layout, so behaviour is unchanged when no path is passed.
-    if (!setupFsrRig(a, h.rig, vertSpv, fragSpv, kWidth, kHeight,
-                    kFsrOw, kFsrOh)) {
+    if (!setupFsrRig(a, h.rig, vertSpv, fragSpv, velSpv, kWidth, kHeight, kFsrOw, kFsrOh)) {
         std::printf("  RIG: FP16 colour / D32 depth / RG16F motion / FP16 output could not be created -> no proof\n");
         return false;
     }
@@ -1028,7 +1246,10 @@ static bool runFsrProof(VkApp& a, FsrHost& h, const std::string& outDir, int fra
     for (int f = 0; f < frames; ++f) {
         uint64_t sum = 0;
         double parts[4] = {0.0, 0.0, 0.0, 0.0};
-        const ffxReturnCode_t rc = fsrUpscaleFrame(a, *h.up, h.ctx, h.rig, (uint32_t)f, (double)f * 0.9, img, &sum, parts);
+        // prevPhase is the SAME clock one PPM frame back: the PPM loop's own step (0.9), so the velocity field
+        // written for these frames matches how the proof actually advances the scene.
+        const ffxReturnCode_t rc = fsrUpscaleFrame(a, *h.up, h.ctx, h.rig, (uint32_t)f, (double)f * 0.9,
+                                                  (f > 0 ? (double)(f - 1) * 0.9 : (double)f * 0.9), img, &sum, parts);
         uint32_t nb = 0;
         for (size_t i = 0; i + 2 < img.size(); i += 4)
             if (img[i] || img[i + 1] || img[i + 2]) ++nb;
@@ -1062,6 +1283,10 @@ static bool runFsrProof(VkApp& a, FsrHost& h, const std::string& outDir, int fra
             std::printf("HUD CROP, TOP-RIGHT (clocks: FPS at 4x, its deltas at 2x):\n");
             hudDumpAscii(img.data(), kFsrOw, kFsrOh, (int)kFsrOw - 300, 6, 300, 150, 2);
         }
+        // MEASURE the motion image the app handed the providers on the LAST proof frame, so the headless run
+        // carries the same velocity evidence as the window: the number is read back off the GPU image, never
+        // asserted from the CPU-side transform.
+        if (f + 1 == frames) measureMotion(a, h.rig, fsrRingSlot((uint32_t)f));
     }
     const bool ran = (okN == frames) && (changed == frames) && (nonblack == frames);
     std::printf("  VERDICT: rc=OK %d/%d, output-changed %d/%d, non-black %d/%d -> AMD FSR4 compute %s\n", okN, frames,
@@ -1238,6 +1463,31 @@ static void drawHud(unsigned char* rgba, uint32_t W, uint32_t H, const HudFacts&
     y += 7 * 2 + 5;
     std::snprintf(line, sizeof line, "GOT %d X REQ %d X", f.fgActual, f.fgRequested);
     hudLine(rgba, W, H, y, margin, true, 2, line, 255, 200, 90);
+    y += 7 * 2 + 8;
+    // THE DECISIVE FG READOUT, painted at 4x so it reads at a glance: Frame Generation either made frames or it did
+    // not, and the pixel read-back of the provider's OWN output decides which - never the requested multiplier.
+    if (f.fgLive) {
+        if (f.fgGenMeasured && f.fgGenWritten > 0)
+            std::snprintf(line, sizeof line, "FG RUNNING: %lld FRAMES MADE", f.fgGenerated);
+        else
+            std::snprintf(line, sizeof line, "FG NOT RUNNING");
+        hudLine(rgba, W, H, y, margin, true, 4, line,
+                (f.fgGenMeasured && f.fgGenWritten > 0) ? 120 : 255,
+                (f.fgGenMeasured && f.fgGenWritten > 0) ? 255 : 90,
+                (f.fgGenMeasured && f.fgGenWritten > 0) ? 120 : 90);
+        y += 7 * 4 + 6;
+        if (f.fgGenMeasured)
+            std::snprintf(line, sizeof line, "OUT PX %lld/%lld WRITTEN", f.fgGenWritten, f.fgGenSampled);
+        else
+            std::snprintf(line, sizeof line, "OUT PX UNVERIFIED");
+        hudLine(rgba, W, H, y, margin, true, 2, line, 255, 255, 255);
+        y += 7 * 2 + 5;
+        std::snprintf(line, sizeof line, "MOTION PX %u MAXV %.5f", f.fgVelPx, f.fgVelMax);
+        hudLine(rgba, W, H, y, margin, true, 2, line, 160, 200, 255);
+    } else {
+        std::snprintf(line, sizeof line, "FG NO CONTEXT");
+        hudLine(rgba, W, H, y, margin, true, 4, line, 255, 120, 120);
+    }
     // THE NUMBER BEING ASKED FOR: frames the provider PRODUCED vs the host frames it was ASKED to
     // interpolate, plus the provider's own last return code. Today that reads 0/N CODE 3 (RUNTIME_ERROR:
     // refusal, no fake frames). The moment the classic chain lands it becomes e.g. 552/552 CODE 0 with NO
@@ -1430,13 +1680,15 @@ static void driveFrameGeneration(Provider& p, VkApp& a, const FsrRig* rig) {
         pr.frameID = 1001u;
         pr.renderSize = rig ? FfxApiDimensions2D{rig->rw, rig->rh} : FfxApiDimensions2D{kWidth, kHeight};
         pr.commandList = (void*)cc;
-        pr.jitterOffset = {0.5f, -0.5f}; pr.motionVectorScale = {1.0f, 1.0f};
+        pr.jitterOffset = {0.0f, 0.0f}; pr.motionVectorScale = {1.0f, 1.0f};  // this host applies NO TAA jitter
         pr.frameTimeDelta = 16.6f; pr.cameraNear = 0.1f; pr.cameraFar = 1000.0f;
         pr.cameraFovAngleVertical = 1.0f; pr.viewSpaceToMetersFactor = 0.0f;
         if (rig) {
-            pr.depth = mkRes(rig->depth, rig->rw, rig->rh, FFX_API_SURFACE_FORMAT_R32_FLOAT,
+            // Slot 0 of the rig ring: this contract ladder runs ONE Prepare/generate pair, so only one slot of
+            // the two-frame history is in play here.
+            pr.depth = mkRes(rig->depth[0], rig->rw, rig->rh, FFX_API_SURFACE_FORMAT_R32_FLOAT,
                              FFX_API_RESOURCE_USAGE_DEPTHTARGET, FFX_API_RESOURCE_STATE_COMPUTE_READ);
-            pr.motionVectors = mkRes(rig->motion, rig->rw, rig->rh, FFX_API_SURFACE_FORMAT_R16G16_FLOAT,
+            pr.motionVectors = mkRes(rig->motion[0], rig->rw, rig->rh, FFX_API_SURFACE_FORMAT_R16G16_FLOAT,
                                      FFX_API_RESOURCE_USAGE_READ_ONLY, FFX_API_RESOURCE_STATE_COMPUTE_READ);
         }
         ffxDispatchDescFrameGenerationPrepareCameraInfo cam{};
@@ -1456,7 +1708,7 @@ static void driveFrameGeneration(Provider& p, VkApp& a, const FsrRig* rig) {
             v2.header.type = kFgPrepareV2Type;
             v2.frameID = 1001u; v2.flags = 0u; v2.commandList = (void*)cc;
             v2.renderSize = pr.renderSize;
-            v2.jitterOffset = {0.5f, -0.5f}; v2.motionVectorScale = {1.0f, 1.0f};
+            v2.jitterOffset = {0.0f, 0.0f}; v2.motionVectorScale = {1.0f, 1.0f};  // no TAA jitter in this host
             v2.frameTimeDelta = 16.6f; v2.reset = false;
             v2.cameraNear = 0.1f; v2.cameraFar = 1000.0f; v2.cameraFovAngleVertical = 1.0f;
             v2.viewSpaceToMetersFactor = 0.0f;
@@ -1486,7 +1738,7 @@ static void driveFrameGeneration(Provider& p, VkApp& a, const FsrRig* rig) {
         g.generationRect = {0, 0, 0, 0};  // whole-frame sentinel
         g.frameID = 1001u;
         if (rig) {
-            g.presentColor = mkRes(rig->out, rig->ow, rig->oh, FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT,
+            g.presentColor = mkRes(rig->out[0], rig->ow, rig->oh, FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT,
                                    FFX_API_RESOURCE_USAGE_READ_ONLY, FFX_API_RESOURCE_STATE_COMPUTE_READ);
             for (uint32_t i = 0; i < 3u; ++i)
                 g.outputs[i] = mkRes(bb[i], rig->ow, rig->oh, FFX_API_SURFACE_FORMAT_R8G8B8A8_UNORM,
@@ -1636,6 +1888,18 @@ struct FgWindowRig {
     long long emptyCalls{0};  // host asked for frames, provider said OK but ANSWERED 0 (hollow success)
     double msTotal{0.0};      // wall cost of those calls (what the HUD's FGMEM line prints)
     bool cmdOk{false};        // a command buffer could be allocated + begun (the provider records INTO one)
+    // THE GENERATED-FRAME EVIDENCE: the provider's OWN output images (`bb`, handed as g.outputs[]) are pre-filled
+    // with a sentinel at setup, then a CENTRE window is read back after every generate call. `genWrittenPx` is the
+    // count of sampled pixels that DIFFER from the sentinel, i.e. pixels the provider WROTE. A refusal keeps it at
+    // ZERO, which is the on-screen proof that no interpolated frame exists - independent of the return code, because
+    // it reads the memory the provider would have to write to produce one.
+    VkBuffer genRb{VK_NULL_HANDLE};
+    VkDeviceMemory genRbM{VK_NULL_HANDLE};
+    uint8_t* genRbMap{nullptr};
+    uint32_t genSampleW{0}, genSampleH{0};
+    uint32_t dispW{0}, dispH{0};  // the display extent the backbuffers were allocated at, for a CENTRED read-back
+    long long genWrittenPx{0}, genSampledPx{0};
+    bool genMeasured{false};
 };
 
 static bool initFgWindowRig(VkApp& a, Provider& p, FsrRig* rig, FgWindowRig& r, int mult) {
@@ -1679,23 +1943,117 @@ static bool initFgWindowRig(VkApp& a, Provider& p, FsrRig* rig, FgWindowRig& r, 
     if (rig) {
         for (uint32_t i = 0; i < 3u; ++i) {
             mkImg(a, rig->ow, rig->oh, VK_FORMAT_R8G8B8A8_UNORM,
-                  VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
-                  r.bb[i], r.bbV[i], r.bbM[i]);
+                  VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                  VK_IMAGE_ASPECT_COLOR_BIT, r.bb[i], r.bbV[i], r.bbM[i]);
             if (!r.bb[i]) {
                 std::printf("  window FG: backbuffer %u unavailable -> generate is called WITHOUT that output\n", i);
                 break;
             }
         }
+        // SENTINEL PRE-FILL of every output image, parked in GENERAL (the state the API's UNORDERED_ACCESS role
+        // means for this provider). Magenta (255,0,255) is not a colour this scene produces; the read-back below
+        // counts pixels that DIFFER from it, so "the provider wrote a generated frame" becomes an observation made
+        // on the provider's own output memory instead of an inference from a return code.
+        for (uint32_t i = 0; i < 3u; ++i) {
+            if (!r.bb[i]) continue;
+            VkCommandBuffer sb{VK_NULL_HANDLE};
+            VkCommandBufferAllocateInfo sbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, a.cmdPool,
+                VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
+            vkAllocateCommandBuffers(a.device, &sbi, &sb);
+            VkCommandBufferBeginInfo bb2{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, 0, nullptr};
+            vkBeginCommandBuffer(sb, &bb2);
+            VkImageMemoryBarrier toDst{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = 0,
+                .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .image = r.bb[i],
+                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+            vkCmdPipelineBarrier(sb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 0, nullptr, 1, &toDst);
+            VkClearColorValue sent;
+            sent.float32[0] = 1.0f; sent.float32[1] = 0.0f; sent.float32[2] = 1.0f; sent.float32[3] = 1.0f;
+            VkImageSubresourceRange rng{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdClearColorImage(sb, r.bb[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &sent, 1, &rng);
+            VkImageMemoryBarrier toGen{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                .dstAccessMask = (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT),
+                .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .image = r.bb[i], .subresourceRange = rng};
+            vkCmdPipelineBarrier(sb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 0, nullptr, 1, &toGen);
+            vkEndCommandBuffer(sb);
+            VkSubmitInfo sub{VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr, 0, nullptr, nullptr, 1, &sb, 0, nullptr};
+            vkQueueSubmit(a.queue, 1, &sub, VK_NULL_HANDLE);
+            vkQueueWaitIdle(a.queue);
+            vkFreeCommandBuffers(a.device, a.cmdPool, 1, &sb);
+        }
+        // ONE small host-visible staging buffer, mapped once, sized for the CENTRE window read-back per frame
+        // (240x135 of the display extent): per-frame create/map/unmap on a read-back is what cost 350ms/frame
+        // elsewhere on this driver.
+        r.genSampleW = rig->ow / 4u;
+        r.genSampleH = rig->oh / 4u;
+        r.dispW = rig->ow; r.dispH = rig->oh;
+        if (r.genSampleW && r.genSampleH) {
+            r.genRb = mkBuffer(a, (VkDeviceSize)r.genSampleW * r.genSampleH * 4u, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                               &r.genRbM);
+            if (r.genRb && r.genRbM)
+                vkMapMemory(a.device, r.genRbM, 0, (VkDeviceSize)r.genSampleW * r.genSampleH * 4u, 0,
+                            (void**)&r.genRbMap);
+            if (!r.genRbMap) std::printf("  window FG: generated-frame read-back unavailable -> G1 stays UNVERIFIED\n");
+        }
     }
     r.live = true;
     return true;
+}
+// READ BACK a CENTRE window of the provider's FIRST output image and count what it WROTE. Called after every
+// generate attempt. `written == 0` alongside `generated == 0` is the double reading: the provider said no AND its
+// own output memory still holds the sentinel. A future runtime that fabricates frames will light this up without
+// any change to this function.
+static void measureGenerated(VkApp& a, FgWindowRig& r) {
+    if (!r.genRbMap || !r.genSampleW || !r.genSampleH || !r.bb[0]) return;
+    const uint32_t w = r.genSampleW, h = r.genSampleH;
+    VkCommandBuffer cb{VK_NULL_HANDLE};
+    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, a.cmdPool,
+        VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
+    if (vkAllocateCommandBuffers(a.device, &ai, &cb) != VK_SUCCESS || !cb) return;
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, 0, nullptr};
+    vkBeginCommandBuffer(cb, &bi);
+    // The image is in GENERAL (that is where the pre-fill parked it and where an UAV write would leave it), so
+    // copy it in place with an access-only barrier - no layout flip, no re-tiling of a display-size image.
+    VkImageMemoryBarrier readSrc{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT), .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_GENERAL, .newLayout = VK_IMAGE_LAYOUT_GENERAL, .image = r.bb[0],
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 0, nullptr, 1, &readSrc);
+    VkBufferImageCopy cp{};
+    cp.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    cp.imageOffset = {(int32_t)((r.dispW - w) / 2u), (int32_t)((r.dispH - h) / 2u), 0};  // CENTRE of the display extent
+    cp.imageExtent = {w, h, 1};
+    vkCmdCopyImageToBuffer(cb, r.bb[0], VK_IMAGE_LAYOUT_GENERAL, r.genRb, 1, &cp);
+    vkEndCommandBuffer(cb);
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr, 0, nullptr, nullptr, 1, &cb, 0, nullptr};
+    if (vkQueueSubmit(a.queue, 1, &si, VK_NULL_HANDLE) == VK_SUCCESS) vkQueueWaitIdle(a.queue);
+    vkFreeCommandBuffers(a.device, a.cmdPool, 1, &cb);
+    // Count pixels that DIFFER from the (255,0,255) sentinel. Rounding tolerance is deliberately absent: the
+    // sentinel is an exact byte triple, and an interpolated frame could not reproduce it across a 240x135 block.
+    long long written = 0;
+    const uint8_t* px = r.genRbMap;
+    for (uint32_t i = 0; i < w * h; ++i) {
+        const uint8_t R = px[i * 4u + 0u], G = px[i * 4u + 1u], B = px[i * 4u + 2u];
+        if (!(R == 255u && G == 0u && B == 255u)) ++written;
+    }
+    r.genWrittenPx = written;
+    r.genSampledPx = (long long)w * h;
+    r.genMeasured = true;
 }
 
 // ONE host frame of Frame Generation: Prepare(frameID) then generate(frameID), the way the SDK pairs them.
 // The provider RECORDS compute into the HOST command list and never submits, so the host ends + submits +
 // waits here even when a refused call recorded nothing - that is the shape the real runtime will need, and
 // running it now is what keeps the difference between "refused" and "unimplemented plumbing" honest.
-static void fgFrameAttempt(FgWindowRig& r, VkApp& a, FsrRig* rig, int mult) {
+// `ring` MUST be the SAME slot the upscaler just rendered this frame into: FG samples this frame's colour/depth/
+// motion, and the provider keeps a TWO-FRAME history, so the other slot holds the frame it interpolates AGAINST.
+static void fgFrameAttempt(FgWindowRig& r, VkApp& a, FsrRig* rig, int mult, uint32_t ring) {
     if (!r.live || !r.p) return;
     VkCommandBuffer cb{VK_NULL_HANDLE};
     VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, a.cmdPool,
@@ -1715,7 +2073,10 @@ static void fgFrameAttempt(FgWindowRig& r, VkApp& a, FsrRig* rig, int mult) {
     pr.frameID = r.frameID;
     pr.renderSize = rig ? FfxApiDimensions2D{rig->rw, rig->rh} : FfxApiDimensions2D{kWidth, kHeight};
     pr.commandList = (void*)cb;
-    pr.jitterOffset = {0.5f, -0.5f};
+    // jitter is {0,0} HONESTLY: this host applies no TAA jitter to its images, so declaring a half-texel offset
+    // would be a fiction the reconstruction math would then be built on. motionVectorScale 1.0 because the app's
+    // velocity is written in clip-space units, which is the extent-normalized scale the API asks for.
+    pr.jitterOffset = {0.0f, 0.0f};
     pr.motionVectorScale = {1.0f, 1.0f};
     pr.frameTimeDelta = 16.6f;
     pr.cameraNear = 0.1f;
@@ -1723,9 +2084,9 @@ static void fgFrameAttempt(FgWindowRig& r, VkApp& a, FsrRig* rig, int mult) {
     pr.cameraFovAngleVertical = 1.0f;
     pr.viewSpaceToMetersFactor = 0.0f;
     if (rig) {
-        pr.depth = mkRes(rig->depth, rig->rw, rig->rh, FFX_API_SURFACE_FORMAT_R32_FLOAT,
+        pr.depth = mkRes(rig->depth[ring], rig->rw, rig->rh, FFX_API_SURFACE_FORMAT_R32_FLOAT,
                          FFX_API_RESOURCE_USAGE_DEPTHTARGET, FFX_API_RESOURCE_STATE_COMPUTE_READ);
-        pr.motionVectors = mkRes(rig->motion, rig->rw, rig->rh, FFX_API_SURFACE_FORMAT_R16G16_FLOAT,
+        pr.motionVectors = mkRes(rig->motion[ring], rig->rw, rig->rh, FFX_API_SURFACE_FORMAT_R16G16_FLOAT,
                                  FFX_API_RESOURCE_USAGE_READ_ONLY, FFX_API_RESOURCE_STATE_COMPUTE_READ);
     }
     ffxDispatchDescFrameGenerationPrepareCameraInfo cam{};
@@ -1749,7 +2110,7 @@ static void fgFrameAttempt(FgWindowRig& r, VkApp& a, FsrRig* rig, int mult) {
     g.generationRect = {0, 0, 0, 0};  // whole-frame sentinel: the provider's own fallback rule
     g.frameID = r.frameID;
     if (rig) {
-        g.presentColor = mkRes(rig->out, rig->ow, rig->oh, FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT,
+        g.presentColor = mkRes(rig->out[ring], rig->ow, rig->oh, FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT,
                                FFX_API_RESOURCE_USAGE_READ_ONLY, FFX_API_RESOURCE_STATE_COMPUTE_READ);
         for (uint32_t i = 0; i < 3u; ++i) {
             if (r.bb[i]) {
@@ -1782,6 +2143,9 @@ static void fgFrameAttempt(FgWindowRig& r, VkApp& a, FsrRig* rig, int mult) {
         if (vkQueueSubmit(a.queue, 1u, &si, VK_NULL_HANDLE) == VK_SUCCESS) vkQueueWaitIdle(a.queue);
     }
     vkFreeCommandBuffers(a.device, a.cmdPool, 1u, &cb);
+    // READ THE PROVIDER'S OWN OUTPUT BACK: whether any pixel of the generated-frame backbuffer differs from the
+    // sentinel is a MEASUREMENT of delivery, and it stays ZERO while the provider refuses.
+    measureGenerated(a, r);
     ++r.frameID;
 }
 
@@ -1792,6 +2156,10 @@ static void teardownFgWindowRig(VkApp& a, FgWindowRig& r) {
         if (r.bb[i]) vkDestroyImage(a.device, r.bb[i], nullptr);
         if (r.bbM[i]) vkFreeMemory(a.device, r.bbM[i], nullptr);
     }
+    // The generated-frame read-back staging buffer goes with the rest of the rig.
+    if (r.genRbMap && r.genRbM) vkUnmapMemory(a.device, r.genRbM);
+    if (r.genRb) vkDestroyBuffer(a.device, r.genRb, nullptr);
+    if (r.genRbM) vkFreeMemory(a.device, r.genRbM, nullptr);
 }
 
 // Blit loop. Returns false (caller then falls back to holdWindow) if SDL cannot hand us a software renderer
@@ -1866,7 +2234,15 @@ static bool showWindowSdl(VkApp& a, Provider* up, FsrHost* fsr, Provider* fg, in
         double fsrMs = 0.0, fsrMsTotal = 0.0, fsrMsN = 0.0;
         if (useFsr) {
             const auto tA = std::chrono::steady_clock::now();
-            const ffxReturnCode_t d = fsrUpscaleFrame(a, *up, fsr->ctx, fsr->rig, frame, el * 2.0, host, nullptr);
+            // prevPhase comes from the MEASURED frame-to-frame wall time (frameMs, computed just above from
+            // PRESENTED frames), so the velocity written into the motion image is the triangle's real displacement
+            // between the two frames this host presented - the pair Frame Generation interpolates between.
+            const double ph = el * 2.0;
+            const double phPrev = ph - 2.0 * (gHudFacts.frameMs / 1000.0);
+            const ffxReturnCode_t d = fsrUpscaleFrame(a, *up, fsr->ctx, fsr->rig, frame, ph, phPrev, host, nullptr);
+            // MEASURE the velocity image every 45th frame: the cost is one 64x36 copy, and the value is that the
+            // log then shows the motion vectors the provider was handed instead of the app asserting they exist.
+            if ((frame % 45u) == 0u) measureMotion(a, fsr->rig, fsrRingSlot(frame));
             fsrMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tA).count();
             fsrMsTotal += fsrMs; fsrMsN += 1.0;
             // The extents the HUD prints are the ones THIS rig allocated, read back off the rig.
@@ -1885,12 +2261,14 @@ static bool showWindowSdl(VkApp& a, Provider* up, FsrHost* fsr, Provider* fg, in
             gHudFacts.upH = 0u;
             gHudFacts.upMs = 0.0;
         }
-        // ONE host frame of Frame Generation, counted: Prepare(frameID) + generate(frameID) with the rig's
-        // real depth/motion/present-colour and three real backbuffers. r.generated sums the provider's ANSWER
+        // ONE host frame of Frame Generation, counted: Prepare(frameID) + generate(frameID) with the rig's real
+        // depth/motion/present-colour and three real backbuffers. r.generated sums the provider's ANSWER
         // (numGeneratedFrames as written back), so this line can only rise when the provider really produces
-        // frames - a refusal keeps it at 0 no matter what --fg= asked for.
+        // frames - a refusal keeps it at 0 no matter what --fg= asked for. `ring` is the slot THIS frame rendered
+        // into, the same one the upscaler just wrote, so FG samples a stable image and interpolates against the
+        // frame sitting in the OTHER slot.
         if (fgRig.live) {
-            fgFrameAttempt(fgRig, a, rigForFg, fgMult);
+            fgFrameAttempt(fgRig, a, rigForFg, fgMult, fsrRingSlot(frame));
             gHudFacts.fgLive = true;
             gHudFacts.fgAttempts = fgRig.attempts;
             gHudFacts.fgCancels = fgRig.cancelCalls;
@@ -1901,6 +2279,17 @@ static bool showWindowSdl(VkApp& a, Provider* up, FsrHost* fsr, Provider* fg, in
             // Delivered multiplier from the DELIVERED frames: 1 + (frames produced / host frames attempted).
             gHudFacts.fgActual =
                 fgRig.attempts ? (int)(1 + (fgRig.generated / (double)fgRig.attempts)) : 1;
+            // THE PIXEL EVIDENCE + the MEASURED motion input, straight from the rigs' own memory.
+            gHudFacts.fgGenMeasured = fgRig.genMeasured;
+            gHudFacts.fgGenWritten = fgRig.genWrittenPx;
+            gHudFacts.fgGenSampled = fgRig.genSampledPx;
+            if (fsr && fsr->live && fsr->rig.velMeasured) {
+                // The LAST measurement, i.e. the window's own frame-to-frame cadence - the session MAX would
+                // report the PPM proof's much larger step and be mistaken for what FG is actually handed here.
+                gHudFacts.fgVelMax = fsr->rig.velLastMax;
+                gHudFacts.fgVelPx = fsr->rig.velLastNonzeroPx;
+                gHudFacts.fgVelSamples = fsr->rig.velSamplePx;
+            }
         }
         // The window is RESIZABLE, so its extent is re-queried every frame and printed as-is; the
         // HUD is painted into the SAME buffer SDL uploads, so it scales/blits with the image it labels.
@@ -1933,6 +2322,14 @@ static bool showWindowSdl(VkApp& a, Provider* up, FsrHost* fsr, Provider* fg, in
                 std::printf("    FG: frames_generated=%lld host_frames_asked=%lld last_generate_code=%d (%.3fms avg)\n",
                             fgRig.generated, fgRig.attempts, fgRig.generateCode,
                             fgRig.attempts ? fgRig.msTotal / (double)fgRig.attempts : 0.0);
+                // The PIXEL VERDICT on the provider's OWN output image, and the motion input the host actually
+                // handed it. Read these together: an interpolated frame CANNOT exist without pixels appearing in
+                // the output backbuffer, so this line is the answer to "is Frame Generation running?" independent
+                // of any return code.
+                std::printf("    FG: output_backbuffer_px_written=%lld/%lld motion_nonzero_px=%u max|v|=%.5f (last sample)\n",
+                            fgRig.genWrittenPx, fgRig.genSampledPx,
+                            fsr && fsr->live ? fsr->rig.velLastNonzeroPx : 0u,
+                            fsr && fsr->live ? fsr->rig.velLastMax : 0.0);
             }
         }
         SDL_Delay(16);
@@ -1951,6 +2348,40 @@ static bool showWindowSdl(VkApp& a, Provider* up, FsrHost* fsr, Provider* fg, in
                     fgRig.generateCode, fgRig.prepareCode, avgMs,
                     fgRig.attempts ? (int)(1 + (fgRig.generated / (double)fgRig.attempts)) : 1,
                     (fgMult > 1 ? fgMult : 1));
+        // THE ANSWER TO "IS FRAME GENERATION RUNNING?", stated in plain words and backed by TWO INDEPENDENT
+        // READINGS: the provider's ANSWER (numGeneratedFrames) and the pixels of its OWN output backbuffer, which
+        // still hold the sentinel pre-fill when nothing was written.
+        //
+        // THE ARITHMETIC, spelled out because it is what a working 2X WOULD look like: Frame Generation inserts
+        // frames BETWEEN consecutive rendered ones. At 2x that is ONE generated frame per consecutive PAIR, so N
+        // rendered frames become N + (N - 1) shown - the user's own diagram F1 G1 F2 G2 F3 is 5 for 3. At 4x it is
+        // THREE in-between per pair: N + 3(N - 1) shown. This harness calls Prepare/generate ONCE PER RENDERED
+        // FRAME (one interval per host frame in steady state), so wantTotal below is that same rule read per
+        // interval; a strict pair count would be N-1 because the LAST frame has no following pair. Either way, 0
+        // delivered is the shortfall, and the shortfall is the interpolation RUNTIME, not the measurement.
+        {
+            const long long wantPerHost = (fgMult > 1) ? (fgMult - 1) : 0;
+            const long long wantTotal = fgRig.attempts * wantPerHost;
+            if (fgRig.generated == 0 && fgRig.genWrittenPx == 0)
+                std::printf("  FRAME GENERATION VERDICT: NOT RUNNING - 0 interpolated frames. The provider refused "
+                            "every generate() with code %d, AND %lld of %lld sampled pixels of its output backbuffer "
+                            "differ from the sentinel pre-fill (nothing was ever written). At %dx the host would need "
+                    "%lld generated frames for %lld host frames (one in-between per consecutive pair); the missing "
+                    "piece is the interpolation runtime, NOT the measurement.\n",
+                            fgRig.generateCode, fgRig.genWrittenPx, fgRig.genSampledPx, fgMult, wantTotal,
+                            fgRig.attempts);
+            else
+                std::printf("  FRAME GENERATION VERDICT: RUNNING - %lld interpolated frames delivered, %lld/%lld "
+                            "output pixels written by the provider.\n",
+                            fgRig.generated, fgRig.genWrittenPx, fgRig.genSampledPx);
+        }
+        if (fsr && fsr->live && fsr->rig.velMeasured)
+            std::printf("  HOST MOTION INPUT MEASURED: %u/%u sampled texels of the render-extent motion image carry "
+                        "NON-ZERO velocity, max|v|=%.5f clip units on the LAST sample (this is what FG is told to "
+                        "reconstruct from; the session-wide max was %.5f)\n",
+                        fsr->rig.velLastNonzeroPx, fsr->rig.velSamplePx, fsr->rig.velLastMax, fsr->rig.velMaxMag);
+        else
+            std::printf("  HOST MOTION INPUT MEASURED: NEVER SAMPLED (no rig, or measureMotion did not run)\n");
     } else {
         std::printf("  FRAME GENERATION tally: NO CONTEXT (provider create/configure refused) generated_frames=0\n");
     }
@@ -1992,6 +2423,14 @@ int main(int argc, char** argv) {
     std::string fgSo    = P(1, outDir + "/amd_fidelityfx_framegeneration_vk.so");
     std::string vertSpv = P(2, outDir + "/triangle.vert.spv");
     std::string fragSpv = P(3, outDir + "/triangle.frag.spv");
+    // The velocity fragment stage: passable as the 5th positional, and otherwise the fragSpv's OWN directory +
+    // "velocity.frag.spv" - deliberately NOT outDir, so a caller that writes its PPMs elsewhere still finds the
+    // SPIR-V that build.sh compiled next to the other two.
+    auto parentDir = [](std::string p) {
+        const size_t s = p.find_last_of('/');
+        return s == std::string::npos ? std::string(".") : p.substr(0, s);
+    };
+    std::string velSpv = P(4, parentDir(fragSpv) + "/velocity.frag.spv");
     std::string pVertSpv = outDir + "/present.vert.spv";
     std::string pFragSpv = outDir + "/present.frag.spv";
 
@@ -2021,7 +2460,7 @@ int main(int argc, char** argv) {
     FsrHost fsr;
     // vertSpv/fragSpv are the CALLER's paths (argv when given, outDir layout as the default) - see initFsrHost's
     // comment on why the rig must NOT rebuild them from outDir itself.
-    const bool fsrLive = upOk && initFsrHost(a, up, fsr, vertSpv, fragSpv);
+    const bool fsrLive = upOk && initFsrHost(a, up, fsr, vertSpv, fragSpv, velSpv);
     bool fsrRan = false;
 
     int written = 0;

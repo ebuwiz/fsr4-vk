@@ -204,6 +204,60 @@ FSR4_FGTEST_OUTDIR="$BUILD" ./build/FGTest --hud-dump <upscaler.so> <fg.so> <ver
 The GPU `--present` path is unchanged: it keeps `present.frag`'s own 5x3 digit readout, which needs no host
 buffer because that path presents through the driver's swapchain rather than through SDL.
 
+## Can you SEE whether Frame Generation runs? Yes — and the answer it gives is NO, in pixels
+
+Counting a multiplier cannot answer the question asked in front of the window: *"is it doing anything?"* So the
+window now paints a verdict decided by **the provider's own output memory**, and the host pays the three obligations
+that make an interpolated frame possible in principle at all. All of it is measured, on this host:
+
+1. **The motion vectors this app owes FG.** `velocity.frag` + `appendVelocityPass` render the SAME geometry into the
+   rig's `RG16F` image EVERY frame with the vertex stage's clip-space delta `clip(thisFrame) − clip(prevFrame)` (the
+   UBO gained `prevModelMatrix`; `prevPhase` comes from the MEASURED frame-to-frame wall time), the attachment being
+   cleared to `(0,0)` first so the static background keeps zero velocity, which is correct for this scene. `measureMotion`
+   then reads a 64×36 CENTRE window back off the GPU:
+   `motion MEASURED (ring slot 1, 64x36 centre of the 480x270 render): nonzero_velocity_px=633/2304 max|v|=0.04023`.
+   Before this, the motion image was cleared ONCE at setup and NEVER written again — FG was handed a STATIONARY scene
+   while the triangle visibly moved, so no interpolation of that field could ever produce a plausible in-between frame,
+   whatever the provider's runtime did.
+2. **A TWO-FRAME history the provider can actually read.** The SDK pins `MAX_QUEUED_FRAMES == 2`, so the frame FG
+   interpolates AGAINST must still hold its pixels while the next frame renders. The rig's colour/depth/motion/output
+   images are now a **ring of 2** (`fsrRingSlot(frame)`), and `fgFrameAttempt` is handed the SAME slot the upscaler
+   just wrote. With one image per role — which is what this harness had — every hand-off pointed at an image the host
+   was already overwriting, so the PAIR an interpolated frame is made FROM could not exist.
+3. **No invented jitter.** `jitterOffset` is `{0,0}`: this host applies no TAA jitter, and declaring a half-texel
+   offset would be a fiction the reconstruction math would then be built on.
+
+**The delivery evidence is read, not inferred.** `initFgWindowRig` pre-fills the generate output backbuffers with a
+`(255,0,255)` sentinel (usage `TRANSFER_DST` added for that), and `measureGenerated` copies a centred 240×135 window
+of the provider's FIRST output image after every `generate()` call and counts the pixels that DIFFER. The HUD shows
+it at 4× — `FG NOT RUNNING` in red, or `FG RUNNING: n FRAMES MADE` in green — above two small lines:
+
+```
+FG NOT RUNNING                    OUT PX 0/32400 WRITTEN                    MOTION PX 633  MAXV 0.04023
+```
+
+and the run ends with the sentence plus the arithmetic, since the difference between a working 2× and this run is the
+whole point: **2× inserts ONE generated frame per consecutive PAIR, so N rendered frames become N + (N − 1) shown** —
+the diagram `F1 G1 F2 G2 F3` is 5 for 3 — while **4× inserts three per pair** (`N + 3(N−1)`). Measured 4-second run:
+
+```
+FRAME GENERATION VERDICT: NOT RUNNING - 0 interpolated frames. The provider refused every generate() with code 3,
+AND 0 of 32400 sampled pixels of its output backbuffer differ from the sentinel pre-fill (nothing was ever written).
+At 2x the host would need 95 generated frames for 95 host frames (one in-between per consecutive pair); the missing
+piece is the interpolation runtime, NOT the measurement.
+HOST MOTION INPUT MEASURED: 443/2304 sampled texels ... max|v|=0.03475 clip units on the LAST sample ... the
+session-wide max was 0.64527
+```
+
+The two readings are INDEPENDENT: the provider's ANSWER (`numGeneratedFrames`) says 0 AND its output image says
+"never touched". When the classic chain lands, the SAME code prints `FG RUNNING` with a non-zero pixel count and
+needs no change to the measurement — that is why this ladder is built now. A session MAX and a LAST sample are
+both reported because they answer different questions: the PPM proof steps the scene much further per frame (0.645)
+than the live window cadence does (0.035), and conflating them would hide what FG is actually handed.
+
+**Gap kept honest:** the `--present` (WSI) rig still supplies zeroed motion vectors — that path is where `vkQueueSubmit`
+dies today, so it was left untouched rather than half-updated.
+
 ## The honest boundary (why FG does not "just work" here)
 
 Frame Generation `generate` stays a data-blocked `RUNTIME_ERROR` in this provider slice: AMD's ML/graph

@@ -1622,6 +1622,16 @@ def test_fgtest_host_app_runs_on_device():
     assert "AMD FSR4 compute RAN" in out, "the upscale dispatch proof did not run: " + (out[-400:] if out else "")
     assert "frames rendered non-black: 6/6" in out, "the moving-triangle host frames did not render"
 
+    # 5) THE HOST MUST OWE FRAME GENERATION ITS REAL INPUTS, and this is measured off the GPU image rather than
+    #    inferred from the CPU-side transform: a ZERO motion field would make interpolation meaningless, so a run
+    #    where every sampled texel is zero must NOT pass as "the harness is ready for 2c".
+    motion = re.findall(r"motion MEASURED \(ring slot \d, \d+x\d+ centre of the \d+x\d+ render\): "
+                        r"nonzero_velocity_px=(\d+)/(\d+) max\|v\|=([\d.]+)", out)
+    assert motion, "the app never measured the motion image it hands the providers"
+    real = [m for m in motion if int(m[0]) > 0 and float(m[2]) > 0.0]
+    assert real, f"every measured motion sample was ALL-ZERO: {motion} - FG would be handed a stationary scene " \
+                 "while the triangle visibly moves, so no interpolated frame could ever be plausible"
+
 
 def main():
     failures = []
