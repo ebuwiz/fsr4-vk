@@ -198,6 +198,19 @@ static std::vector<unsigned char> readSpv(const std::string& p) {
 }
 static VkShaderModule mkShader(VkApp& a, const std::string& path) {
     auto code = readSpv(path);
+    // A MISSING PATH IS NOT A SHADER: readSpv returns EMPTY, and handing codeSize=0 with pCode=nullptr to
+    // vkCreateShaderModule SIGSEGVed inside RADV, so a wrong argument surfaced as a crash with no named cause
+    // (the headless proof died right after its own banner when OUTDIR did not contain the SPIR-V). Refuse HERE
+    // with the reason, so rig setup reports "could not be created" instead of killing the process.
+    // NO MAGIC-WORD ASSERTION, deliberately: the classic SPIR-V magic is 0x0731346e, but the glslc on THIS host
+    // (1.4.363.0) writes header bytes 03 02 23 07 for the same valid module - `file` labels both "Khronos SPIR-V
+    // binary, little-endian", and RADV compiles them (the window's 138 frames came out of these). An equality
+    // check on the magic would reject shaders the driver accepts: a WORSE failure than the one being fixed.
+    if (code.empty() || (code.size() % 4u) != 0u) {
+        std::fprintf(stderr, "could not load SPIR-V: %s (%zu bytes: missing, empty or not a multiple of 4)\n",
+                     path.c_str(), code.size());
+        return VK_NULL_HANDLE;
+    }
     VkShaderModuleCreateInfo ci{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                                 .codeSize = code.size(), .pCode = (const uint32_t*)code.data()};
     VkShaderModule s{VK_NULL_HANDLE};
@@ -983,10 +996,14 @@ struct FsrHost {
     Provider* up{nullptr};
     bool live{false};
 };
-static bool initFsrHost(VkApp& a, Provider& up, FsrHost& h, const std::string& outDir) {
+static bool initFsrHost(VkApp& a, Provider& up, FsrHost& h, const std::string& vertSpv, const std::string& fragSpv) {
     std::printf("\n=== FSR4 UPSCALER IMAGE DISPATCH: app-owned VkImages %ux%u -> %ux%u ===\n", kWidth, kHeight,
                 kFsrOw, kFsrOh);
-    if (!setupFsrRig(a, h.rig, outDir + "/triangle.vert.spv", outDir + "/triangle.frag.spv", kWidth, kHeight,
+    // THE SPIR-V PATHS COME FROM THE CALLER, not from re-joining outDir here. outDir is an OUTPUT directory;
+    // rebuilding `outDir + "/triangle.vert.spv"` ignored the argv paths and, when outDir did not contain them,
+    // handed vkCreateShaderModule an EMPTY buffer - which SIGSEGVed inside RADV rather than reporting a missing
+    // shader. Callers still default to the outDir layout, so behaviour is unchanged when no path is passed.
+    if (!setupFsrRig(a, h.rig, vertSpv, fragSpv, kWidth, kHeight,
                     kFsrOw, kFsrOh)) {
         std::printf("  RIG: FP16 colour / D32 depth / RG16F motion / FP16 output could not be created -> no proof\n");
         return false;
@@ -2002,7 +2019,9 @@ int main(int argc, char** argv) {
     // the PPM proof and the live window share one context: the provider keeps FSR's temporal state
     // (accumulation / reactive) between dispatches, exactly as a game host would.
     FsrHost fsr;
-    const bool fsrLive = upOk && initFsrHost(a, up, fsr, outDir);
+    // vertSpv/fragSpv are the CALLER's paths (argv when given, outDir layout as the default) - see initFsrHost's
+    // comment on why the rig must NOT rebuild them from outDir itself.
+    const bool fsrLive = upOk && initFsrHost(a, up, fsr, vertSpv, fragSpv);
     bool fsrRan = false;
 
     int written = 0;

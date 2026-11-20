@@ -45,7 +45,23 @@ EXPECTED_MODEL_SIZE = 9437184  # 0x900000: the FG 4.0.2 ML model blob length (0x
 EXPECTED_MODEL_SHA = "6345f9ef4bbead6a942a7379d17caeaaf01d6142aa3dccae4695e56f68627dbe"
 PROVIDER_SO = ROOT / "build/linux/amd_fidelityfx_framegeneration_vk.so"
 EXEC_EXE = ROOT / "build/linux/framegeneration-exec"
+# The harness APP that hosts both providers. Its headless proof is the only thing in this suite that touches a GPU
+# device: a DEVICE-CONFIG regression in the harness is invisible to every static gate, which is how `NO_DEVICE`
+# reached the user while the gate count stayed green.
+FGTEST_EXE = ROOT / "tools/FGTest/build/FGTest"
+FGTEST_VERT = ROOT / "tools/FGTest/build/triangle.vert.spv"
+FGTEST_FRAG = ROOT / "tools/FGTest/build/triangle.frag.spv"
+UPSCALER_SO = ROOT / "build/linux/amd_fidelityfx_upscaler_vk.so"
 FFX_EXPORTS = {"ffxCreateContext", "ffxDestroyContext", "ffxConfigure", "ffxQuery", "ffxDispatch"}
+
+# A SKIP MUST NOT LOOK LIKE A PASS: gates that could verify NOTHING register themselves here, so the runner prints
+# `skip` instead of `ok` and the final tally separates the three outcomes.
+SKIPPED = {}
+
+
+def noteSkipGate(name, reason):
+    SKIPPED[name] = reason
+    print(f"  SKIP {name}: {reason} (this gate verified nothing in this run)")
 
 # The extension names a Vulkan harness in THIS tree may legitimately ask for, HARVESTED from the pinned
 # Vulkan headers rather than from memory: every *_EXTENSION_NAME macro and the string value it expands to.
@@ -1539,9 +1555,77 @@ def test_harness_extension_names_are_real():
     assert caught, "extension-name checker failed to catch the historical VK_xr_swapchain typo"
 
 
+def test_fgtest_host_app_runs_on_device():
+    """THE APP THAT HOSTS BOTH PROVIDERS, RUN.
+
+    WHY THIS EXISTS: every other gate in this file is GPU-free or self-skips on missing ARTIFACTS, so NOTHING in
+    the suite ever RAN the harness app. That is precisely the hole through a HARNESS regression - asking for an
+    extension at a level that makes vkCreateInstance FAIL - reached the user as a bare `NO_DEVICE` while 35/35
+    gates stayed green. A gate that never touches the device cannot see a device-config regression, so this one
+    runs the headless proof (the same invocation `tools/FGTest/build.sh` does, without `--window`) and asserts
+    the INVARIANTS that regression broke, not a fixed line count.
+
+    SKIPS, loudly and separately from passing: (a) `FSR4_SKIP_GPU_GATES=1` for a GPU-free CI run; (b) rc 77, which
+    is the app's own honest "no suitable device here"; (c) the app or its SPIR-V not built yet.
+    """
+    import os
+    if os.environ.get("FSR4_SKIP_GPU_GATES"):
+        noteSkipGate("test_fgtest_host_app_runs_on_device", "FSR4_SKIP_GPU_GATES is set")
+        return
+    for path, what in ((FGTEST_EXE, "FGTest app"), (FGTEST_VERT, "triangle.vert.spv"),
+                       (FGTEST_FRAG, "triangle.frag.spv"), (UPSCALER_SO, "upscaler .so")):
+        if not path.is_file():
+            noteSkipGate("test_fgtest_host_app_runs_on_device", f"{what} missing (build it: bash tools/FGTest/build.sh)")
+            return
+    # OUTDIR IS AN OUTPUT DIRECTORY ONLY, SINCE THE RIG STOPPED REBUILDING ITS SPIR-V PATHS FROM IT: the gate
+    # points it at a temp dir and passes the real SPIR-V via argv, which doubles as a check that the CALLER's
+    # paths are honoured (they used to be ignored, and an empty outDir fed vkCreateShaderModule a 0-byte buffer,
+    # which SIGSEGVed inside RADV instead of reporting a missing shader).
+    with tempfile.TemporaryDirectory() as tmp:
+        env = dict(os.environ, FSR4_FGTEST_OUTDIR=str(tmp), FSR4_VK_ASSET_ROOT=str(ROOT / "assets/pack-unified"))
+        proc = subprocess.run([str(FGTEST_EXE), str(UPSCALER_SO), str(PROVIDER_SO), str(FGTEST_VERT), str(FGTEST_FRAG)],
+                              env=env, capture_output=True, text=True, timeout=240)
+    out = proc.stdout + proc.stderr
+    if proc.returncode == 77:
+        noteSkipGate("test_fgtest_host_app_runs_on_device", "the app found no suitable device (its own rc 77 answer)")
+        return
+    # A CRASH MUST NOT BE MISREAD AS A SKIP OR A PASS: 139 is SIGSEGV, 134 SIGABRT, a negative returncode a signal.
+    assert proc.returncode == 0, f"host app rc={proc.returncode} (crash or failure). tail:\n{out[-1500:]}"
+
+    # 1) The device was PROVISIONED and the create steps all succeeded on the FIRST attempt. `NO_DEVICE` was the
+    #    symptom of the regression; `instance-create-refused` would mean the harmful instance-level swapchain
+    #    request came back (it is measured to make vkCreateInstance fail where no surface extension is enabled).
+    assert "NO_DEVICE" not in out, "the app could not create its device: regression of the create-retry fix"
+    assert "instance-create-refused" not in out, "the instance-level VK_KHR_swapchain request is BACK; it is measured to make vkCreateInstance FAIL on this kind of host"
+    assert "device offers:" in out, "the create-step diagnostics disappeared; every setup step must name itself"
+
+    # 2) The FG substrate must be BUILT inside the app. The gate reads what the DEVICE OFFERED instead of assuming
+    #    it: on a device without the descriptor-buffer transport the provider refuses by design, and that is a
+    #    HOST fact to report, not a harness regression to fail on.
+    offered = re.search(r"device offers: VK_KHR_swapchain=(\d) VK_EXT_descriptor_buffer=(\d)", out)
+    assert offered is not None, "the 'device offers' line is missing, so the transport answer cannot be checked"
+    if offered.group(2) == "1":
+        assert "caller device exports none of" not in out, \
+            "the app under-provisioned a device that DOES offer VK_EXT_descriptor_buffer: the FG substrate refusal is the harness's, not the host's"
+        assert "ffxCreateContext(frame-generation) = 0" in out, "the FG provider refused CREATE on a device that meets the contract"
+        assert "substrate built (usage reportable)" in out, "the Phase-1 substrate did not build inside the app (no a.fgDevice in the backend block?)"
+    else:
+        print("  NOTE host-app gate: this device does NOT offer VK_EXT_descriptor_buffer, so the substrate refusal is the host's, not the harness's")
+
+    # 3) THE HONEST REFUSALS MUST SURVIVE: a green host run is only meaningful while the absent algorithm still
+    #    refuses instead of inventing frames. If these flip to OK without a runtime, the gate fails on purpose.
+    assert "refusing to fake frame generation" in out, "the provider stopped naming its own honest refusal"
+    assert "ffxDispatch(Generate 2 + presentColor + outputs) = 3" in out, "generate stopped refusing while no FG runtime exists"
+    assert "ffxQuery(GET_GPUMEMORYUSAGE) = 3" in out, "the pre-Prepare memory query must still refuse: no allocations are behind that number yet"
+
+    # 4) The upscaler half ran on the GPU, and the app's own proof printed it.
+    assert "AMD FSR4 compute RAN" in out, "the upscale dispatch proof did not run: " + (out[-400:] if out else "")
+    assert "frames rendered non-black: 6/6" in out, "the moving-triangle host frames did not render"
+
+
 def main():
     failures = []
-    for test in (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
+    gates = (test_identity_gate, test_wrong_image_rejected, test_not_pe_rejected,
                  test_dedup_and_census, test_abi_exports, test_pipeline_cache_namespace_isolation,
                  test_pack_manifest_shape, test_framegeneration_exec_selftest,
                  test_descriptor_slot_resolver, test_layout_census_analyzer,
@@ -1569,14 +1653,22 @@ def main():
                  test_capture_ledger_unit_runs,
                  test_capture_shim_builds_against_vulkan_headers,
                   test_capture_shim_functional_rig,
-                   test_harness_extension_names_are_real):
+                   test_harness_extension_names_are_real,
+                    test_fgtest_host_app_runs_on_device)
+    for test in gates:
         name = test.__name__
         try:
+            before = set(SKIPPED)
             test()
-            print(f"ok   {name}")
+            if name in SKIPPED and name not in before:
+                print(f"skip {name}: {SKIPPED[name]}")
+            else:
+                print(f"ok   {name}")
         except AssertionError as error:
             print(f"FAIL {name}: {error}")
             failures.append(name)
+    # The three outcomes stay SEPARATE in the tally: a gate that skipped cannot be counted as one that verified.
+    print(f"gates: {len(gates) - len(failures) - len(SKIPPED)} verified, {len(SKIPPED)} skipped, {len(failures)} failed")
     return 1 if failures else 0
 
 

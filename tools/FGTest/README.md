@@ -228,6 +228,26 @@ window run reported `host_frames=138 ... last_generate=3 prepare=3 ... delivered
 Nothing here changed about `generate`: no descriptor write, no bind, no command recorded,
 no dispatch — the refusal is the same honest one, one allocation layer deeper.
 
+**The headless proof is now a GATE (and it immediately found a harness bug).** `test_fgtest_host_app_runs_on_device`
+in `tools/validate/frame-generation/tests.py` runs THIS app headless — the same invocation `build.sh` does, minus
+`--window` — and asserts the invariants that the extension-level regression broke: no `NO_DEVICE`, no
+`instance-create-refused`, the `device offers:` diagnostics present, the substrate BUILT when the device offers
+the transport, the upscaler verdict `AMD FSR4 compute RAN`, and the honest refusals (`GET_GPUMEMORYUSAGE = 3`
+before `Prepare`, `generate = 3`) STILL intact. A static gate cannot see a device-config regression, which is
+exactly how that regression reached the user with 35/35 gates green. It self-skips on rc 77 (no device), on
+missing artifacts, and on `FSR4_SKIP_GPU_GATES=1`.
+Writing it exposed the first trap: `setupFsrHost` had rebuilt the SPIR-V paths as `outDir + "/triangle.vert.spv"`,
+**ignoring the paths in `argv`** — so pointing `FSR4_FGTEST_OUTDIR` (an OUTPUT directory) somewhere that did not
+contain them made `readSpv` return empty and `vkCreateShaderModule` receive `codeSize=0, pCode=nullptr`, which
+**SIGSEGVed inside RADV** with only the section banner on the log. Fixed on both halves: `initFsrHost` now takes the
+CALLER's `vertSpv`/`fragSpv` (argv when given, the outDir layout only as the default), and `mkShader` refuses an
+empty or mis-aligned buffer with a NAMED reason (`could not load SPIR-V: <path> (0 bytes: missing, empty or not a
+multiple of 4)` → `NO_SHADERS`, rc 2) instead of calling through it. No SPIR-V **magic-word** assertion came with
+that guard, deliberately: the spec magic is `0x0731346e`, but the `glslc` on this host (1.4.363.0) writes header
+bytes `03 02 23 07` for the same valid module — `file` labels both "Khronos SPIR-V binary, little-endian", and
+RADV compiles them into the 138 rendered frames — so checking the magic would reject shaders the driver accepts.
+Empty and misaligned are refused; whether the bytes are a valid module is the driver's call.
+
 The **upscaler** provider genuinely creates a live context in-app: after attaching the `fsr4vk` backend(3) **+ instance(4)**
 descriptor blocks and setting `FSR4_VK_ASSET_ROOT` to `assets/pack-unified`, `ffxCreateContext(upscale)` returns **0 (OK)**
 on this device, and the `ffxQuery` helpers are answered by AMD's real math — `GET_UPSCALE_RATIO(BALANCED) = 1.70` and
