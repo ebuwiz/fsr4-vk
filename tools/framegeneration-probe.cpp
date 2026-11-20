@@ -22,6 +22,10 @@
 #include "ffx_api.h"
 #include "ffx_api_types.h"
 #include "ffx_frame_generation.h"
+// The provider's own contract header: this probe reads the 2.4.0-only
+// GetGPUMemoryUsageV2 query (0x0002000b) through its ABI mirror struct instead
+// of re-declaring the layout, which is what keeps one ABI shape in the tree.
+#include "framegeneration/framegeneration.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -96,6 +100,12 @@ static const char* kContractExtensions[] = {
     VK_KHR_16BIT_STORAGE_EXTENSION_NAME,
     VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME,
     VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
+    // The Frame Generation plan's bindings are VK_WHOLE_ARRAY runtime arrays, which
+    // conventional descriptor sets structurally cannot size (measured: 2684 of 2692 FG
+    // sets fail to allocate), so the runtime transport this provider needs is
+    // VK_EXT_descriptor_buffer. A probe device without it cannot host the Phase-1
+    // substrate, so it is requested here exactly like the harness device does.
+    VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
 };
 
 int main() {
@@ -169,6 +179,8 @@ int main() {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES};
         VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR derivatives{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR};
+        VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptorBuffer{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
         baseFeatures.pNext = &bufferAddress;
         bufferAddress.pNext = &float16Int8;
         float16Int8.pNext = &storage16;
@@ -178,6 +190,7 @@ int main() {
         descriptorIndexing.pNext = &storage8;
         storage8.pNext = &subgroupControl;
         subgroupControl.pNext = &derivatives;
+        derivatives.pNext = &descriptorBuffer;
 
         baseFeatures.features.shaderInt64 = VK_TRUE;
         baseFeatures.features.shaderInt16 = VK_TRUE;
@@ -192,6 +205,7 @@ int main() {
         storage8.storageBuffer8BitAccess = VK_TRUE;
         subgroupControl.subgroupSizeControl = VK_TRUE;
         derivatives.computeDerivativeGroupLinear = VK_TRUE;
+        descriptorBuffer.descriptorBuffer = VK_TRUE;
 
         VkDeviceQueueCreateInfo queue{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
         queue.queueFamilyIndex = 0;
@@ -376,6 +390,51 @@ int main() {
             expect("ffxDispatch(present-callback)",
                    (int)ffxDispatch(&context, &presentCb.header),
                    (int)FFX_API_RETURN_NO_PROVIDER);
+            // (f) Phase-1 substrate: the Prepare above allocated the plan's intermediate
+            // targets, one descriptor pool and the classic-subset compute pipelines ON this
+            // device. So the SAME GPU-memory-usage query that refused BEFORE Configure must
+            // now answer OK, with bytes the driver actually handed back (> 0), not a plan
+            // number and not a fabricated zero.
+            FfxApiEffectMemoryUsage afterPrepare{};
+            ffxQueryDescFrameGenerationGetGPUMemoryUsage usageQ{};
+            usageQ.header.type = FFX_API_QUERY_DESC_TYPE_FRAMEGENERATION_GPU_MEMORY_USAGE;
+            usageQ.header.pNext = nullptr;
+            usageQ.gpuMemoryUsageFrameGeneration = &afterPrepare;
+            expect("ffxQuery(GPU_MEMORY_USAGE) after Prepare (phase-1 substrate)",
+                   (int)ffxQuery(&context, &usageQ.header),
+                   (int)FFX_API_RETURN_OK);
+            expect("reported totalUsageInBytes is a real allocation (> 0)",
+                   afterPrepare.totalUsageInBytes > 0ull ? 1 : 0, 1);
+            std::printf("  phase1 usage: total=%llu aliasable=%llu\n",
+                        (unsigned long long)afterPrepare.totalUsageInBytes,
+                        (unsigned long long)afterPrepare.aliasableUsageInBytes);
+            // (g) The 2.4.0-only pre-create sizing query (0x0002000b) must answer for the
+            // resolutions the CALLER names, and it is legal with no context at all: read
+            // it through the provider's own ABI mirror struct (framegeneration.hpp).
+            {
+                FfxApiEffectMemoryUsage sized{};
+                ffgvk::QueryGPUUsageV2Desc v2{};
+                v2.header.type = 0x0002000bu;  // kEffectId | 0x0b
+                v2.header.pNext = nullptr;
+                v2.device = nullptr;
+                v2.maxRenderSize = {640u, 360u};
+                v2.displaySize = {1280u, 720u};
+                v2.gpuMemoryUsageFrameGeneration = &sized;
+                const int sizedCode = (int)ffxQuery(&context, &v2.header);
+                expect("ffxQuery(GetGPUMemoryUsageV2) answers for the caller's sizes",
+                       sizedCode, (int)FFX_API_RETURN_OK);
+                // 640x360 render + 1280x720 display is smaller than the pack's 1920x1080/
+                // 3840x2160 reference model, so a correct answer must be SMALLER than the
+                // reference byte total the pack carries (66,355,200 B) and still non-zero.
+                expect("V2 sizing scales with the caller's resolutions",
+                       sized.totalUsageInBytes > 0ull &&
+                           sized.totalUsageInBytes < 66355200ull
+                           ? 1
+                           : 0,
+                       1);
+                std::printf("  phase1 V2 sizing: 640x360 -> 1280x720 total=%llu\n",
+                            (unsigned long long)sized.totalUsageInBytes);
+            }
             const int destroyed = (int)ffxDestroyContext(&context, nullptr);
             expect("ffxDestroyContext", destroyed, (int)FFX_API_RETURN_OK);
 
@@ -418,7 +477,8 @@ int main() {
         return 1;
     }
     std::printf("Frame Generation host-integration ladder: every stage returned its documented "
-                "code (create / order-before-configure / versions / gpu-usage refusal / configure / "
-                "prepare / generate / present-callback / destroy)\n");
+                "code (create / order-before-configure / versions / gpu-usage refusal BEFORE "
+                "Configure, allocation-backed gpu-usage AFTER Prepare / configure / prepare / "
+                "generate / present-callback / V2 sizing / destroy)\n");
     return 0;
 }

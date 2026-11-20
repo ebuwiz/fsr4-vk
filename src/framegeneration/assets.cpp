@@ -62,9 +62,27 @@ void initializeEmbedded() {
     if (data.size() < 16 || std::memcmp(data.data(), "FFG4AS1\0", 8) != 0) {
         throw std::runtime_error("invalid embedded Frame Generation asset container");
     }
-    const std::uint32_t count = *reinterpret_cast<const std::uint32_t*>(data.data() + 8);
-    const std::uint32_t payload_size =
-        *reinterpret_cast<const std::uint32_t*>(data.data() + 12);
+    // Every integer below is read by copying its bytes, never through a reinterpret_cast:
+    // the index rows are packed (2 + 8 + 8, then a variable-length name), so a row's fields
+    // sit at arbitrary offsets and a typed load there is a MISALIGNED load - UBSan flags it,
+    // and it works on x86 only by the compiler's tolerance, not by the format's guarantee.
+    auto readU32 = [&](std::size_t at) {
+        std::uint32_t value = 0;
+        std::memcpy(&value, data.data() + at, sizeof(value));
+        return value;
+    };
+    auto readU16 = [&](std::size_t at) {
+        std::uint16_t value = 0;
+        std::memcpy(&value, data.data() + at, sizeof(value));
+        return value;
+    };
+    auto readU64 = [&](std::size_t at) {
+        std::uint64_t value = 0;
+        std::memcpy(&value, data.data() + at, sizeof(value));
+        return value;
+    };
+    const std::uint32_t count = readU32(8);
+    const std::uint32_t payload_size = readU32(12);
     std::size_t offset = 16;
     struct PendingEntry {
         std::string name;
@@ -77,12 +95,9 @@ void initializeEmbedded() {
         if (offset + 18 > data.size()) {
             throw std::runtime_error("truncated Frame Generation asset index");
         }
-        const std::uint16_t name_size =
-            *reinterpret_cast<const std::uint16_t*>(data.data() + offset);
-        const std::uint64_t payload_offset =
-            *reinterpret_cast<const std::uint64_t*>(data.data() + offset + 2);
-        const std::uint64_t size =
-            *reinterpret_cast<const std::uint64_t*>(data.data() + offset + 10);
+        const std::uint16_t name_size = readU16(offset);
+        const std::uint64_t payload_offset = readU64(offset + 2);
+        const std::uint64_t size = readU64(offset + 10);
         offset += 18;
         if (offset + name_size > data.size()) {
             throw std::runtime_error("truncated Frame Generation asset name");

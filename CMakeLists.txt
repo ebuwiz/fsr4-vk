@@ -178,7 +178,8 @@ set(FFG4_ASSET_ROOT "${CMAKE_SOURCE_DIR}/assets/frame-generation/pack" CACHE PAT
 # with the upscaler, and the two outputs coexist independently.
 add_library(amd_fidelityfx_framegeneration_vk SHARED
     src/framegeneration/provider.cpp src/framegeneration/capabilities.cpp
-    src/framegeneration/assets.cpp)
+    src/framegeneration/assets.cpp src/framegeneration/fg-plan.cpp
+    src/framegeneration/fg-runtime.cpp)
 target_include_directories(amd_fidelityfx_framegeneration_vk PRIVATE
     src src/framegeneration third_party/fidelityfx-api/api/include
     third_party/fidelityfx-api/framegeneration/include)
@@ -205,9 +206,12 @@ if(FFG4_EMBED_ASSETS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         "${FSR4_GENERATED}/framegeneration-assets.S")
     set_source_files_properties("${FSR4_GENERATED}/framegeneration-assets.S" PROPERTIES
         OBJECT_DEPENDS
-        "${FSR4_GENERATED}/framegeneration-assets.bin;${FFG4_ASSET_ROOT}/manifest.json")
+        "${FSR4_GENERATED}/framegeneration-assets.bin;${FFG4_ASSET_ROOT}/manifest.json;${FFG4_ASSET_ROOT}/fg-plan.tsv;${FFG4_ASSET_ROOT}/pipelines.tsv;${FFG4_ASSET_ROOT}/fg-plan.json")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
         "${FFG4_ASSET_ROOT}/manifest.json"
+        "${FFG4_ASSET_ROOT}/fg-plan.tsv"
+        "${FFG4_ASSET_ROOT}/fg-plan.json"
+        "${FFG4_ASSET_ROOT}/pipelines.tsv"
         "${CMAKE_SOURCE_DIR}/tools/assets/embed-framegeneration.py")
 endif()
 if(MINGW)
@@ -227,6 +231,7 @@ if(FSR4_CAPABILITY_PROBE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(framegeneration-probe PRIVATE
         amd_fidelityfx_framegeneration_vk Vulkan::Vulkan ${CMAKE_DL_LIBS})
     target_include_directories(framegeneration-probe PRIVATE
+        src
         third_party/fidelityfx-api/api/include
         third_party/fidelityfx-api/framegeneration/include)
     set_target_properties(framegeneration-probe PROPERTIES

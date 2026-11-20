@@ -26,10 +26,19 @@ def main():
     model = manifest.get("mlfi_model") or {}
     if not graph.get("file") or not model.get("file"):
         parser.error("pack is missing reverse-engineered ML graph/model")
+    # The provider's Phase-1 runtime reads the pack's OWN plan tables, so they travel
+    # inside the same container as the shaders they describe: fg-plan.tsv carries the
+    # module set + de-duplicated binding census, pipelines.tsv the push-constant bytes,
+    # fg-plan.json the intermediate-target byte model. A pack without them is refused
+    # here rather than shipping a provider that would silently have nothing to size.
     files = {
         graph["file"],
         model["file"],
         "manifest.json",
+        "modules.tsv",
+        "pipelines.tsv",
+        "fg-plan.tsv",
+        "fg-plan.json",
         *(f"modules/{name}" for name in manifest["modules"]),
     }
     rows = []

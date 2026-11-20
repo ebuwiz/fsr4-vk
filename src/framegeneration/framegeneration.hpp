@@ -75,6 +75,24 @@ constexpr ffxStructType_t kDispatchPrepareV2Type =
     kEffectId | 0x0c;  // 0x0002000c: ffxDispatchDescFrameGenerationPrepareV2 (camera [3] vectors + reset embedded; supersedes Prepare 0x04 + CameraInfo 0x0a)
 constexpr ffxStructType_t kQueryGPUUsageV2Type =
     kEffectId | 0x0b;  // 0x0002000b: ffxQueryDescFrameGenerationGetGPUMemoryUsageV2 (app FILLS device/maxRenderSize/formats; out = usage; NULL-context pre-create query)
+
+// ABI mirror of the 2.4.0 SDK's ffxQueryDescFrameGenerationGetGPUMemoryUsageV2, which the
+// older vendored ffx_frame_generation.h this provider includes does not carry. Same
+// precedent as ffgcheck::PrepareV2Desc: the field order/type composition is taken from the
+// pinned SDK header, so the contract layer can read a host's V2 sizing request without
+// waiting for the vendored copy to be refreshed.
+struct QueryGPUUsageV2Desc {
+    ffxQueryDescHeader header;
+    void* device = nullptr;
+    struct FfxApiDimensions2D maxRenderSize{};
+    struct FfxApiDimensions2D displaySize{};
+    std::uint32_t createFlags = 0u;
+    std::uint32_t dispatchFlags = 0u;
+    std::uint32_t backBufferFormat = 0u;
+    std::uint32_t hudlessBackBufferFormat = 0u;
+    struct FfxApiEffectMemoryUsage* gpuMemoryUsageFrameGeneration = nullptr;
+};
+
 constexpr ffxStructType_t kCreateVersionDescType =
     kEffectId | 0x0e;  // 0x0002000e: ffxCreateContextDescFrameGenerationVersion (version = FFX_FRAMEGENERATION_VERSION; REQUIRED link at create, else new APIs are disabled)
 constexpr ffxStructType_t kPresentPremulCallbackDescType =

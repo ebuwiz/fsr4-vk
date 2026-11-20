@@ -35,6 +35,7 @@
 #include "assets.hpp"
 #include "framegeneration-checks.hpp"
 #include "pipeline-cache.hpp"
+#include "fg-runtime.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -69,6 +70,20 @@ struct FrameGenerationContext {
     bool prepared = false;
     bool frameGenerationEnabled = true;   // from ffxConfigureDescFrameGeneration
     bool allowAsyncWorkloads = false;     // from ffxConfigureDescFrameGeneration
+
+    // Phase-1 runtime substrate (see fg-runtime.hpp). Built lazily at Prepare from the
+    // pack's OWN plan: it allocates the plan's intermediate targets as real device
+    // memory, one descriptor pool sized by the driver's element costs, and a real
+    // compute pipeline per module of the classic subset. It never dispatches, so the
+    // algorithm refusal stands while GPU-memory-usage becomes reportable.
+    ffgvk::PlanRuntime substrate;
+    ffgvk::SubstrateFacts substrateFacts;
+    std::string substrateNote;      // what happened, once attempted
+    bool substrateAttempted = false;
+    std::uint32_t renderWidth = 0;
+    std::uint32_t renderHeight = 0;
+    std::uint32_t displayWidth = 0;   // the display resolution the host declared
+    std::uint32_t displayHeight = 0;
 
     // The host-integration contract captured at ffxConfigure (ffxConfigureDescFrameGeneration):
     // the swap chain + present/frameGeneration callbacks (and their user contexts) the runtime
@@ -111,6 +126,104 @@ static bool extensiveLogging() {
 
 static void logLine(const std::string& text) {
     std::fprintf(stderr, "[ffg4] %s\n", text.c_str());
+}
+
+// Reads the pack's own plan tables into a Plan. Shared by ensureSubstrate (device)
+// and the GetGPUMemoryUsageV2 sizing query (device-free), so both sides answer from
+// the SAME numbers plan.py measured rather than each holding their own copy.
+static bool loadPlanModel(ffgplan::Plan& plan, std::string& reason) {
+    try {
+        const auto root = ffgassets::packRoot();
+        if (!ffgassets::exists(root / "fg-plan.tsv") ||
+            !ffgassets::exists(root / "pipelines.tsv") ||
+            !ffgassets::exists(root / "fg-plan.json")) {
+            reason = "pack carries no plan tables (fg-plan.tsv/pipelines.tsv/fg-plan.json)";
+            return false;
+        }
+        ffgplan::parsePlanTsv(ffgassets::read(root / "fg-plan.tsv"), plan);
+        ffgplan::parsePipelinesTsv(ffgassets::read(root / "pipelines.tsv"), plan);
+        ffgplan::parsePlanJson(ffgassets::read(root / "fg-plan.json"), plan);
+    } catch (const std::exception& error) {
+        reason = std::string("plan read failed: ") + error.what();
+        return false;
+    }
+    if (!plan.modules.empty()) {
+        std::string why;
+        if (!ffgplan::consistent(plan, why)) {
+            reason = "pack plan tables disagree: " + why;
+            return false;
+        }
+        return true;
+    }
+    reason = plan.reason.empty() ? "no plan rows parsed" : plan.reason;
+    return false;
+}
+
+// Builds the Phase-1 substrate exactly once, and only where the host has declared
+// the resolutions this effect will run at (Prepare). Reading the pack's own plan
+// tables is what decides the module set, the binding shapes and the intermediate
+// byte model; nothing in here is a constant copied from a tool.
+static void ensureSubstrate(FrameGenerationContext* ctx) {
+    if (ctx->substrateAttempted) {
+        return;
+    }
+    ctx->substrateAttempted = true;
+    // Lever, in the same read-once/parse-by-exact-spelling style as the rest: a host
+    // that wants this provider to allocate NOTHING on its device sets FFG4_VK_SUBSTRATE=0,
+    // and then GPU memory usage keeps refusing instead of reporting the substrate.
+    if (const char* off = std::getenv("FFG4_VK_SUBSTRATE"); off && std::strcmp(off, "0") == 0) {
+        ctx->substrateNote = "substrate disabled via FFG4_VK_SUBSTRATE=0";
+        return;
+    }
+    ffgplan::Plan plan;
+    std::string why;
+    if (!loadPlanModel(plan, why)) {
+        ctx->substrateNote = "plan unavailable: " + why;
+        return;
+    }
+    std::string reason;
+    ffgvk::SubstrateFacts facts;
+    const bool built =
+        ctx->substrate.build(ctx->backend, ctx->capabilities, plan,
+                             ctx->renderWidth, ctx->renderHeight,
+                             ctx->displayWidth, ctx->displayHeight,
+                             /*includeNeuralSubset=*/false, ctx->pipelineCache,
+                             facts, reason);
+    ctx->substrateFacts = facts;
+    if (!built) {
+        ctx->substrateNote = "substrate refused: " + reason;
+        return;
+    }
+    ctx->substrateNote = facts.usageReportable ? "substrate built (usage reportable)"
+                                             : "substrate partial (usage not reportable)";
+    logLine("phase1 substrate render=" + std::to_string(ctx->renderWidth) + "x" +
+            std::to_string(ctx->renderHeight) + " display=" +
+            std::to_string(ctx->displayWidth) + "x" + std::to_string(ctx->displayHeight) +
+            " plan modules=" + std::to_string(facts.planModules) +
+            " classic=" + std::to_string(facts.classicModules) +
+            " neural=" + std::to_string(facts.neuralModules) +
+            " groups=" + std::to_string(facts.bindingGroups) +
+            " order=" + facts.orderSource +
+            " intermediates=" + std::to_string(facts.targetsAllocated) + "/" +
+            std::to_string(facts.targetBytes) + "B pool=" +
+            std::to_string(facts.descriptorPoolBytes) + "B" +
+            " pipelines=" + std::to_string(facts.pipelinesCreated) + "/" +
+            std::to_string(facts.modulesAttempted) +
+            " layouts=" + std::to_string(facts.setLayouts) + "/" +
+            std::to_string(facts.pipelineLayouts) +
+            " descriptors=" + std::to_string(facts.descriptorBindingsOk) + "/" +
+            std::to_string(facts.descriptorBindings) +
+            " backings=" + std::to_string(facts.scratchBackings) +
+            (facts.descriptorCensusSkipped ? " census=skipped" : " census=run") +
+            " usage=" +
+            (facts.usageReportable
+                 ? std::to_string(facts.totalUsageInBytes) + "B (aliasable " +
+                   std::to_string(facts.aliasableUsageInBytes) + "B)"
+                 : "not-reportable") +
+            (facts.firstFailure.empty()
+                 ? std::string("")
+                 : std::string(" firstFailure=") + facts.firstFailure +
+                   " module=" + facts.firstFailureModule));
 }
 
 static bool validAllocationCallbacks(const ffxAllocationCallbacks* callbacks) {
@@ -392,11 +505,10 @@ ffxReturnCode_t destroyContext(ffxContext* context,
         return FFX_API_RETURN_ERROR_PARAMETER;
     }
     auto* created = static_cast<FrameGenerationContext*>(*context);
-    // This slice owns no submitted GPU work, so there is no owned fence/event to
-    // wait on. Teardown serializes the namespaced pipeline cache (so a warm start
-    // reuses it), then destroys the cache handle and context only; the caller owns
-    // the device and every resource it handed over. Never wait on unrelated device
-    // work.
+    // Release the Phase-1 substrate (device memory, layouts, pipelines) BEFORE the
+    // pipeline cache is serialized, so a warm start still finds the driver's compiled
+    // state and the caller's device is left with nothing of ours still allocated on it.
+    created->substrate.release();
     saveCache(created);
     created->~FrameGenerationContext();
     deallocate(callbacks, created);
@@ -445,6 +557,16 @@ ffxReturnCode_t configure(ffxContext* context,
             created->onlyPresentGenerated = cfg->onlyPresentGenerated;
             created->generationRect = cfg->generationRect;
             created->lastConfiguredFrameId = cfg->frameID;
+            // The generation rect is where a host declares the DISPLAY resolution both
+            // real and generated frames land on (a zero rect means "whole frame").
+            // The Phase-1 substrate sizes the plan's upscale-following intermediates
+            // from exactly this, and never from an assumed display size.
+            if (cfg->generationRect.width > 0 && cfg->generationRect.height > 0) {
+                created->displayWidth =
+                    static_cast<std::uint32_t>(cfg->generationRect.width);
+                created->displayHeight =
+                    static_cast<std::uint32_t>(cfg->generationRect.height);
+            }
         }
         // Register a lens-distortion field (0x00020008): validate + remember it for the (future)
         // present phase. A null resource is refused precisely, never silently ignored.
@@ -510,20 +632,79 @@ ffxReturnCode_t query(ffxContext* context, ffxQueryDescHeader* header) {
         }
         if (current->type == ffgvk::kQueryGPUUsageType) {
             // The SDK exposes GPU memory usage for this effect (ffxQueryDescFrameGenerationGetGPUMemoryUsage,
-            // type 0x00020007). This slice allocates no algorithm resources, so a
-            // usage number would be a fabrication: refuse honestly instead of returning
-            // a misleading zero the host might size VRAM against.
+            // type 0x00020007). With the Phase-1 substrate built, the numbers on the wire are the
+            // allocations the driver actually handed back for this context: the plan's intermediates
+            // plus its descriptor pool. Before that point (no Prepare yet, or a partial build) a
+            // usage number would still be a fabrication, so the refusal stands.
+            auto* usage =
+                reinterpret_cast<ffxQueryDescFrameGenerationGetGPUMemoryUsage*>(current);
+            auto* holder = (context && *context)
+                               ? static_cast<FrameGenerationContext*>(*context)
+                               : nullptr;
+            if (holder && holder->substrateFacts.usageReportable &&
+                usage->gpuMemoryUsageFrameGeneration) {
+                usage->gpuMemoryUsageFrameGeneration->totalUsageInBytes =
+                    holder->substrateFacts.totalUsageInBytes;
+                usage->gpuMemoryUsageFrameGeneration->aliasableUsageInBytes =
+                    holder->substrateFacts.aliasableUsageInBytes;
+                logLine("gpu memory usage reported from allocations: intermediates=" +
+                        std::to_string(holder->substrateFacts.targetBytes) +
+                        "B descriptor-pool=" +
+                        std::to_string(holder->substrateFacts.descriptorPoolBytes) +
+                        "B (allocated targets=" +
+                        std::to_string(holder->substrateFacts.targetsAllocated) +
+                        " pipelines=" +
+                        std::to_string(holder->substrateFacts.pipelinesCreated) + ")");
+                return FFX_API_RETURN_OK;
+            }
             logLine("query refused: Frame Generation GPU memory usage is not reportable "
-                    "until the interpolation/ML/present runtime is implemented");
+                    "until the interpolation/ML/present runtime is implemented" +
+                    (holder && !holder->substrateNote.empty()
+                         ? std::string("; substrate state: ") + holder->substrateNote
+                         : std::string(" (no substrate built yet: Prepare allocates it)")));
             return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
         }
         if (current->type == ffgvk::kQueryGPUUsageV2Type) {
             // ffxQueryDescFrameGenerationGetGPUMemoryUsageV2 (0x0b): the pre-context (NULL-context)
-            // sizing query. Same honesty rule: this slice allocates nothing, so any byte count would be
-            // a fabrication -- refuse instead of returning a misleading zero to size VRAM against.
-            logLine("query refused: Frame Generation GPU memory usage V2 (pre-context) is not reportable "
-                    "until the interpolation/ML/present runtime is implemented");
-            return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+            // sizing query - the app FILLS device/maxRenderSize/displaySize/formats and asks how big
+            // the effect WILL be, which is exactly what a host needs before it creates anything.
+            // The answer is the pack's OWN byte model for the resolutions the caller named, and the
+            // log says so in those words: this is a plan-model answer, not an allocation, and it
+            // never substitutes a number for a device it was not given.
+            const auto* v2 =
+                reinterpret_cast<const ffgvk::QueryGPUUsageV2Desc*>(current);
+            if (!v2->gpuMemoryUsageFrameGeneration) {
+                return FFX_API_RETURN_ERROR_PARAMETER;
+            }
+            if (v2->maxRenderSize.width == 0u || v2->maxRenderSize.height == 0u) {
+                logLine("query refused: GetGPUMemoryUsageV2 needs a non-zero maxRenderSize "
+                        "from the caller");
+                return FFX_API_RETURN_ERROR_PARAMETER;
+            }
+            ffgplan::Plan plan;
+            std::string why;
+            if (!loadPlanModel(plan, why)) {
+                logLine("query refused: GetGPUMemoryUsageV2 has no plan model to size "
+                        "the effect against: " + why);
+                return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+            }
+            const auto sized = ffgplan::sizeTargets(plan.facts, v2->maxRenderSize.width,
+                                                   v2->maxRenderSize.height,
+                                                   v2->displaySize.width,
+                                                   v2->displaySize.height);
+            v2->gpuMemoryUsageFrameGeneration->totalUsageInBytes = sized.totalBytes;
+            // Nothing is allocated for a pre-create sizing answer, so nothing may be
+            // claimed aliasable.
+            v2->gpuMemoryUsageFrameGeneration->aliasableUsageInBytes = 0u;
+            logLine("gpu memory usage V2 basis=plan-model(no allocation yet) render=" +
+                    std::to_string(v2->maxRenderSize.width) + "x" +
+                    std::to_string(v2->maxRenderSize.height) +
+                    " display=" + std::to_string(v2->displaySize.width) + "x" +
+                    std::to_string(v2->displaySize.height) + " targets=" +
+                    std::to_string(sized.entries.size()) + " total=" +
+                    std::to_string(sized.totalBytes) + "B (V1 0x07 reports "
+                    "allocations instead)");
+            return FFX_API_RETURN_OK;
         }
     }
     // Unknown query descriptors are reported, never answered wrongly.
@@ -564,6 +745,13 @@ ffxReturnCode_t dispatch(ffxContext* context, const ffxDispatchDescHeader* heade
             }
         }
         created->prepared = true;
+        // Prepare is where the host declares the render resolution, so it is also where
+        // the Phase-1 substrate is built (intermediates + descriptor pool + classic
+        // pipelines). Building it here means the resources a later GPU-memory-usage
+        // answer reports are ones the driver actually handed back.
+        created->renderWidth = prepare->renderSize.width;
+        created->renderHeight = prepare->renderSize.height;
+        ensureSubstrate(created);
         // The Prepare pass records into the host command list AND launches the dilate/optical-
         // flow compute, and the generate pass runs the interpolation + ML graph + swap-chain
         // present — NONE of which is implemented or image-quality-validated in this slice.
@@ -573,6 +761,9 @@ ffxReturnCode_t dispatch(ffxContext* context, const ffxDispatchDescHeader* heade
                 "Frame Generation interpolation/ML/present runtime is not implemented in "
                 "this provider slice; refusing to fake frame generation. See README "
                 "host-integration boundary.");
+        if (!created->substrateNote.empty()) {
+            logLine("prepare substrate state: " + created->substrateNote);
+        }
         return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
     }
 
@@ -623,6 +814,11 @@ ffxReturnCode_t dispatch(ffxContext* context, const ffxDispatchDescHeader* heade
             logLine("prepareV2 refused: " + pv.reason);
             return FFX_API_RETURN_ERROR_PARAMETER;
         }
+        created->prepared = true;
+        // PrepareV2 carries no render extent of its own, so the substrate builds from
+        // whatever resolutions this context already knows (Configure's generation rect
+        // and/or an earlier Prepare), never from a made-up size.
+        ensureSubstrate(created);
         logLine("prepareV2 accepted (order + arguments + embedded camera basis valid) but dispatch pending: "
                 "the Frame Generation interpolation/ML/present runtime is not implemented in this provider "
                 "slice; refusing to fake frame generation.");
