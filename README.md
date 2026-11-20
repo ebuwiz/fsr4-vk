@@ -17,7 +17,10 @@ The whole project is built on **measured ground truth, never inference**. Read t
   modules' **weights ARE extracted** (`pack/mlfi-model.bin`, 9,437,184 B at RVA `0xf00000`, `model.extracted=true`,
   entropy `7.403`, with per-record `.data` references) and their **chain order IS mined and gated**: `mlfi-graph.json`
   holds two chains of **191 entries each (`mlfi_4k_pass0..190` / `mlfi_8k_pass0..190`), and within a tier the
-  execution order is fixed by the pass index** — its own `order_basis` note says so, and adds that the *classic*
+  execution order is fixed by the pass index** - and the plan's own `order` column agrees with a single linear
+  sequence over all 474 compileable modules: **classic 0..91, then the 4k chain at 92..282, then the 8k chain at
+  283..473**, each tier's passes contiguous. So the ML chain's order is NOT the open half; the anonymous
+  `CS` **classic** slots are. Its own `order_basis` note says so, and adds that the *classic*
   optical-flow/interpolation ordering still needs control-flow correlation (which is what the new shape join advanced).
   What genuinely stays closed is (a) mapping each ML pass's chain edges onto the intermediate/resource objects and
   scratch sizing, and (b) **pixel parity**, which needs AMD reference captures. And the driver is NOT the blocker:
