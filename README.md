@@ -731,12 +731,51 @@ the pool; the same query still refuses before `Prepare`. `GetGPUMemoryUsageV2` (
 answers the pre-create question with the pack's byte model for the caller's own resolutions
 (640x360 -> 1280x720 = 7,372,800 B) and logs `basis=plan-model(no allocation yet)`.
 
-What this is **not**: the substrate never writes a descriptor, never binds a layout to a
-command buffer, never records or queues a command, and never dispatches. It proves the
-plan's resources exist on a real device and that the driver accepts every binding KIND
-through the transport the plan demands. Dispatch stays refused for the reason it has always
-given: which of the 92 anonymous `CS` classic modules a pass is, in which order, with which
-targets, is still not derivable - see `## Next steps`.
+What this is **not**: `Prepare` itself still only allocates — the substrate never writes a
+descriptor, binds a layout to a command buffer, records or queues a command, and never dispatches
+as part of the shipped contract. Executing a pass is a separate **opt-in measurement entry**
+(`PlanRuntime::dispatchOne`, reached only through the repo-internal query `0x000200f0`, which
+`framegeneration-probe` asks for with `--dispatch-*`), and `ffxDispatch(generate)` still returns
+`RUNTIME_ERROR` for the reason it has always given: which of the 92 anonymous `CS` classic modules
+a pass is, in which order, with which targets, is still not derivable. What `dispatchOne` proves
+is narrower and new: the plan's descriptors can be serialized, bound and **executed** on a real
+device, and the pass's own writable outputs can be read back.
+
+### Dispatching ONE pass on a real device (measured, RX 9070 XT / RADV GFX1201)
+
+Sequence, all names resolved through the caller's resolver because a **device-scope**
+`vkGetDeviceProcAddr` returns NULL for every one of these commands even where the
+instance-scope one succeeds: `vkGetDescriptorEXT` per binding (at the driver's own element size
+and binding offset) into a host buffer → `vkCmdUpdateBuffer` uploads into a pool allocated with
+`VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT` → `vkCmdBindDescriptorBuffersEXT` →
+`vkCmdSetDescriptorBufferOffsetsEXT` → `vkCmdBindPipeline` → `vkCmdDispatch` →
+`vkQueueSubmit` → `vkQueueWaitIdle`, with `vkCmdCopyImageToBuffer` / `vkCmdCopyBuffer` read-backs
+in the SAME submit.
+
+| measured | value |
+| --- | --- |
+| plan-order reached execution | orders **0–11** each `attempted=1 bound=1 submitted=1 ran=1` at `canvas=128x64` (before the write census existed) and orders **0–4** the same at `canvas=64x64`; always one order per process, `context_lost=0`, no driver fault messages |
+| pool the driver sized | `112–144 B` per module (6 sets, 3–5 binding groups), `descriptors=` equal bytes written |
+| grid | `groups=8x8x1` for `canvas=64x64`, `workgroup=8x8x1`, plan's own max extent reported alongside as `3840x2160` |
+| read-back census | `720 896 B` = 3 image copies (storage before/after + sampled after) + 2 buffer-back copies, `readback=1` |
+| driver's set-size answer | `4294967232 = 2³² − 64` — a **wrapped** answer, i.e. "this set has a runtime-sized array, so it has no bounded size". The per-binding `offset + element` route is the bounded one; the code records which produced the number |
+| first-execution cost | `ms_record≈0.3–0.5`, `ms_submit≈0.2`, **`ms_wait≈2003–2017`** for ONE dispatch |
+| is that per-dispatch? | **No.** FOUR dispatches of the same module in one command buffer measured `ms_wait=2042` total — the extra 3 added ~30 ms. So `ms_wait / repeats` is a meaningless number and is not printed |
+| chaining those dispatches | `repeats=4` produced `radv/amdgpu: The CS has been cancelled because the context is lost` while `vkQueueWaitIdle` still answered `VK_SUCCESS`; the next submit then returned `VK_ERROR_OTHER`. `repeats=1` produced **no** driver fault |
+| why the chain faults | the dependency `VK_EXT_descriptor_buffer` requires between dispatches that write the same pool is `VK_DEPENDENCY_BY_TRANSITION`, and that flag **is not in the pinned headers**; only a PLAIN barrier is expressible here |
+| did the pass write? | `out_changed=0 wrote_sampled=0 sb_nonzeroB=0 ub_nonzeroB=0` — but for the `repeats=4` run this is **confounded** by the cancelled CS (the note says so in the output); a clean single-dispatch census has not been re-run since the census was widened |
+
+Command for that clean census, when you choose to touch the GPU again (one process, one
+device, `repeats` defaults to 1):
+
+```
+./build/linux/framegeneration-probe --dispatch-one=0 --dispatch-canvas=64x64
+```
+
+**Do not loop the probe over modules in separate processes**: each process creates a
+`VkInstance`/`VkDevice` on the live desktop session, and 92 of them disrupts the compositor.
+`--dispatch-sweep=N` (N ≤ 92) is the single-process form; it stops on the first unusable device
+and names the orders it did not measure.
 
 ### Execution + pipeline-cache benchmark harness (`framegeneration-exec`)
 
@@ -957,7 +996,12 @@ The Frame Generation algorithm is the only genuinely open work; everything else 
    contexts. So the runtime half is now: allocate the SDK's shared-resource set with that arithmetic, bind the 92
    modules in recorded order from the plan's resolved layouts (Phase 1 already creates those pipelines and the
    plan-driven intermediates), record + submit, and let `generate` answer OK - leaving the 382 `mlfi_*` modules
-   refused. And the app closes the testability gap the README used to call "needs AMD captures": FGTest's scene is
+   refused. **The record + submit half is no longer hypothetical:** `PlanRuntime::dispatchOne` serializes the plan's
+   own descriptors with `vkGetDescriptorEXT`, binds the driver-sized pool, sets per-set offsets, binds the pipeline,
+   really dispatches on the caller's device and reads back every writable output - one pass per device lifetime measured
+   `ran=1` with no driver fault. What is NOT proven is a CHAIN (several dispatches over one pool fault here, see the
+   measured section above). And the app closes the testability gap the README used to call "needs AMD captures":
+   FGTest's scene is
    analytic (a triangle on a known translation/rotation schedule), so the classic chain's flow is predictable -
    a translation-only pair must yield a near-constant flow vector and an interpolated frame whose geometry sits
    between the two inputs, which is a real oracle for the classic path independent of pixel parity.
@@ -986,6 +1030,18 @@ oracle, pixel parity via captures).
    six rules the SDK pins (block size 8, zero-`generationRect` fallback, reset OR rule, `frameID % MAX_QUEUED_FRAMES`
    pairing, memory-usage sum, debug-view flags). Done when `ffxDispatch(generate 1..3)` returns `OK` for the classic
    chain with non-zero `generated` and real output images written, while `mlfi` stays `RUNTIME_ERROR`.
+   **Measured on this host, and it constrains HOW:** ONE pass per device lifetime runs clean
+   (`ran=1`, no driver fault) but **`repeats=4` dispatches of the same module over one pool inside one command buffer
+   produced `radv/amdgpu: The CS has been cancelled because the context is lost` while
+   `vkQueueWaitIdle` still answered `VK_SUCCESS`**, and the dependency the extension asks for there
+   (`VK_DEPENDENCY_BY_TRANSITION`) **is not in the pinned headers**, so a chain of dispatches over one
+   pool cannot currently be expressed correctly here. Two routes to try, in order: (i) **separate
+   command buffers with one dispatch each** and a real `vkCmdPipelineBarrier` / event dependency between the
+   submits (the earlier per-order runs show the fault tracks multi-dispatch-in-one-buffer, not the
+   submit itself); (ii) **give each pass its OWN descriptor pool** so no dispatch writes a pool another
+   dispatch is reading, which sidesteps the missing flag entirely at the cost of ~112-144 B per pass (the
+   measured per-module pool size). Either way the ~2 s first-execution cost is per-device, not
+   per-pass, so a 92-pass chain is not 92 x 2 s.
 4. **2d - prove it in the app, which is what the app was built for.** `bash tools/FGTest/run.sh --fg=2x` must show
    `GOT 2 X REQ 2 X` and a real `MS FGMEM` cost, and the analytic oracle on FGTest's own scene must hold: a
    translation-only frame pair yields a near-constant flow vector, the interpolated frame's geometry sits between the

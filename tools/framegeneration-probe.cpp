@@ -26,6 +26,7 @@
 // GetGPUMemoryUsageV2 query (0x0002000b) through its ABI mirror struct instead
 // of re-declaring the layout, which is what keeps one ABI shape in the tree.
 #include "framegeneration/framegeneration.hpp"
+#include "framegeneration/fg-runtime.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -108,7 +109,174 @@ static const char* kContractExtensions[] = {
     VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
 };
 
-int main() {
+// Which plan modules to actually dispatch, and over what canvas, comes from the COMMAND
+// LINE (opt-in; the contract ladder never runs GPU work). --dispatch-one=N,
+// --dispatch-orders=a,b,c and --dispatch-canvas=WxH are parsed by hand rather than with a
+// parser library because this tree has none, and an unrecognised --dispatch-* value is
+// reported loudly instead of being ignored (an ignored typo would silently mean "no
+// dispatch at all", which looks like a passing measurement).
+static void parseDispatchArgs(int argc, char** argv, std::vector<std::uint32_t>& orders,
+                              std::uint32_t& canvasWidth, std::uint32_t& canvasHeight,
+                              std::uint32_t& dispatchRepeat, std::uint32_t& sweepCount,
+                              bool& badArg) {
+    // Every prefix length comes from std::strlen OF THE PREFIX ITSELF. Hard-coding them is
+    // how this function first shipped wrong: "--dispatch-orders=" is 18 characters, not 16,
+    // so the comparison matched on a 16-byte prefix and then parsed the tail starting at
+    // "s=0,1,2..." - the malformed-argument path, and (worse) "--dispatch-canvas=64x64"
+    // parsed as "s=64x64", giving a canvas of 128x64 from a request for 64x64. Both bugs
+    // produced plausible-looking output, which is why the tail must end at a NUL here.
+    static constexpr const char* kOne = "--dispatch-one=";
+    static constexpr const char* kOrders = "--dispatch-orders=";
+    static constexpr const char* kCanvas = "--dispatch-canvas=";
+    static constexpr const char* kRepeat = "--dispatch-repeat=";
+    static constexpr const char* kSweep = "--dispatch-sweep=";
+    static constexpr const char* kAny = "--dispatch";
+    // Own digit parser rather than std::strtoul: strtoul wants a char** for its end pointer,
+    // and these are const char* slices of argv - a const_cast would be the lazy version of
+    // the bug above (it compiles, and hides where the tail actually ended).
+    auto parseUint = [](const char* text) {
+        struct Parsed {
+            std::uint64_t value;
+            const char* end;
+            bool ok;
+        };
+        const char* p = text;
+        std::uint64_t value = 0;
+        while (*p >= '0' && *p <= '9') {
+            value = value * 10ull + static_cast<std::uint64_t>(*p - '0');
+            ++p;
+        }
+        return Parsed{value, p, p != text};
+    };
+    for (int i = 1; i < argc; ++i) {
+        const char* arg = argv[i];
+        if (arg[0] != '-' || arg[1] != '-') {
+            continue;  // positional arguments are none of this probe's business
+        }
+        if (std::strncmp(arg, kOne, std::strlen(kOne)) == 0) {
+            const auto parsed = parseUint(arg + std::strlen(kOne));
+            if (!parsed.ok || *parsed.end != '\0') {
+                badArg = true;
+            } else {
+                orders.push_back(static_cast<std::uint32_t>(parsed.value));
+            }
+        } else if (std::strncmp(arg, kOrders, std::strlen(kOrders)) == 0) {
+            const char* p = arg + std::strlen(kOrders);
+            if (*p == '\0') {
+                badArg = true;  // --dispatch-orders= with no list is a typo, not "none"
+            }
+            while (*p != '\0') {
+                const auto parsed = parseUint(p);
+                if (!parsed.ok) {
+                    badArg = true;
+                    break;
+                }
+                orders.push_back(static_cast<std::uint32_t>(parsed.value));
+                p = parsed.end;
+                if (*p == ',') {
+                    ++p;
+                    if (*p == '\0') {
+                        badArg = true;  // trailing comma: 0,1,2, is a typo for a list
+                    }
+                } else if (*p != '\0') {
+                    badArg = true;
+                    break;
+                }
+            }
+        } else if (std::strncmp(arg, kCanvas, std::strlen(kCanvas)) == 0) {
+            const char* text = arg + std::strlen(kCanvas);
+            const char* at = std::strchr(text, 'x');
+            if (at == nullptr) {
+                const auto parsed = parseUint(text);
+                if (!parsed.ok || *parsed.end != '\0') {
+                    badArg = true;
+                } else {
+                    canvasWidth = static_cast<std::uint32_t>(parsed.value);
+                    canvasHeight = canvasWidth;
+                }
+            } else {
+                const auto first = parseUint(text);
+                const auto second = parseUint(at + 1);
+                if (!first.ok || first.end != at || !second.ok || *second.end != '\0') {
+                    badArg = true;
+                } else {
+                    canvasWidth = static_cast<std::uint32_t>(first.value);
+                    canvasHeight = static_cast<std::uint32_t>(second.value);
+                }
+            }
+        } else if (std::strncmp(arg, kRepeat, std::strlen(kRepeat)) == 0) {
+            const auto parsed = parseUint(arg + std::strlen(kRepeat));
+            if (!parsed.ok || *parsed.end != '\0') {
+                badArg = true;
+            } else {
+                dispatchRepeat = static_cast<std::uint32_t>(parsed.value);
+            }
+        } else if (std::strncmp(arg, kSweep, std::strlen(kSweep)) == 0) {
+            const auto parsed = parseUint(arg + std::strlen(kSweep));
+            if (!parsed.ok || *parsed.end != '\0') {
+                badArg = true;
+            } else {
+                sweepCount = static_cast<std::uint32_t>(parsed.value);
+            }
+        } else if (std::strncmp(arg, kAny, std::strlen(kAny)) == 0) {
+            badArg = true;  // a --dispatch flag this probe does not know
+        }
+    }
+    // A plan-order above 473 or a canvas outside 16..8192 is a typo on the command line,
+    // not a driver answer; rejecting them HERE names the argument instead of leaving the
+    // provider to report something that reads like a measurement.
+    for (const std::uint32_t order : orders) {
+        if (order > 473u) {
+            badArg = true;  // the plan carries 474 modules
+        }
+    }
+    if (canvasWidth != 0u && (canvasWidth < 16u || canvasWidth > 8192u)) {
+        badArg = true;
+    }
+    if (canvasHeight != 0u && (canvasHeight < 16u || canvasHeight > 8192u)) {
+        badArg = true;
+    }
+    // Repeating the same pass 64 times inside one command buffer is already far past any
+    // chain the plan describes (and any measurement worth making); above that the number
+    // is a typo, and a typo here would read as a timing result.
+    if (dispatchRepeat > 64u) {
+        badArg = true;
+    }
+    // 92 is the classic subset the plan carries; a sweep past it would silently re-run the
+    // ML chain's orders with no names bound to them, which is a different (and refused)
+    // question, so the argument is rejected instead of the run being quietly partial.
+    if (sweepCount > 92u) {
+        badArg = true;
+    }
+}
+
+int main(int argc, char** argv) {
+    std::vector<std::uint32_t> dispatchOrders;
+    std::uint32_t canvasWidth = 0u;
+    std::uint32_t canvasHeight = 0u;
+    std::uint32_t dispatchRepeat = 0u;
+    std::uint32_t dispatchSweepCount = 0u;
+    bool badDispatchArg = false;
+    parseDispatchArgs(argc, argv, dispatchOrders, canvasWidth, canvasHeight, dispatchRepeat,
+                      dispatchSweepCount, badDispatchArg);
+    if (badDispatchArg) {
+        std::printf("unrecognised or malformed --dispatch argument; this probe understands "
+                    "--dispatch-one=N, --dispatch-orders=a,b,c and --dispatch-canvas=WxH\n");
+        return 2;
+    }
+    // (h) The SWEEP MODE, in ONE process: --dispatch-sweep=N asks for plan orders
+    // 0..N-1 (N<=92) with no command-line list at all. This exists because the alternative
+    // - one process per module - was measured to be worse than it looks: every probe process
+    // creates a VkInstance and a VkDevice on the host's real desktop GPU session (KDE/Wayland
+    // here), so 92 processes tear that session down and re-create it 92 times. Inside one
+    // process the device is created once, and a pass that leaves the device unusable
+    // (contextLost) is reported as SKIPPED-REMAINING with the orders named, so the run still
+    // answers "how far does the plumbing get on this driver" without touching the display again.
+    if (dispatchOrders.empty()) {
+        for (std::uint32_t order = 0u; order < dispatchSweepCount; ++order) {
+            dispatchOrders.push_back(order);
+        }
+    }
     VkInstance instance{};
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO, nullptr, "ffg4-probe", 0,
                           "ffg4-probe", 0, VK_MAKE_API_VERSION(0, 4, 0, 2)};
@@ -408,6 +576,123 @@ int main() {
             std::printf("  phase1 usage: total=%llu aliasable=%llu\n",
                         (unsigned long long)afterPrepare.totalUsageInBytes,
                         (unsigned long long)afterPrepare.aliasableUsageInBytes);
+            // (f2) The MEASURED binding chain: ONE real compute dispatch of ONE plan module
+            // through the substrate built above, ON THIS device, asked for through the
+            // repo-internal query 0x000200f0. Opt-in (--dispatch-one=N /
+            // --dispatch-orders=a,b,c / --dispatch-canvas=WxH), because a faulting pass puts
+            // the device into hard recovery and the contract ladder above must stay runnable
+            // on a box that runs no GPU work at all. Every number printed is the driver's:
+            // whether the pool-bind -> set-offsets -> bind -> dispatch -> submit -> wait ->
+            // read-back commands of this VK_EXT_descriptor_buffer revision can be driven at
+            // all, what one pass costs, and whether the storage image the pass was handed
+            // changed bytes across it.
+            std::uint64_t dispatchAttempted = 0;
+            std::uint64_t dispatchRan = 0;
+            std::uint64_t dispatchChanged = 0;
+            // Ran AND touched something are different claims. "Ran" means the driver executed
+            // the pass without faulting; "wrote something" means at least one of the writable
+            // resources the pass was handed changed. A pass that runs but writes nothing under
+            // zero-filled push constants/uniforms is a HINT about what it branches on, not a
+            // failure of the plumbing - and conflating the two would hide that.
+            std::uint64_t dispatchWroteSomething = 0;
+            for (std::size_t index = 0; index < dispatchOrders.size(); ++index) {
+                const std::uint32_t order = dispatchOrders[index];
+                ffgvk::PlanRuntime::DispatchFacts measured{};
+                ffgvk::ProbeDispatchOneDesc probeQ{};
+                probeQ.header.type = ffgvk::kProbeDispatchOneType;
+                probeQ.header.pNext = nullptr;
+                probeQ.planOrder = order;
+                probeQ.canvasWidth = canvasWidth;
+                probeQ.canvasHeight = canvasHeight;
+                probeQ.dispatchRepeat = dispatchRepeat;
+                probeQ.factsOut = &measured;
+                const int probeCode = (int)ffxQuery(&context, &probeQ.header);
+                ++dispatchAttempted;
+                std::printf(
+                    "  dispatch order=%u code=%d attempted=%d bound=%d submitted=%d ran=%d "
+                    "ms_record=%.2f ms_submit=%.2f ms_wait=%.2f ms=%.2f repeats=%u "
+                    "barrier=%s "
+                    "pool=%lluB descriptors=%lluB groups=%ux%ux%u workgroup=%ux%ux%u canvas=%ux%u "
+                    "planMaxExtent=%ux%u texel=%uB readBack=%lluB sets=%u bindings=%u out_changed=%d "
+                    "wrote_sampled=%d sb_nonzeroB=%llu ub_nonzeroB=%llu any_writable_changed=%d "
+                    "readback=%d context_lost=%d before=%016llX after=%016llX basis=%s failure=%s\n",
+                    order, probeCode, measured.attempted ? 1 : 0, measured.bound ? 1 : 0,
+                    measured.submitted ? 1 : 0, measured.ok ? 1 : 0, measured.msRecord,
+                    measured.msSubmit, measured.msWait, measured.ms, measured.repeats,
+                    measured.barrierFlags.empty() ? "none" : measured.barrierFlags.c_str(),
+                    (unsigned long long)measured.poolBytes,
+                    (unsigned long long)measured.descriptorBytesWritten, measured.groups[0],
+                    measured.groups[1], measured.groups[2], measured.workgroup[0],
+                    measured.workgroup[1], measured.workgroup[2], measured.canvasWidth,
+                    measured.canvasHeight, measured.planMaxWidth, measured.planMaxHeight,
+                    measured.bytesPerTexel, (unsigned long long)measured.readBackBytes,
+                    measured.sets, measured.bindings, measured.outputChanged ? 1 : 0,
+                    measured.wroteSampledImage ? 1 : 0,
+                    (unsigned long long)measured.nonZeroStorageBufferBytes,
+                    (unsigned long long)measured.nonZeroUniformBufferBytes,
+                    measured.anyWritableOutputChanged ? 1 : 0,
+                    measured.readbackAvailable ? 1 : 0,
+                    measured.contextLost ? 1 : 0, (unsigned long long)measured.checksumBefore,
+                    (unsigned long long)measured.checksumAfter,
+                    measured.note.empty() ? "none" : measured.note.c_str(),
+                    measured.failure.empty() ? "none" : measured.failure.c_str());
+                if (measured.ok) {
+                    ++dispatchRan;
+                    if (measured.outputChanged) {
+                        ++dispatchChanged;
+                    }
+                    if (measured.anyWritableOutputChanged) {
+                        ++dispatchWroteSomething;
+                    }
+                }
+                // The device is unusable after a faulted CS or after a submit that answered
+                // VK_ERROR_OTHER; the remaining orders in THIS process would all report
+                // VK_ERROR_OTHER and be read as driver refusals. Stop, name the cause, and
+                // say which orders were NOT measured - the answer is "how far the plumbing
+                // gets in one device lifetime", which is exactly the question that does NOT
+                // require re-creating the host's desktop GPU session per module.
+                if (measured.contextLost) {
+                    std::printf("  dispatch sweep stopped_after_order=%u cause=%s not_measured=%zu\n",
+                                order, measured.failure.empty() ? "wait_failed" : "submit_or_wait_failed",
+                                dispatchOrders.size() - index - 1u);
+                    for (std::size_t rest = index + 1; rest < dispatchOrders.size(); ++rest) {
+                        std::printf("  dispatch order=%u skipped=device_no_longer_usable_in_this_process\n",
+                                    dispatchOrders[rest]);
+                    }
+                    break;
+                }
+            }
+            if (!dispatchOrders.empty()) {
+                std::printf("  dispatch summary: attempted=%llu ran=%llu image_changed=%llu "
+                            "wrote_something=%llu of %zu requested\n",
+                            (unsigned long long)dispatchAttempted, (unsigned long long)dispatchRan,
+                            (unsigned long long)dispatchChanged,
+                            (unsigned long long)dispatchWroteSomething, dispatchOrders.size());
+                // WHY there is no ms_per_dispatch line: dividing ms_wait by the repeat count
+                // was measured to be meaningless. One dispatch per device lifetime cost
+                // 2003-2017 ms of wait on this host; FOUR dispatches of the same module inside
+                // ONE command buffer cost 2042 ms total - so the ~2 s is a ONE-TIME first-
+                // execution cost (driver-side materialisation), and the extra 3 dispatches added
+                // ~30 ms. A reader given "510 ms per dispatch" would conclude the opposite.
+                if (dispatchRepeat != 1u) {
+                    std::printf(
+                        "  dispatch timing note: ms_wait is NOT proportional to repeats; the "
+                        "~2 s measured on this host is one-time first-execution cost, so per-dispatch "
+                        "cost must be read as (ms_wait(repeat=N) - ms_wait(repeat=1)) / (N-1), never "
+                        "as ms_wait / N. Measured here: repeats=4 -> 2042 ms total.\n");
+                    // The same run also produced a driver hard-recovery WITH repeats>1 and
+                    // NONE with repeats=1, which is the shape a missing VK_DEPENDENCY_BY_TRANSITION
+                    // barrier between pool writes produces. Recorded as a finding, not a
+                    // suggestion: the flag is absent from the pinned headers, so this driver
+                    // revision cannot express the dependency the chain needs.
+                    std::printf("  dispatch chain note: repeats>1 issues dispatches over ONE descriptor "
+                                "pool; on this host repeats=4 was measured to trigger 'the CS has been "
+                                "cancelled because the context is lost' while vkQueueWaitIdle still "
+                                "returned VK_SUCCESS. vkCmdPipelineBarrier here can only be PLAIN "
+                                "(VK_DEPENDENCY_BY_TRANSITION is not in these headers), so a multi-pass "
+                                "chain cannot be declared correct against this SDK revision.\n");
+                }
+            }
             // (g) The 2.4.0-only pre-create sizing query (0x0002000b) must answer for the
             // resolutions the CALLER names, and it is legal with no context at all: read
             // it through the provider's own ABI mirror struct (framegeneration.hpp).

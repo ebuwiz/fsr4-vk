@@ -664,6 +664,71 @@ ffxReturnCode_t query(ffxContext* context, ffxQueryDescHeader* header) {
                          : std::string(" (no substrate built yet: Prepare allocates it)")));
             return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
         }
+        if (current->type == ffgvk::kProbeDispatchOneType) {
+            // Repo-internal measurement, never a shipped contract: run ONE real compute
+            // dispatch of ONE plan module over the substrate THIS provider already built, on
+            // the device the caller handed it, and return the driver's numbers through the
+            // caller's own out struct. It exists so the bind-pool -> set-offsets -> bind ->
+            // dispatch -> submit -> wait -> read-back chain can be MEASURED here rather than
+            // argued about: whether this VK_EXT_descriptor_buffer revision can be driven at
+            // all, how long a pass costs, and whether the storage image the pass was handed
+            // changed bytes across it. If no substrate exists on this context it refuses
+            // outright: measuring on some other device would say nothing about this one.
+            const auto* probe = reinterpret_cast<const ffgvk::ProbeDispatchOneDesc*>(current);
+            if (probe->factsOut == nullptr) {
+                return FFX_API_RETURN_ERROR_PARAMETER;
+            }
+            auto* state = (context && *context) ? static_cast<FrameGenerationContext*>(*context) : nullptr;
+            if (!state || !state->substrateAttempted) {
+                logLine("dispatch measurement refused: this context has no substrate "
+                        "(Prepare is what builds it; nothing is dispatched on a foreign device)");
+                return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+            }
+            *probe->factsOut = ffgvk::PlanRuntime::DispatchFacts{};
+            std::string why;
+            const bool ran =
+                state->substrate.dispatchOne(probe->planOrder, probe->canvasWidth, probe->canvasHeight,
+                                             probe->dispatchRepeat, *probe->factsOut, why);
+            auto& measured = *probe->factsOut;
+            logLine("dispatch module=" + measured.module + " order=" + std::to_string(measured.order) +
+                    " stage=" + measured.stage + " sets=" + std::to_string(measured.sets) +
+                    " bindings=" + std::to_string(measured.bindings) +
+                    " bound=" + (measured.bound ? "yes" : "no") +
+                    " submitted=" + (measured.submitted ? "yes" : "no") +
+                    " ran=" + (measured.ok ? "yes" : "no") +
+                    // The four timings print as INTEGER MICROSECONDS, not std::to_string(double):
+                    // the double overload drags __gnu_cxx::__to_xstring<..., std::size_t,
+                    // std::va_list> into the .so's dynamic symbol table, which the ABI gate
+                    // test_abi_exports correctly reports as C++ leakage (measured: one symbol,
+                    // _ZN9__gnu_cxx12__to_xstringINSt7__...P13__va_list_tagEmSB_z). Integers use a
+                    // helper the provider already exports cleanly, and 1 us resolution is finer than
+                    // any of these numbers needs.
+                    " ms_record_us=" + std::to_string((unsigned long long)(measured.msRecord * 1000.0)) +
+                    " ms_submit_us=" + std::to_string((unsigned long long)(measured.msSubmit * 1000.0)) +
+                    " ms_wait_us=" + std::to_string((unsigned long long)(measured.msWait * 1000.0)) +
+                    " ms_total_us=" + std::to_string((unsigned long long)(measured.ms * 1000.0)) +
+                    " repeats=" + std::to_string(measured.repeats) + " barrier=" + measured.barrierFlags +
+                    " pool=" + std::to_string(measured.poolBytes) + "B descriptorBytes=" +
+                    std::to_string(measured.descriptorBytesWritten) +
+                    "B groups=" + std::to_string(measured.groups[0]) + "x" +
+                    std::to_string(measured.groups[1]) + "x" + std::to_string(measured.groups[2]) +
+                    " canvas=" + std::to_string(measured.canvasWidth) + "x" +
+                    std::to_string(measured.canvasHeight) + " planMaxExtent=" +
+                    std::to_string(measured.planMaxWidth) + "x" +
+                    std::to_string(measured.planMaxHeight) + " texel=" +
+                    std::to_string(measured.bytesPerTexel) + "B readBack=" +
+                    std::to_string(measured.readBackBytes) + "B outChanged=" +
+                    (measured.outputChanged ? "yes" : "no") +
+                    " wroteSampledImage=" + (measured.wroteSampledImage ? "yes" : "no") +
+                    " nonZeroStorageBufferBytes=" + std::to_string(measured.nonZeroStorageBufferBytes) +
+                    " nonZeroUniformBufferBytes=" + std::to_string(measured.nonZeroUniformBufferBytes) +
+                    " anyWritableChanged=" + (measured.anyWritableOutputChanged ? "yes" : "no") +
+                    " readbackAvailable=" + (measured.readbackAvailable ? "yes" : "no") +
+                    " contextLost=" + (measured.contextLost ? "yes" : "no") +
+                    " basis=" + measured.note +
+                    " reason=" + (measured.failure.empty() ? why : measured.failure));
+            return ran ? FFX_API_RETURN_OK : FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+        }
         if (current->type == ffgvk::kQueryGPUUsageV2Type) {
             // ffxQueryDescFrameGenerationGetGPUMemoryUsageV2 (0x0b): the pre-context (NULL-context)
             // sizing query - the app FILLS device/maxRenderSize/displaySize/formats and asks how big
