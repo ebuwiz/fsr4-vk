@@ -132,7 +132,31 @@ UPSCALER VK: 960x540      what amd_fidelityfx_upscaler_vk rendered, read off Fsr
 5.6 MS UPSCALER     this frame's ffxDispatch(upscale) + read-back cost (0.6 ms GPU dispatch + ~5 ms copy/decode)
 0.0 MS FGMEM REFUSED  the ffxDispatch(generate) call cost, timed in this process
 GOT 1 X REQ 2 X     the multiplier the provider DELIVERED vs the one --fg=2x/4x REQUESTED
+FGEN 0/552 CODE 3   frames the provider GENERATED / host frames it was ASKED to interpolate / last return code
 ```
+
+`FGEN` is the counter to watch. The window path now drives **Frame Generation every frame** —
+`Prepare(frameID)` then `generate(frameID)`, paired the way the SDK pins it (`MAX_QUEUED_FRAMES = 2`, so
+`frameID` alternates slots and Prepare is re-issued per frame rather than once), handing over this app's
+real `D32` depth, `RG16F` motion vectors, FP16 present colour and three real display-size backbuffers, into
+a command buffer the provider records in and the host submits. `generated` sums only what the provider WRITES
+BACK in `numGeneratedFrames` after the call, so:
+
+- while `generate` is refused, the screen reads **`FGEN 0/N CODE 3`** (N = presented host frames) — zero,
+  not the requested multiplier;
+- when the classic chain lands, the same code path reads **`FGEN 552/552 CODE 0`** and `GOT 2 X REQ 2 X`,
+  with no change to how the number is produced. That is the milestone to watch for.
+
+The same tallies print to stdout, once per second and at the end of the run — the SHAPE of those lines
+(this path has not been executed since the counter landed; run `run.sh` to see the live numbers):
+
+```
+FG: frames_generated=0 host_frames_asked=552 last_generate_code=3 (0.018ms avg)
+FRAME GENERATION tally: host_frames=552 generated_frames=0 ok_calls=0 last_generate=3 prepare=3 avg_cost=0.018ms -> delivered 1X of requested 2X
+```
+
+`MS FGMEM` in the window is now that live average (per-frame call cost), not the headless ladder's one-shot
+number, and `FGEN NO CONTEXT` prints when the FG provider could not create/configure a context on this host.
 
 `--fg=1x|2x|3x|4x` sets the REQUESTED value; because `generate` is refused here the screen keeps showing
 `GOT 1 X` next to `REQ 2 X`, which is the point of printing it at all — a multiplier copied from the

@@ -93,6 +93,11 @@ struct HudFacts {
     int fgRequested = 1;           // what the host asked for (--fg=2x / 4x)
     int fgActual = 1;              // what the provider really delivered (1 == no interpolation)
     bool fgRefused = false;        // generate returned RUNTIME_ERROR, i.e. honest refusal
+    // The counted FRAME numbers, filled by the window path's per-frame Prepare+generate attempts.
+    long long fgAttempts = 0;      // generate calls made in this process
+    long long fgGenerated = 0;     // frames the provider actually DELIVERED, summed over its answers
+    int fgCode = 0xFFFF;           // the last generate return code (0 OK, 3 runtime, 1/6 parameter, ...)
+    bool fgLive = false;           // false == no FG context in this session (provider .so absent/refused)
 };
 static HudFacts gHudFacts;
 static bool gHudDump = false;  // --hud-dump: paint the HUD into PPM frames and print the ASCII crop
@@ -1093,6 +1098,17 @@ static void drawHud(unsigned char* rgba, uint32_t W, uint32_t H, const HudFacts&
     y += 7 * 2 + 5;
     std::snprintf(line, sizeof line, "GOT %d X REQ %d X", f.fgActual, f.fgRequested);
     hudLine(rgba, W, H, y, margin, true, 2, line, 255, 200, 90);
+    // THE NUMBER BEING ASKED FOR: frames the provider PRODUCED vs the host frames it was ASKED to
+    // interpolate, plus the provider's own last return code. Today that reads 0/N CODE 3 (RUNTIME_ERROR:
+    // refusal, no fake frames). The moment the classic chain lands it becomes e.g. 552/552 CODE 0 with NO
+    // change to this code path, which is the whole point of counting the provider's ANSWER instead of the
+    // multiplier the host requested.
+    y += 7 * 2 + 5;
+    if (f.fgLive)
+        std::snprintf(line, sizeof line, "FGEN %lld/%lld CODE %d", f.fgGenerated, f.fgAttempts, f.fgCode);
+    else
+        std::snprintf(line, sizeof line, "FGEN NO CONTEXT");
+    hudLine(rgba, W, H, y, margin, true, 2, line, 150, 255, 150);
 }
 
 // Self-check, no display needed: re-paint the HUD region of a buffer and print it as ASCII, so
@@ -1430,13 +1446,202 @@ static void holdWindow(int seconds, SDL_Window* win) {
 // FSR blit to the window is the --present path, which only runs where the driver exposes a working swapchain.
 // Paint the readout into the RGBA host buffer BEFORE the SDL upload, so it survives the software blit.
 
+// --- Frame Generation driven EVERY frame of the window, so "how many frames did amd_fidelityfx_framegeneration_vk
+// actually produce?" is a NUMBER ON SCREEN instead of a sentence in prose.
+//
+// The contract shape is the SDK's own: create (host backend + enabled-feature blocks), Configure
+// (frameGenerationEnabled + present/generate callbacks), then Prepare and generate PAIRED through frameID -
+// ffx_provider_fsr3framegeneration.cpp pins MAX_QUEUED_FRAMES = 2, so the frameID that Prepared is the one
+// generate must name. Prepare is therefore re-issued per frame with a fresh frameID rather than once, and the
+// images handed over are the app's REAL ones: the FSR rig's D32 depth and RG16F motion vectors, its FP16
+// present colour, and three real R8G8B8A8 backbuffers at the upscaled extent (3 == MAX_QUEUED_FRAMES + 1, the
+// SDK's own arithmetic).
+//
+// Counting rule: generate returning OK with numGeneratedFrames = N means the provider PRODUCED N frames.
+// RUNTIME_ERROR (this provider slice's honest state) produces ZERO and the HUD shows 0 - never the multiplier
+// the host asked for.
+struct FgWindowRig {
+    Provider* p{nullptr};
+    ffxContext ctx{};
+    bool live{false};
+    int createCode{0xFFFF}, configureCode{0xFFFF}, prepareCode{0xFFFF}, generateCode{0xFFFF};
+    VkImage bb[3]{};
+    VkImageView bbV[3]{};
+    VkDeviceMemory bbM[3]{};
+    uint64_t frameID{1001ull};
+    long long attempts{0};    // generate calls made
+    long long generated{0};   // frames the provider actually delivered, summed
+    long long okCalls{0};     // generate calls that returned OK
+    double msTotal{0.0};      // wall cost of those calls (what the HUD's FGMEM line prints)
+    bool cmdOk{false};        // a command buffer could be allocated + begun (the provider records INTO one)
+};
+
+static bool initFgWindowRig(VkApp& a, Provider& p, FsrRig* rig, FgWindowRig& r, int mult) {
+    (void)mult;
+    r.p = &p;
+    FfgEnabledFeaturesDesc en;
+    FfgBackendDesc bk;
+    buildContract(a, en, bk);
+    struct VersionLink {
+        ffxCreateContextDescHeader header;
+    } vlink{ffxApiHeader{0x0002000eu, nullptr}};
+    bk.header.pNext = &en.header;
+    en.header.pNext = &vlink.header;
+    ffxCreateContextDescFrameGeneration cd{};
+    cd.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION;
+    cd.header.pNext = &bk.header;
+    cd.flags = FFX_FRAMEGENERATION_ENABLE_DEBUG_CHECKING;
+    // Host shape here: GAME render (rig->rw x rh) -> AMD FSR upscale -> PRESENT (rig->ow x oh). FG is told the
+    // UPSCALED extent as its display/backbuffer size while Prepare keeps naming the GAME extent.
+    const uint32_t dspW = rig ? rig->ow : kWidth;
+    const uint32_t dspH = rig ? rig->oh : kHeight;
+    cd.displaySize = {dspW, dspH};
+    cd.maxRenderSize = {dspW, dspH};
+    cd.backBufferFormat = 1u;  // the non-UNKNOWN surface-format id the contract asks for
+    r.createCode = (int)p.create(&r.ctx, &cd.header, nullptr);
+    std::printf("  window FG ffxCreateContext = %d (0=OK)\n", r.createCode);
+    if (r.createCode != FFX_API_RETURN_OK) return false;
+    ffxConfigureDescFrameGeneration cf{};
+    cf.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
+    cf.frameGenerationEnabled = true;
+    cf.swapChain = (void*)&r.ctx;
+    cf.presentCallback = cbPresent;
+    cf.frameGenerationCallback = cbFg;
+    r.configureCode = (int)p.configure(&r.ctx, &cf.header);
+    std::printf("  window FG ffxConfigure = %d (0=OK)\n", r.configureCode);
+    if (r.configureCode != FFX_API_RETURN_OK) {
+        p.destroy(&r.ctx, nullptr);
+        r.ctx = {};
+        return false;
+    }
+    if (rig) {
+        for (uint32_t i = 0; i < 3u; ++i) {
+            mkImg(a, rig->ow, rig->oh, VK_FORMAT_R8G8B8A8_UNORM,
+                  VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+                  r.bb[i], r.bbV[i], r.bbM[i]);
+            if (!r.bb[i]) {
+                std::printf("  window FG: backbuffer %u unavailable -> generate is called WITHOUT that output\n", i);
+                break;
+            }
+        }
+    }
+    r.live = true;
+    return true;
+}
+
+// ONE host frame of Frame Generation: Prepare(frameID) then generate(frameID), the way the SDK pairs them.
+// The provider RECORDS compute into the HOST command list and never submits, so the host ends + submits +
+// waits here even when a refused call recorded nothing - that is the shape the real runtime will need, and
+// running it now is what keeps the difference between "refused" and "unimplemented plumbing" honest.
+static void fgFrameAttempt(FgWindowRig& r, VkApp& a, FsrRig* rig, int mult) {
+    if (!r.live || !r.p) return;
+    VkCommandBuffer cb{VK_NULL_HANDLE};
+    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, a.cmdPool,
+                                   VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1u};
+    if (vkAllocateCommandBuffers(a.device, &ai, &cb) != VK_SUCCESS || !cb) {
+        r.cmdOk = false;
+        return;
+    }
+    r.cmdOk = true;
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, 0u, nullptr};
+    if (vkBeginCommandBuffer(cb, &bi) != VK_SUCCESS) {
+        vkFreeCommandBuffers(a.device, a.cmdPool, 1u, &cb);
+        return;
+    }
+    ffxDispatchDescFrameGenerationPrepare pr{};
+    pr.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE;
+    pr.frameID = r.frameID;
+    pr.renderSize = rig ? FfxApiDimensions2D{rig->rw, rig->rh} : FfxApiDimensions2D{kWidth, kHeight};
+    pr.commandList = (void*)cb;
+    pr.jitterOffset = {0.5f, -0.5f};
+    pr.motionVectorScale = {1.0f, 1.0f};
+    pr.frameTimeDelta = 16.6f;
+    pr.cameraNear = 0.1f;
+    pr.cameraFar = 1000.0f;
+    pr.cameraFovAngleVertical = 1.0f;
+    pr.viewSpaceToMetersFactor = 0.0f;
+    if (rig) {
+        pr.depth = mkRes(rig->depth, rig->rw, rig->rh, FFX_API_SURFACE_FORMAT_R32_FLOAT,
+                         FFX_API_RESOURCE_USAGE_DEPTHTARGET, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+        pr.motionVectors = mkRes(rig->motion, rig->rw, rig->rh, FFX_API_SURFACE_FORMAT_R16G16_FLOAT,
+                                 FFX_API_RESOURCE_USAGE_READ_ONLY, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    }
+    ffxDispatchDescFrameGenerationPrepareCameraInfo cam{};
+    cam.header.type = 0x0002000au;  // V1 camera-info block (linked, not embedded)
+    cam.cameraPosition[0] = 0.0f; cam.cameraPosition[1] = 0.0f; cam.cameraPosition[2] = 0.0f;
+    cam.cameraUp[0] = 0.0f; cam.cameraUp[1] = 1.0f; cam.cameraUp[2] = 0.0f;
+    cam.cameraRight[0] = 1.0f; cam.cameraRight[1] = 0.0f; cam.cameraRight[2] = 0.0f;
+    cam.cameraForward[0] = 0.0f; cam.cameraForward[1] = 0.0f; cam.cameraForward[2] = -1.0f;
+    pr.header.pNext = &cam.header;
+    r.prepareCode = (int)r.p->dispatch(&r.ctx, &pr.header);
+    ffxDispatchDescFrameGeneration g{};
+    g.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION;
+    g.commandList = (void*)cb;
+    // numGeneratedFrames is what the host ASKS for; the provider may answer with fewer or refuse entirely,
+    // and only its ANSWER is summed into r.generated below.
+    g.numGeneratedFrames = (mult > 1) ? (uint32_t)(mult - 1) : 0u;
+    g.reset = false;
+    g.backbufferTransferFunction = 0u;
+    g.minMaxLuminance[0] = 0.0f;
+    g.minMaxLuminance[1] = 1.0f;
+    g.generationRect = {0, 0, 0, 0};  // whole-frame sentinel: the provider's own fallback rule
+    g.frameID = r.frameID;
+    if (rig) {
+        g.presentColor = mkRes(rig->out, rig->ow, rig->oh, FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT,
+                               FFX_API_RESOURCE_USAGE_READ_ONLY, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+        for (uint32_t i = 0; i < 3u; ++i) {
+            if (r.bb[i]) {
+                g.outputs[i] = mkRes(r.bb[i], rig->ow, rig->oh, FFX_API_SURFACE_FORMAT_R8G8B8A8_UNORM,
+                                     FFX_API_RESOURCE_USAGE_UAV, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
+            }
+        }
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    r.generateCode = (int)r.p->dispatch(&r.ctx, &g.header);
+    r.msTotal += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    ++r.attempts;
+    if (r.generateCode == FFX_API_RETURN_OK) {
+        ++r.okCalls;
+        r.generated += (long long)g.numGeneratedFrames;  // the ANSWER, re-read after the call, is what counts
+    }
+    if (vkEndCommandBuffer(cb) == VK_SUCCESS && a.queue) {
+        VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr, 0u, nullptr, nullptr, 1u, &cb, 0u, nullptr};
+        if (vkQueueSubmit(a.queue, 1u, &si, VK_NULL_HANDLE) == VK_SUCCESS) vkQueueWaitIdle(a.queue);
+    }
+    vkFreeCommandBuffers(a.device, a.cmdPool, 1u, &cb);
+    ++r.frameID;
+}
+
+static void teardownFgWindowRig(VkApp& a, FgWindowRig& r) {
+    if (r.live && r.p) r.p->destroy(&r.ctx, nullptr);
+    for (uint32_t i = 0; i < 3u; ++i) {
+        if (r.bbV[i]) vkDestroyImageView(a.device, r.bbV[i], nullptr);
+        if (r.bb[i]) vkDestroyImage(a.device, r.bb[i], nullptr);
+        if (r.bbM[i]) vkFreeMemory(a.device, r.bbM[i], nullptr);
+    }
+}
+
 // Blit loop. Returns false (caller then falls back to holdWindow) if SDL cannot hand us a software renderer
 // or texture, so a host without a working SDL video path still behaves as before.
-static bool showWindowSdl(VkApp& a, Provider* up, FsrHost* fsr, SDL_Window* win, int seconds) {
+static bool showWindowSdl(VkApp& a, Provider* up, FsrHost* fsr, Provider* fg, int fgMult, SDL_Window* win,
+                          int seconds) {
     if (!win) return false;
     // When the REAL AMD FSR4 upscale host is live, the window shows the UPSCALED GPU result (960x540 read back
     // from the provider's FP16 output image); otherwise it shows the native 480x270 offscreen render.
     const bool useFsr = (fsr != nullptr) && fsr->live && (up != nullptr);
+    // The FG rig the WINDOW drives every frame, so the frame counts are measured HERE rather than taken from
+    // the headless ladder. Its images are the FSR rig's own, which is why Prepare can only be refused by the
+    // provider's own rule and never by a host-side parameter error.
+    FsrRig* rigForFg = (fsr && fsr->live) ? &fsr->rig : nullptr;
+    FgWindowRig fgRig;
+    if (fg != nullptr) {
+        if (!initFgWindowRig(a, *fg, rigForFg, fgRig, fgMult)) {
+            std::printf("  window FG rig NOT live: create=%d configure=%d (HUD will print FGEN NO CONTEXT)\n",
+                        fgRig.createCode, fgRig.configureCode);
+        }
+    } else {
+        std::printf("  window FG rig NOT live: no frame-generation provider loaded (FGEN NO CONTEXT)\n");
+    }
     const uint32_t texW = useFsr ? kFsrOw : kWidth, texH = useFsr ? kFsrOh : kHeight;
     SDL_ShowWindow(win);
     SDL_Surface* target = SDL_GetWindowSurface(win);
@@ -1507,6 +1712,22 @@ static bool showWindowSdl(VkApp& a, Provider* up, FsrHost* fsr, SDL_Window* win,
             gHudFacts.upH = 0u;
             gHudFacts.upMs = 0.0;
         }
+        // ONE host frame of Frame Generation, counted: Prepare(frameID) + generate(frameID) with the rig's
+        // real depth/motion/present-colour and three real backbuffers. r.generated sums the provider's ANSWER
+        // (numGeneratedFrames as written back), so this line can only rise when the provider really produces
+        // frames - a refusal keeps it at 0 no matter what --fg= asked for.
+        if (fgRig.live) {
+            fgFrameAttempt(fgRig, a, rigForFg, fgMult);
+            gHudFacts.fgLive = true;
+            gHudFacts.fgAttempts = fgRig.attempts;
+            gHudFacts.fgGenerated = fgRig.generated;
+            gHudFacts.fgCode = fgRig.generateCode;
+            gHudFacts.fgMs = fgRig.attempts ? fgRig.msTotal / (double)fgRig.attempts : 0.0;
+            gHudFacts.fgRefused = (fgRig.generateCode == (int)FFX_API_RETURN_ERROR_RUNTIME_ERROR);
+            // Delivered multiplier from the DELIVERED frames: 1 + (frames produced / host frames attempted).
+            gHudFacts.fgActual =
+                fgRig.attempts ? (int)(1 + (fgRig.generated / (double)fgRig.attempts)) : 1;
+        }
         // The window is RESIZABLE, so its extent is re-queried every frame and printed as-is; the
         // HUD is painted into the SAME buffer SDL uploads, so it scales/blits with the image it labels.
         int ww = 0, hh = 0;
@@ -1531,11 +1752,33 @@ static bool showWindowSdl(VkApp& a, Provider* up, FsrHost* fsr, SDL_Window* win,
                         printedSec, frame, fps);
             std::printf("    FSR dispatch cost: %.1fms avg over %.0f dispatches\n",
                         fsrMsN ? fsrMsTotal / fsrMsN : 0.0, fsrMsN);
+            // The live Frame Generation counters, printed beside the FSR cost so the two are never confused:
+            // FSR upscaled EVERY frame (dispatches == frames), while FG's frame count is whatever the provider
+            // ANSWERED - 0 while it refuses, and it is printed as 0 rather than as the requested multiplier.
+            if (fgRig.live) {
+                std::printf("    FG: frames_generated=%lld host_frames_asked=%lld last_generate_code=%d (%.3fms avg)\n",
+                            fgRig.generated, fgRig.attempts, fgRig.generateCode,
+                            fgRig.attempts ? fgRig.msTotal / (double)fgRig.attempts : 0.0);
+            }
         }
         SDL_Delay(16);
         ++frame;
     }
     std::printf("  SDL software blit summary: %u frames, last fps=%d (WSI swapchain NOT used)\n", frame, fps);
+    // The end-of-run Frame Generation tally. Read it as: the host asked for `fgMult`-X on `attempts` frames and
+    // the provider DELIVERED `generated` frames. FSR's own upscale count is `frame` dispatches (all OK), so
+    // "frames generated" here means INTERPOLATED frames specifically - never conflated with the upscale proof.
+    if (fgRig.live) {
+        const double avgMs = fgRig.attempts ? fgRig.msTotal / (double)fgRig.attempts : 0.0;
+        std::printf("  FRAME GENERATION tally: host_frames=%lld generated_frames=%lld ok_calls=%lld "
+                    "last_generate=%d prepare=%d avg_cost=%.3fms -> delivered %dX of requested %dX\n",
+                    fgRig.attempts, fgRig.generated, fgRig.okCalls, fgRig.generateCode, fgRig.prepareCode, avgMs,
+                    fgRig.attempts ? (int)(1 + (fgRig.generated / (double)fgRig.attempts)) : 1,
+                    (fgMult > 1 ? fgMult : 1));
+    } else {
+        std::printf("  FRAME GENERATION tally: NO CONTEXT (provider create/configure refused) generated_frames=0\n");
+    }
+    teardownFgWindowRig(a, fgRig);
     SDL_DestroyTexture(tex);
     SDL_DestroyRenderer(rend);
     return true;
@@ -1652,7 +1895,11 @@ int main(int argc, char** argv) {
                     "Add --present for the real GPU FSR blit on a host whose driver implements vkCreateSwapchainKHR.\n",
                     windowSec, kWidth, kHeight);
         // If SDL cannot give us a software renderer/texture, keep the previous blank-window behaviour.
-        if (!showWindowSdl(a, fsrLive ? &up : nullptr, fsrLive ? &fsr : nullptr, gWin, windowSec)) holdWindow(windowSec, gWin);
+        // The FG provider is driven HERE too (per frame, counted), so the window shows the frame-generation
+        // tally live instead of only the headless ladder's one-shot codes.
+        if (!showWindowSdl(a, fsrLive ? &up : nullptr, fsrLive ? &fsr : nullptr, fgOk ? &fg : nullptr, fgMult,
+                          gWin, windowSec))
+            holdWindow(windowSec, gWin);
         SDL_DestroyWindow(gWin); SDL_Quit(); gWin = nullptr;
     } else {
         runHeadless();
