@@ -13,6 +13,18 @@ The whole project is built on **measured ground truth, never inference**. Read t
 - **Two independent providers.** The upscaler is **complete + validated**. The Frame Generation provider is the ABI + capability contract + host-integration surface + the **Phase-1 runtime substrate** (real device allocations, pipeline layouts, compute pipelines and descriptor serialization driven by the pack's own plan tables), and it **honestly refuses the not-yet-validated dispatch** instead of fabricating a blend or a made-up optical-flow stand-in. The two `.so` outputs must never share assets, model logic or runtime resources.
 - **Verify before claiming.** GPU-free gates run on any host (`bash tools/build/check.sh`, `ctest`, and the 34 gates in `tools/validate/frame-generation/tests.py`); device gates **auto-skip with exit 77**, so a GPU-less CI host stays green instead of failing. A red run is a real regression, not a missing GPU.
 - **Treat transport as a measured constraint.** Conventional `VkDescriptorSet` fails 2684 of 2692 FG sets because FG bindings are `VK_WHOLE_ARRAY` runtime arrays; the host runtime **must** use `VK_EXT_descriptor_buffer` (all 1208 FG bindings serialize with 0 failures). No FG shader has a cross-kind slot, so plain derived `VkPipelineLayout`s suffice - pipeline creation for all 474 compute modules is **solved**. The provider reproduces that on its own: its substrate serialized **304 of 304** classic-subset bindings with zero failures on RX 9070 XT.
+  The CONSUMPTION half of that transport is now pinned as a measurement too: `tools/db-command-surface.cpp` resolves
+  candidate command names through BOTH device and instance scope on the live driver, and this host's RADV implements
+  `VK_EXT_descriptor_buffer` at **spec version 1 - the 0.14.2 draft generation** - exporting
+  `vkCmdBindDescriptorBuffersEXT` (`VkDescriptorBufferBindingInfoEXT{address,usage}`),
+  `vkCmdSetDescriptorBufferOffsetsEXT` (bindPoint, layout, firstSet, setCount, bufferIndices, offsets),
+  `vkCmdBindDescriptorBufferEmbeddedSamplersEXT`, `vkGetPhysicalDeviceDescriptorSizeEXT` and
+  `vkWriteResourceDescriptorsEXT` / `vkWriteSamplerDescriptorsEXT`, but **not** the final-revision
+  `vkCmdPushPipelineDataEXT` / `vkCmdBindDescriptorRangesEXT` (ABSENT in both scopes). Two consequences for the
+  runnable dispatch: the PINNED Vulkan-Headers already declare the names this driver speaks, so no hand-mirrored
+  prototypes are needed; and every one of those commands resolves at **instance** scope while returning NULL at
+  device scope - which is why a device-scope-only probe reads as "the driver has none of it", while the providers
+  and the substrate's 304/304 serialization get them through the caller's resolver.
 - **Respect the closed boundary — now with a corrected map of what is actually closed.** The 382 `mlfi_*` ML
   modules' **weights ARE extracted** (`pack/mlfi-model.bin`, 9,437,184 B at RVA `0xf00000`, `model.extracted=true`,
   entropy `7.403`, with per-record `.data` references) and their **chain order IS mined and gated**: `mlfi-graph.json`
