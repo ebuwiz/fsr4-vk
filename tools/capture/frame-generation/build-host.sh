@@ -51,46 +51,34 @@ if [[ -z "$cxx" ]]; then
     exit 77
 fi
 echo "using $cxx"
-
 # Wine's Windows-side Vulkan (winevulkan) forwards to the SAME driver the LINUX harness uses, so the host links
 # vulkan-1 and gets real RADV underneath. Import libs come from Wine's own package directory.
 wine_dir="/usr/lib/wine/x86_64-windows"
 [[ -d "$wine_dir" ]] || { echo "SKIP build-host: no $wine_dir (wine not installed)"; exit 77; }
-$cxx -std=c++20 -Wall -O1 -DFSR4_WINDOWS_BUILD -o "$out/fgcap-host.exe" "$here/host.cpp" \
-    -I"$repo/third_party/fidelityfx-api/api/include" \
-    -I"$repo/third_party/fidelityfx-api/framegeneration/include" \
-    -I"$repo/third_party/Vulkan-Headers/include" \
-    -L"$wine_dir" -l vulkan-1 -l msvcrt -l c++abi
-printf 'built %s -> run with: wine %s (FSR4_VK_CAPTURE_DIR=<dir>)\n' "$out/fgcap-host.exe" "$out/fgcap-host.exe"
-
-# The include paths are the SAME ones tools/FGTest/build.sh proves in this checkout: the vendored FFX API tree
-# (`third_party/fidelityfx-api/{api,framegeneration}/include`), not the SDK's Kits tree.
-winegcc -c++ -std=c++20 -Wall -o "$out/fgcap-host" "$here/host.cpp" \
-    -I"$repo/third_party/fidelityfx-api/api/include" \
-    -I"$repo/third_party/fidelityfx-api/framegeneration/include" \
-    -I"$repo/third_party/Vulkan-Headers/include" \
-
-# NEXT MEASURED STEP (recorded rather than silently half-fixed): the WINDOWS image LINKS only if the CRT choice
-# matches what Wine provides. Measured on this host:
-#   * Wine's own `libmsvcrt.a` + `msvcrt.dll` (a full mingw-CRT implementation) supply the C stdio entry points
-#     the host calls, but NOT the Microsoft-CRT startup internals that llvm-mingw's `crt2.o` references
-#     (`__p___initenv`, `_crt_atexit`, `_set_invalid_parameter_handler`, `__p__fmode`, `__p__commode`,
-#     `_configthreadlocale`) - linking with Wine's directory first fails on exactly those;
-#   * llvm-mingw's own `libmsvcrt.a` resolves those startup internals, but imports them from the SPLIT modern
-#     CRT DLLs (`api-ms-win-crt-stdio-l1-1-0.dll` and friends), which Wine does NOT provide - so that image would
-#     not LOAD under Wine either.
-#   The fix is to build the host with the GCC/UCRT startup objects (llvm-mingw ships `crt1u.o`/`crt2u.o` next to
-#   `crt1.o`/`crt2.o`) against Wine's `msvcrt.dll`, i.e. `-nostartfiles` plus those objects explicitly, and to keep
-#   the C++/C runtimes coming from Wine; that is one measured experiment away, and until it links, NO AMD dispatch
-#   ORDER exists in this repo, so `order_source` stays `grouped-scaffold` and NOTHING is guessed about it.
 mingw_lib="$(dirname "$(dirname "$cxx")")/../x86_64-w64-mingw32/lib"
-wine_dir="/usr/lib/wine/x86_64-windows"
-[[ -d "$wine_dir" ]] || { echo "SKIP build-host: no $wine_dir (wine not installed)"; exit 77; }
+[[ -d "$mingw_lib" ]] || mingw_lib=""
 "$cxx" -std=c++20 -Wall -O1 -DFSR4_WINDOWS_BUILD -o "$out/fgcap-host.exe" "$here/host.cpp" \
     -I"$repo/third_party/fidelityfx-api/api/include" \
     -I"$repo/third_party/fidelityfx-api/framegeneration/include" \
     -I"$repo/third_party/Vulkan-Headers/include" \
     ${mingw_lib:+-L"$mingw_lib"} -L"$wine_dir" -l vulkan-1 -l msvcrt -l c++abi
+printf 'built %s -> run with: wine %s <staged dll> (FSR4_VK_CAPTURE_DIR=<dir>)\n' \
+    "$out/fgcap-host.exe" "$out/fgcap-host.exe"
 
-    -L"/usr/lib/wine/$wine_arch" -lvulkan-1
-printf 'built %s (run it with: wine %s.exe <staged AMD dll>)\n' "$out/fgcap-host" "$out/fgcap-host"
+# THE HOST COMPILES FOR WINDOWS, and a real 521 KB Windows image linked on this host (measured). What is NOT yet
+# done is the CRT PAIRING, probed three ways here, each result measured rather than assumed:
+#   * Wine's OWN `libmsvcrt.a`/`msvcrt.dll` (a complete mingw-CRT implementation) supply the C stdio entry points
+#     the host calls, but NOT the Microsoft-CRT startup internals llvm-mingw's default `crt2.o` references:
+#     `__p___initenv`, `_crt_atexit`, `_set_invalid_parameter_handler`, `__p__fmode`, `__p__commode`,
+#     `_configthreadlocale`;
+#   * llvm-mingw's own `libmsvcrt.a` DOES resolve those, but imports them from the SPLIT MODERN CRT DLLS
+#     (`api-ms-win-crt-stdio-l1-1-0.dll` and friends) that Wine does not provide - so that image would not LOAD
+#     under Wine either;
+#   * Wine DOES ship the unified CRT (`ucrtbase.dll` + `libucrtbase.a`) and llvm-mingw's UCRT startup objects are
+#     `crt1u.o`/`crt2u.o`: passing BOTH yields duplicate `mainCRTStartup`/`atexit`, `crt2u.o` ALONE still references
+#     Microsoft-CRT internals (`__wgetmainargs`, `_amsg_exit`, `_XcptFilter`, `__p___winitenv`, `__set_app_type`),
+#     and Wine's `libucrtbase.a` drags a `crt_wwinmain.o` that wants a `wWinMain` entry this host does not define.
+# So the last step is specific: build the host with its OWN ENTRY (`-nostartfiles` + `-Wl,--entry=...`, plus a
+# `wWinMain` alias if that object is dragged), take the C runtime from Wine (`-l msvcrt -l ucrtbase`) and the C++
+# runtime from llvm-mingw, and keep `hostResolver` as the only Vulkan surface the DLL can reach. Until it links, NO
+# AMD dispatch ORDER exists in this repo: `order_source` stays `grouped-scaffold` and NOTHING is guessed about it.
