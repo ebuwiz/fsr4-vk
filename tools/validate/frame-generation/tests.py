@@ -1427,6 +1427,53 @@ def test_classic_chain_shape_join():
     return
 
 
+def test_classic_binding_shape_contract():
+    """Phase-2c GATE: the marshalling contract the classic passes DECLARE for every one of their binding slots.
+
+    The plan's `fg-plan.tsv` gives the LAYOUT half (set, binding, kind, arrayed); only the shipped SPIR-V gives
+    the RESOURCE half, which decides whether a dispatch is legal at all. Measured over all 92 classic modules:
+    the two halves join PERFECTLY (304 (set,binding) slots, 304 agree, 0 plan-only, 0 shader-only), and every one
+    of those 304 slots is a RUNTIME-SIZED array (`OpTypeRuntimeArray`) - which is why the driver answers the set
+    size as the wrapped 2^32-64 and why a harness that serializes ONE descriptor per slot leaves the pass free to
+    index past it. Slot kinds split 176 IMAGE / 32 SAMPLER / 96 BUFFER, all images 2D. The FORMAT contract: 60
+    image slots FIXED a format in the shader (44 R32ui + 16 R32f, which the runtime MUST bind exactly that) and
+    116 are BINDLESS (`Unknown`, format comes only from the descriptor written at bind time); of those, 60 declare
+    a `%uint`/`%int` component type while the substrate allocates R32G32B32A32_SFLOAT for EVERY image slot, so 60
+    of the 304 bindings this harness performs CANNOT satisfy the shader's own element type - and 104 slots total
+    are uint/int-typed against 72 float-typed. Also measured: NO classic module contains an `OpImageWrite` at all
+    (fetch 2556 / sample 260 / read 660 / write 0) even though 92 slots declare a storage (sampled=2) image, while
+    every module carries `OpCapability PhysicalStorageBufferAddresses` + `OpName BindlessCBV` - the writes go
+    through PHYSICAL-STORAGE pointers read out of those unbound arrays. So the chain cannot be made to run by
+    binding more descriptors alone: the runtime has to write REAL device addresses into the bindless tables. GPU-free
+    (spirv-dis only), and self-skips when the pack bytes or spirv-dis are absent.
+    """
+    tool = ROOT / "tools/extract/frame-generation/classic_shapes.py"
+    if not (tool.is_file() and (ROOT / "assets/frame-generation/pack/modules").is_dir()):
+        print("SKIP classic-binding-shape: tool or pack modules absent"); return
+    out = ROOT / "build/fg-classic-shapes.tsv"
+    cmd = ["python3", str(tool), "--out", str(out),
+           "--expect-modules=92", "--expect-slots=304", "--expect-plan-shader-agreement=304",
+           "--expect-typed-slots=60", "--expect-bindless-slots=116", "--expect-uint-slots=104",
+           "--expect-float-slots=72", "--expect-unbounded-slots=304", "--expect-write-modules=28",
+           "--expect-mismatched-format-slots=60"]
+    r = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
+    if r.returncode != 0:
+        raise AssertionError(f"classic_shapes.py rc={r.returncode}:\n{r.stdout}\n{r.stderr}")
+    for needle in ("classic modules covered: 92", "declared (set,binding) slots: 304",
+                   "agree 304 plan-only 0 shader-only 0", "literal 60 bindless(Unknown) 116",
+                   "unbounded(runtime-array) slots: 304", "kinds: {'image': 176, 'sampler': 32, 'buffer': 96}",
+                   "image dims: {'2D': 176}", "R32ui': 44", "R32f': 16", "write=0"):
+        if needle not in r.stdout:
+            raise AssertionError(f"binding-shape contract drifted, missing {needle!r}:\n{r.stdout}")
+    rows = [l for l in out.read_text().splitlines() if l.strip()][1:]
+    if len(rows) != 304:
+        raise AssertionError(f"per-slot census must hold 304 rows, got {len(rows)}")
+    # A slot the plan declares but the shader does not (or the reverse) would make every number above meaningless.
+    if rows[0].split("\t")[4:6] != ["CIS", "a"]:
+        raise AssertionError(f"first classic slot should be an arrayed CIS, row was: {rows[0]}")
+    return
+
+
 def test_capture_shim_builds_against_vulkan_headers():
     # The LD_PRELOAD capture shim (capture-shim.cpp) must COMPILE against the pinned Vulkan-Headers (the same
     # fork the providers use, whose VkShaderModuleCreateInfo field is pCode). GPU-free compile check of the real
@@ -1656,6 +1703,8 @@ def main():
                  test_sdk_fg_host_contract_enforcement,
                  test_classic_chain_shape_join,
                  test_vk_dll_shader_identity,
+                  test_classic_binding_shape_contract,
+
                  test_capture_diff_order_reader_roundtrip,
                  test_capture_diff_upscaler_pack_roundtrip,
                  test_capture_order_fusion,

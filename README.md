@@ -11,9 +11,11 @@ The whole project is built on **measured ground truth, never inference**. Read t
 
 - **Pin the inputs.** Both source DLLs are pinned by SHA-256 - upscaler 4.1.2.4555 (`aad4...`) and Frame Generation 4.0.2.4555 (`e684...77bb6`) - and every extraction tool **fails on drift** rather than skipping a mismatch. AMD's open **FidelityFX SDK 2.4.0** (`third_party/fidelityfx-sdk`) is vendored as **CPU control-flow ground truth**: the *classic* interpolation pass order, resource tables, present/pacing/UI and descriptor layouts are **MINED from that readable source** and pinned by gates - not guessed out of the DLL.
 - **Two independent providers.** The upscaler is **complete + validated**. The Frame Generation provider is the ABI + capability contract + host-integration surface + the **Phase-1 runtime substrate** (real device allocations, pipeline layouts, compute pipelines and descriptor serialization driven by the pack's own plan tables), and it **honestly refuses the not-yet-validated dispatch** instead of fabricating a blend or a made-up optical-flow stand-in. The two `.so` outputs must never share assets, model logic or runtime resources.
-- **Verify before claiming.** GPU-free gates run on any host (`bash tools/build/check.sh`, `ctest`, and the 36 gates in `tools/validate/frame-generation/tests.py`); device gates **auto-skip with exit 77**, so a GPU-less CI host stays green instead of failing. A red run is a real regression, not a missing GPU. The suite now also contains **one gate that RUNS the harness app on a device** (`test_fgtest_host_app_runs_on_device`): every other gate is static or artifact-scoped, and a static gate CANNOT see a device-config regression — that is precisely how a bad extension request reached the user as a bare `NO_DEVICE` while 35/35 gates stayed green. It self-skips on rc 77 (no suitable device), on missing app artifacts, and on `FSR4_SKIP_GPU_GATES=1` for a deliberately device-free run. That gate also asserts the app's **measured motion-vector read-back is NON-ZERO**: an all-zero velocity field would mean the host never owed Frame Generation the input interpolation needs.
+- **Verify before claiming.** GPU-free gates run on any host (`bash tools/build/check.sh`, `ctest`, and the 37 gates in `tools/validate/frame-generation/tests.py`); device gates **auto-skip with exit 77**, so a GPU-less CI host stays green instead of failing. A red run is a real regression, not a missing GPU. The suite now also contains **one gate that RUNS the harness app on a device** (`test_fgtest_host_app_runs_on_device`): every other gate is static or artifact-scoped, and a static gate CANNOT see a device-config regression — that is precisely how a bad extension request reached the user as a bare `NO_DEVICE` while 35/35 gates stayed green. It self-skips on rc 77 (no suitable device), on missing app artifacts, and on `FSR4_SKIP_GPU_GATES=1` for a deliberately device-free run. That gate also asserts the app's **measured motion-vector read-back is NON-ZERO**: an all-zero velocity field would mean the host never owed Frame Generation the input interpolation needs.
 - **The app states plainly whether Frame Generation runs, in pixels.** The window pre-fills the provider's OWN `generate` output images with a sentinel and reads a centred 240×135 window back after every `generate()` call, so delivery is evidence rather than a return code: the HUD paints `FG NOT RUNNING` at 4× beside `OUT PX 0/32400 WRITTEN` and the measured `MOTION PX 633  MAXV 0.04023`, and the run ends with `FRAME GENERATION VERDICT: NOT RUNNING - 0 interpolated frames ... the missing piece is the interpolation runtime, NOT the measurement`. Two host obligations that made FG visibility impossible in this harness were fixed on the way: the rig's colour/depth/motion/output images are now a **ring of 2** (the SDK's `MAX_QUEUED_FRAMES == 2` means the provider samples the PREVIOUS frame while the next one renders — one image per role meant every hand-off pointed at an image the host was already overwriting), and the motion image is **WRITTEN per frame by a real velocity pass** (`velocity.frag`, UBO `prevModelMatrix`) instead of cleared once to zero. The arithmetic the verdict quotes is the effect's own: **2× inserts one generated frame per consecutive pair → N rendered frames become N + (N−1) shown (3 → 5); 4× inserts three per pair**.
 - **Treat transport as a measured constraint.** Conventional `VkDescriptorSet` fails 2684 of 2692 FG sets because FG bindings are `VK_WHOLE_ARRAY` runtime arrays; the host runtime **must** use `VK_EXT_descriptor_buffer` (all 1208 FG bindings serialize with 0 failures). No FG shader has a cross-kind slot, so plain derived `VkPipelineLayout`s suffice - pipeline creation for all 474 compute modules is **solved**. The provider reproduces that on its own: its substrate serialized **304 of 304** classic-subset bindings with zero failures on RX 9070 XT.
+- **Read the shaders for the half the plan cannot give you.** `tools/extract/frame-generation/classic_shapes.py` (37th gate) disassembles all 92 classic modules and pins what they DECLARE per binding slot: **304 slots join the plan PERFECTLY (0 orphans either way)**, all 304 are `OpTypeRuntimeArray`, **60 image slots fix a format in the shader** (`44 R32ui + 16 R32f`) while **116 are bindless**, **104 slots are `%uint`/`%int`-typed against 72 `%float`** — and the substrate binds `R32G32B32A32_SFLOAT` to every image slot, which **60 of those bindings cannot satisfy**. Decisively, **write=0**: no classic module issues an `OpImageWrite`, while every one carries `PhysicalStorageBufferAddresses` + a `BindlessCBV` array — the chain's writes go through addresses read out of those arrays, so a zero table is a write to address 0, which is the leading explanation for the cancelled-CS chain fault. Two naming routes are recorded as measured dead ends: SDK-source identifier bridge **0 of 92 strong matches** (4.0.2 shaders keep names the 2.4.0 sources do not share), and the SDK's classic `*_shaderblobs.cpp` hold **no blob bytes at all** to hash. The sanctioned order oracle therefore remains a capture of AMD's own provider (`tools/capture/frame-generation/`): `wine-11.22` is present here, the three DLLs are pinned and stageable, and what is missing is a Windows cross-toolchain (`mingw-w64`), so `order_source` stays `grouped-scaffold`.
+
   The CONSUMPTION half of that transport is now pinned as a measurement too: `tools/db-command-surface.cpp` resolves
   candidate command names through BOTH device and instance scope on the live driver, and this host's RADV implements
   `VK_EXT_descriptor_buffer` at **spec version 1 - the 0.14.2 draft generation** - exporting
@@ -782,6 +784,51 @@ device, `repeats` defaults to 1):
 `--dispatch-sweep=N` (N ≤ 92) is the single-process form; it stops on the first unusable device
 and names the orders it did not measure.
 
+### What the classic passes DECLARE per binding slot (measured, GPU-free, 37th gate)
+
+`python3 tools/extract/frame-generation/classic_shapes.py` runs the pinned SPIRV-Tools `spirv-dis` over all 92
+classic modules and reads the RESOURCE half of the marshalling contract — the half `fg-plan.tsv` cannot give,
+because the plan records only `(set,binding,KIND,arrayed)`. Measured on the pinned pack:
+
+| measured | value |
+| --- | --- |
+| plan ↔ shader slot join | **304** `(set,binding)` slots, **304 agree, 0 plan-only, 0 shader-only** — the plan's layout half is exactly what the shaders declare, so the substrate's `304/304 bindings serialized` number was never the problem |
+| slot kinds | **176 IMAGE / 32 SAMPLER / 96 BUFFER**, every image `2D` |
+| arrayness | **304 of 304 slots are `OpTypeRuntimeArray`** — not one bounded binding in the whole classic chain. That is why the driver answers every set size as the wrapped `2³²−64`, and why serializing ONE descriptor per slot leaves each pass free to index past it |
+| format contract | **60 slots FIXED a format in the shader** (`44 R32ui + 16 R32f`, which the runtime MUST bind exactly that) and **116 are BINDLESS** (`Unknown`; the format exists only in the descriptor written at bind time) |
+| component-type contract | **104 slots declare `%uint`/`%int`** vs **72 `%float`** — and the substrate allocates `R32G32B32A32_SFLOAT` for EVERY image slot, so **60 of the 304 bindings this harness makes cannot satisfy the shader's own element type**. The plan's `SI`/`CIS` kind token cannot tell those apart; only the SPIR-V can |
+| writes | `fetch=2556 sample=260 read=660` **write=0** — **no classic module contains an `OpImageWrite` at all**, while 92 slots declare a storage (`sampled=2`) image and every module carries `OpCapability PhysicalStorageBufferAddresses` + `OpName %BindlessCBV` |
+
+The last row is the one that changes the plan for 2c. A pass that never issues a descriptor-bound image write,
+but does carry a bindless uniform array of a struct named `BindlessCBV` under
+`PhysicalStorageBuffer64`, writes through **addresses read out of those runtime-sized arrays**. So the chain cannot
+be made to run by binding more descriptors into a pool alone: the runtime has to fill the `BindlessCBV` tables with
+**real device addresses** (`vkGetBufferDeviceAddress` of resources it actually allocated), because a zero read there
+is a write to address `0`, which is precisely the access that gets a compute shader cancelled with
+`The CS has been cancelled because the context is lost`. That is now the LEADING explanation for the chain fault
+recorded above, and it does not need `VK_DEPENDENCY_BY_TRANSITION` to be true.
+
+Two naming routes were tried on this host and MEASURED as dead ends, recorded so they are not re-attempted:
+
+* **SDK-source identifier bridge:** for each of the 18 vendored classic pass sources
+  (`Kits/FidelityFX/framegeneration/fsr3/internal/shaders/*_pass.hlsl`, `include/gpu/**` bodies), take the
+  identifiers unique to that one file and search the 92 module disassemblies: **0 of 92 strong matches**. The pack's
+  FG 4.0.2 shaders keep their OWN internal names (`frontier_phi_6.5.ladder.8.ladder`, `BindlessCBV`) which the
+  2.4.0 open sources do not share, so the version drift kills the bridge.
+* **SDK blob digest bridge:** `internal/ffx_frameinterpolation_shaderblobs.cpp` and
+  `ffx_opticalflow_shaderblobs.cpp` contain **no byte arrays at all** (18 KB of registry code each: the
+  `...GetPermutationBlobByIndex` declaration only) — the classic VK blobs are not vendored, so there is nothing
+  to hash. (The pack's own `modules.tsv` digests ARE the file digests, verified 486/486, which is what
+  `capture-diff.py` matches on.)
+
+That leaves the sanctioned ORDER + marshal oracle as it has been: a **capture** of AMD's own provider run
+(`tools/capture/frame-generation/`: `stage-vk-dlls.py` → the three pinned DLLs → `capture-shim.cpp` under
+`FSR4_VK_CAPTURE_DIR` → `capture-diff.py --emit-order` → `apply-capture-order.py --require-complete`). On this
+host `wine-11.22` **is** installed and the DLLs are pinned and staged, but **no Windows cross-toolchain is**
+(`/usr/x86_64-w64-mingw32` and `*mingw32-g++` absent; `clang`/`dxc` present but no Windows sysroot), so the
+capture needs `mingw-w64` installed first. The pack's `order_source` is still `grouped-scaffold` for that reason.
+
+
 ### Execution + pipeline-cache benchmark harness (`framegeneration-exec`)
 
 `build/linux/framegeneration-exec` drives the provider's OWN namespaced cache (`fg4`)
@@ -1048,8 +1095,21 @@ oracle, pixel parity via captures).
    submits (the earlier per-order runs show the fault tracks multi-dispatch-in-one-buffer, not the
    submit itself); (ii) **give each pass its OWN descriptor pool** so no dispatch writes a pool another
    dispatch is reading, which sidesteps the missing flag entirely at the cost of ~112-144 B per pass (the
-   measured per-module pool size). Either way the ~2 s first-execution cost is per-device, not
-   per-pass, so a 92-pass chain is not 92 x 2 s.
+   measured per-module pool size). Either way the ~2 s first-execution cost is per-device, not per-pass, so a
+   92-pass chain is not 92 x 2 s.
+   **UPDATED by the 37th gate, which reads the shaders and shrinks those hypotheses to one.** Over all 92 classic
+   modules: **every one of the 304 `(set,binding)` slots is an `OpTypeRuntimeArray`** (so no run has ever bound a
+   BOUNDED array — the `2³²−64` answer is structural, not a quirk), and **write=0**: no classic module contains an
+   `OpImageWrite` at all, while every module carries `PhysicalStorageBufferAddresses` + a bindless uniform array
+   named `BindlessCBV`. A pass that writes through addresses READ OUT of an unbound array is writing to the value
+   the harness left there, and the harness left ZERO — a write to address 0 is the textbook shape of
+   `The CS has been cancelled because the context is lost`. So route (ii) "give each pass its own pool" is
+   insufficient on its own: **the bindless tables have to be filled with REAL device addresses** (`vkGetBufferDeviceAddress`
+   of resources this runtime allocated), and the **60 format-fixed slots (`44 R32ui + 16 R32f`) and the 104
+   `%uint`-typed vs 72 `%float`-typed slots must be bound by TYPE**, not with the single `R32G32B32A32_SFLOAT`
+   backing the substrate uses for every image today. Both facts come from `build/fg-classic-shapes.tsv`
+   (`classic_shapes.py`), which is where 2c's marshalling code should read them from — the plan's `SI`/`CIS` kind
+   token cannot distinguish them.
 4. **2d - prove it in the app, which is what the app was built for.** Measured with `--fg=2x` today:
    `host_frames=56 generated_frames=0 ok_calls=0 last_generate=3`, i.e. `GOT 1 X REQ 2 X` with the provider's
    own refusal on every frame — the honest baseline this step has to beat. Two harness fixes landed alongside
