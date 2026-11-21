@@ -1486,6 +1486,22 @@ def test_capture_shim_builds_against_vulkan_headers():
     b = run(["g++", "-std=c++20", "-fsyntax-only", "-I", vk, shim])
     if b.returncode != 0:
         raise AssertionError("capture-shim does not compile: " + (b.stdout + b.stderr))
+    # A provider may resolve its entry points through the HOST's getDeviceProcAddr (the SDK's execution contract),
+    # in which case a shim that only replaces symbols is INVISIBLE: the provider would be handed the driver's
+    # pointers and every dispatch it recorded would bypass the ledger. So the shim MUST also interpose the resolvers.
+    out = ROOT / "build/ffxvk-capture-gate.so"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    built = run(["g++", "-std=c++20", "-shared", "-fPIC", "-I", vk, shim, "-o", str(out)])
+    if built.returncode != 0:
+        raise AssertionError("capture-shim will not build as a shim: " + (built.stdout + built.stderr))
+    nm = run(["nm", "-D", "--defined-only", str(out)])
+    for sym in ("vkCreateShaderModule", "vkCreateComputePipelines", "vkCmdBindPipeline", "vkCmdDispatch",
+                "vkCmdDispatchBase", "vkCmdDispatchIndirect", "vkGetDeviceProcAddr", "vkGetInstanceProcAddr"):
+        if sym not in nm.stdout:
+            raise AssertionError(f"capture shim does not export {sym}: a provider resolved through the host's "
+                                 "getDeviceProcAddr would bypass the ledger entirely, and the ORDER capture would "
+                                 "come back silently empty")
+    return
 
 
 def test_capture_shim_functional_rig():

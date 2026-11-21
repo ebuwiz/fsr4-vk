@@ -115,12 +115,37 @@ extern "C" void vkCmdBindPipeline(VkCommandBuffer cb, VkPipelineBindPoint bp, Vk
     fn(cb, bp, pipeline);
 }
 
+// The six calls this capture records. A provider resolved through the HOST's getDeviceProcAddr gets THESE
+// implementations back (see vkGet*ProcAddr below), so AMD's call order lands in the ledger whether the provider
+// calls through the symbol table or through function pointers.
+static void* pickRecordedImpl(const char* name);
+
+static void* pickRecordedImpl(const char* name) {
+    if (!name) {
+        return nullptr;
+    }
+    if (!std::strcmp(name, "vkCreateShaderModule"))
+        return reinterpret_cast<void*>(&vkCreateShaderModule);
+    if (!std::strcmp(name, "vkCreateComputePipelines"))
+        return reinterpret_cast<void*>(&vkCreateComputePipelines);
+    if (!std::strcmp(name, "vkCmdBindPipeline"))
+        return reinterpret_cast<void*>(&vkCmdBindPipeline);
+    if (!std::strcmp(name, "vkCmdDispatch"))
+        return reinterpret_cast<void*>(&vkCmdDispatch);
+    if (!std::strcmp(name, "vkCmdDispatchBase"))
+        return reinterpret_cast<void*>(&vkCmdDispatchBase);
+    if (!std::strcmp(name, "vkCmdDispatchIndirect"))
+        return reinterpret_cast<void*>(&vkCmdDispatchIndirect);
+    return nullptr;
+}
+
 extern "C" void vkCmdDispatch(VkCommandBuffer cb, uint32_t x, uint32_t y, uint32_t z) {
     using Fn = decltype(&vkCmdDispatch);
     auto fn = reinterpret_cast<Fn>(dlsym(RTLD_NEXT, "vkCmdDispatch"));
     ensureInit();
     if (gActive) {
         std::lock_guard<std::mutex> lock(gMutex);
+
         char d[48];
         std::snprintf(d, sizeof(d), "%u,%u,%u", x, y, z);
         gLedger.note_dispatch(reinterpret_cast<std::uintptr_t>(cb), d);
@@ -152,3 +177,51 @@ extern "C" void vkCmdDispatchIndirect(VkCommandBuffer cb, VkBuffer buffer, VkDev
     }
     fn(cb, buffer, offset);
 }
+
+// ---- the RESOLVER half. A provider may call NOTHING but the entry points the HOST hands it (the SDK's
+// execution contract, and what this repo's own provider enforces through CreateBackendVkDesc::getDeviceProcAddr),
+// so interposing vkGet*ProcAddr is what makes the ledger work for a provider that never touches the symbol table
+// directly. Without it AMD's DLL would be handed the DRIVER's pointers and every dispatch it recorded would
+// bypass this capture. Recorded names get THIS shim's own implementation; everything else passes through.
+// The two interposers MUST keep vulkan.h's OWN signature - they REPLACE the driver's symbols in this process -
+// so the substitution is done one level down: `pickRecorded` hands the shim's recorded implementation for the
+// six names, everything else passes through. When the provider resolves the RESOLVER itself (which is exactly
+// what the SDK's contract permits: the backend block may name getDeviceProcAddr, then the provider calls it),
+// it is handed `wrappedResolveImpl`, which applies the same substitution to every name the DLL later asks for.
+static PFN_vkVoidFunction pickRecorded(const char* name, PFN_vkVoidFunction real) {
+    if (void* picked = pickRecordedImpl(name))
+        return reinterpret_cast<PFN_vkVoidFunction>(picked);
+    return real;
+}
+
+static PFN_vkVoidFunction VKAPI_PTR wrappedResolveImpl(VkDevice device, const char* name) {
+    using Fn = decltype(&vkGetDeviceProcAddr);
+    const auto fn = reinterpret_cast<Fn>(dlsym(RTLD_NEXT, "vkGetDeviceProcAddr"));
+    if (!fn) {
+        return nullptr;
+    }
+    return pickRecorded(name, fn(device, name));
+}
+
+extern "C" PFN_vkVoidFunction vkGetDeviceProcAddr(VkDevice device, const char* name) {
+    using Fn = decltype(&vkGetDeviceProcAddr);
+    const auto fn = reinterpret_cast<Fn>(dlsym(RTLD_NEXT, "vkGetDeviceProcAddr"));
+    if (!fn) {
+        return nullptr;
+    }
+    if (name && !std::strcmp(name, "vkGetDeviceProcAddr"))
+        return reinterpret_cast<PFN_vkVoidFunction>(&wrappedResolveImpl);
+    return pickRecorded(name, fn(device, name));
+}
+
+extern "C" PFN_vkVoidFunction vkGetInstanceProcAddr(VkInstance instance, const char* name) {
+    using Fn = decltype(&vkGetInstanceProcAddr);
+    const auto fn = reinterpret_cast<Fn>(dlsym(RTLD_NEXT, "vkGetInstanceProcAddr"));
+    if (!fn) {
+        return nullptr;
+    }
+    if (name && !std::strcmp(name, "vkGetDeviceProcAddr"))
+        return reinterpret_cast<PFN_vkVoidFunction>(&wrappedResolveImpl);
+    return pickRecorded(name, fn(instance, name));
+}
+
